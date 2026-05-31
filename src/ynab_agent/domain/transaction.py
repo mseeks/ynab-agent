@@ -62,6 +62,7 @@ class YnabSnapshot(Frozen):
     category_id: CategoryId | None = None
     cleared: ClearedState = ClearedState.UNCLEARED
     approved: bool = False
+    month_closed: bool = False
     import_id: ImportId | None = None
     matched_transaction_id: YnabTransactionId | None = None
 

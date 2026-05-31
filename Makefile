@@ -1,7 +1,7 @@
 # YNAB Agent — developer terrain.
 # Short, single-purpose targets: each is one tool, easy to read and approve.
 
-.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt
+.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft
 
 SCOPE ?=
 
@@ -40,3 +40,7 @@ loop-type-debt:
 # Run the comment-debt loop (read-only). Optional: make loop-comment-debt SCOPE=src
 loop-comment-debt:
 	uv run python -m agents.comment_debt $(SCOPE)
+
+# Run the debug-cruft loop (read-only). Optional: make loop-debug-cruft SCOPE=src
+loop-debug-cruft:
+	uv run python -m agents.debug_cruft $(SCOPE)
