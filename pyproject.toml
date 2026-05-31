@@ -28,6 +28,13 @@ loops = [
     "claude-agent-sdk>=0.1.0",
     "python-dotenv>=1.0.0",
 ]
+# The agentic middle: Pydantic AI agents for the model-backed activities. The
+# OpenAI provider drives a local Ollama (Gemma 4) over its OpenAI-compatible
+# /v1 (SPEC §0.5). Kept out of the default env so the pure core stays lean and
+# never pulls the model stack into a workflow sandbox.
+ai = [
+    "pydantic-ai-slim[openai]>=0.0.20",
+]
 
 [build-system]
 requires = ["hatchling"]
