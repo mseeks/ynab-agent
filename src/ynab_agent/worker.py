@@ -38,9 +38,7 @@ async def run_worker(
     task_queue: str = DEFAULT_TASK_QUEUE,
 ) -> None:
     """Connect to Temporal and run the worker until cancelled (SPEC §0.5)."""
-    client = await Client.connect(
-        target_host, data_converter=DATA_CONVERTER
-    )
+    client = await Client.connect(target_host, data_converter=DATA_CONVERTER)
     worker = Worker(
         client,
         task_queue=task_queue,

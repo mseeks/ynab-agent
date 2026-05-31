@@ -37,7 +37,5 @@ def test_empty_owners_is_rejected(
 
 
 def test_init_kwargs_override_the_environment() -> None:
-    settings = Settings(
-        inbox="agent@agentmail.to", owners=("only@x.com",)
-    )
+    settings = Settings(inbox="agent@agentmail.to", owners=("only@x.com",))
     assert settings.owners == ("only@x.com",)
