@@ -161,9 +161,7 @@ async def decide_enrichment(
     if gate.verdict is GateVerdict.AUTO and gate.rule_id is not None:
         rule = next((r for r in rules if r.id == gate.rule_id), None)
         if rule is not None:
-            return AutoApply(
-                decision=build_auto_decision(rule, snapshot, now)
-            )
+            return AutoApply(decision=build_auto_decision(rule, snapshot, now))
 
     suggestion = await propose(
         EnrichmentRequest(
