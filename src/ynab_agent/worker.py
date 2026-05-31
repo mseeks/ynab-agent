@@ -13,9 +13,9 @@ Run it once a Temporal server is reachable::
 The connection is env-configured so the same image runs anywhere:
 ``TEMPORAL_HOST`` (default ``localhost:7233``), ``TEMPORAL_NAMESPACE`` (default
 ``default``), and ``TEMPORAL_TASK_QUEUE`` (default ``ynab-agent``). The clients
-read their own keys (``YNAB_API_KEY``, ``AGENTMAIL_API_KEY``), the model endpoint
-(``YNAB_AGENT_OLLAMA_URL`` / ``YNAB_AGENT_MODEL``), and ``Settings`` reads the
-recipient config — all from the environment, never the repo.
+read their own keys (``YNAB_API_KEY``, ``AGENTMAIL_API_KEY``), the model
+endpoint (``YNAB_AGENT_OLLAMA_URL`` / ``YNAB_AGENT_MODEL``), and ``Settings``
+reads the recipient config — all from the environment, never the repo.
 """
 
 from __future__ import annotations
