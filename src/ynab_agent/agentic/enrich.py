@@ -22,11 +22,25 @@ from ynab_agent.agentic.model import build_model
 from ynab_agent.domain.allocations import ProposedCategory
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.enums import Confidence, SourceKind
+from ynab_agent.domain.events import AskHuman, AutoApply
 from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.proposal import Proposal, ProposalSource
+from ynab_agent.policy.gate import (
+    GateVerdict,
+    build_auto_decision,
+    evaluate_gate,
+)
 
 if TYPE_CHECKING:
+    import datetime
+    from collections.abc import Iterable
+
     from pydantic_ai.models import Model
+
+    from ynab_agent.domain.events import EnrichmentOutcome
+    from ynab_agent.domain.rule import Rule
+    from ynab_agent.domain.transaction import YnabSnapshot
+    from ynab_agent.policy.floor import AutoActionCounters
 
 
 class CandidateCategory(Frozen):
@@ -112,3 +126,51 @@ def to_proposal(suggestion: EnrichmentSuggestion) -> Proposal:
         rationale=suggestion.rationale,
         sources=(ProposalSource(kind=SourceKind.MODEL),),
     )
+
+
+async def decide_enrichment(
+    snapshot: YnabSnapshot,
+    candidates: tuple[CandidateCategory, ...],
+    rules: Iterable[Rule],
+    counters: AutoActionCounters,
+    *,
+    now: datetime.datetime,
+    model: Model | None = None,
+) -> EnrichmentOutcome:
+    """Compose the enrich step: gate first, model only to ask (SPEC §4.1, §4.2).
+
+    The deterministic gate decides autonomy from the rules alone — a single
+    trusted rule auto-applies *its* action (the model never authorizes a write,
+    principle 6), so when it does we skip the model entirely. Only when a human
+    must be asked does the agent run, to produce the best-guess proposal the
+    email shows.
+
+    Args:
+        snapshot: The transaction being enriched.
+        candidates: The budget categories the agent may choose from.
+        rules: The rules in scope for the gate.
+        counters: The auto-action counters the hard floor reads.
+        now: The decision timestamp (the activity supplies it).
+        model: A model override for tests; defaults to Ollama/Gemma.
+
+    Returns:
+        ``AutoApply`` when a trusted rule gates it, else ``AskHuman``.
+    """
+    rules = tuple(rules)
+    gate = evaluate_gate(snapshot, rules, counters)
+    if gate.verdict is GateVerdict.AUTO and gate.rule_id is not None:
+        rule = next((r for r in rules if r.id == gate.rule_id), None)
+        if rule is not None:
+            return AutoApply(
+                decision=build_auto_decision(rule, snapshot, now)
+            )
+
+    suggestion = await propose(
+        EnrichmentRequest(
+            payee=snapshot.payee,
+            amount_display=str(snapshot.amount),
+            candidates=candidates,
+        ),
+        model=model,
+    )
+    return AskHuman(proposal=to_proposal(suggestion))

@@ -8,6 +8,7 @@ Gemma model — SPEC §0.5 spike #2 — and is skipped unless
 
 from __future__ import annotations
 
+import datetime
 import os
 
 import pytest
@@ -18,12 +19,29 @@ from ynab_agent.agentic.enrich import (
     CandidateCategory,
     EnrichmentRequest,
     EnrichmentSuggestion,
+    decide_enrichment,
     propose,
     to_proposal,
 )
 from ynab_agent.agentic.model import build_model
 from ynab_agent.domain.allocations import ProposedCategory
-from ynab_agent.domain.enums import Confidence, SourceKind
+from ynab_agent.domain.enums import (
+    Confidence,
+    RuleSource,
+    SourceKind,
+    TrustState,
+)
+from ynab_agent.domain.events import AskHuman, AutoApply
+from ynab_agent.domain.ids import (
+    AccountId,
+    CategoryId,
+    RuleId,
+    YnabTransactionId,
+)
+from ynab_agent.domain.money import Money
+from ynab_agent.domain.rule import Rule, RuleAction, RuleMatch
+from ynab_agent.domain.transaction import YnabSnapshot
+from ynab_agent.policy.floor import AutoActionCounters
 
 _REQUEST = EnrichmentRequest(
     payee="Blue Bottle Coffee",
@@ -72,6 +90,65 @@ def test_to_proposal_maps_onto_the_domain_proposal() -> None:
 
 def test_build_model_constructs_an_ollama_model() -> None:
     assert isinstance(build_model(model_name="gemma4:e4b"), Model)
+
+
+_NOW = datetime.datetime(2026, 5, 31, 12, 0, tzinfo=datetime.UTC)
+
+
+def _snapshot() -> YnabSnapshot:
+    return YnabSnapshot(
+        ynab_id=YnabTransactionId("t1"),
+        account=AccountId("a1"),
+        payee="Blue Bottle Coffee",
+        amount=Money.from_currency("-4.50"),
+        txn_date=datetime.date(2026, 5, 28),
+    )
+
+
+def _trusted_rule() -> Rule:
+    return Rule(
+        id=RuleId("r1"),
+        match=RuleMatch(payee_pattern="Blue Bottle"),
+        action=RuleAction(
+            allocation=ProposedCategory(category=CategoryId("dining"))
+        ),
+        trust=TrustState.TRUSTED,
+        source=RuleSource.LEARNED,
+    )
+
+
+async def test_decide_enrichment_auto_applies_a_trusted_rule() -> None:
+    # A single trusted rule gates AUTO — the model is never consulted.
+    outcome = await decide_enrichment(
+        _snapshot(),
+        _REQUEST.candidates,
+        [_trusted_rule()],
+        AutoActionCounters(),
+        now=_NOW,
+    )
+    assert isinstance(outcome, AutoApply)
+    assert outcome.decision.rule_id == "r1"
+
+
+async def test_decide_enrichment_asks_when_no_trusted_rule() -> None:
+    model = TestModel(
+        custom_output_args={
+            "category_id": "dining",
+            "confidence": "medium",
+            "rationale": "a coffee shop",
+        }
+    )
+    outcome = await decide_enrichment(
+        _snapshot(),
+        _REQUEST.candidates,
+        [],
+        AutoActionCounters(),
+        now=_NOW,
+        model=model,
+    )
+    assert isinstance(outcome, AskHuman)
+    assert isinstance(outcome.proposal.allocation, ProposedCategory)
+    assert outcome.proposal.allocation.category == "dining"
 
 
 @pytest.mark.skipif(

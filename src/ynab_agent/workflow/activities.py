@@ -10,6 +10,8 @@ workflow tests register mock implementations.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from temporalio import activity
 
 from ynab_agent.domain.effects import FeedRuleLearning, MessagePurpose
@@ -20,6 +22,14 @@ from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.policy.converge import TargetState
 from ynab_agent.workflow.types import ReplyOutcome
 
+if TYPE_CHECKING:
+    # Annotation-only: never imported at runtime, so the agentic/model stack
+    # (pydantic-ai) never enters the workflow sandbox. The enrich body imports
+    # it lazily, inside the activity, where it runs outside the sandbox.
+    from ynab_agent.agentic.enrich import CandidateCategory
+    from ynab_agent.domain.rule import Rule
+    from ynab_agent.policy.floor import AutoActionCounters
+
 _STUB = "workflow activity stub — register a real or mock implementation"
 
 
@@ -29,10 +39,32 @@ async def fetch_snapshot(ynab_id: str) -> YnabSnapshot | None:
     raise NotImplementedError(_STUB)
 
 
+async def _load_enrichment_inputs(
+    snapshot: YnabSnapshot,
+) -> tuple[tuple[CandidateCategory, ...], list[Rule], AutoActionCounters]:
+    """Fetch the candidate categories, in-scope rules, and auto counters.
+
+    The YNAB read and the rule-store read; stubbed until YNAB is wired.
+    """
+    raise NotImplementedError(_STUB)
+
+
 @activity.defn
 async def enrich(snapshot: YnabSnapshot) -> EnrichmentOutcome:
-    """Assemble the proposal and route via the gate (the agentic middle)."""
-    raise NotImplementedError(_STUB)
+    """Assemble the proposal and route via the gate (the agentic middle).
+
+    The model stack is imported lazily, here in the activity body, so it never
+    enters the workflow sandbox. The gate decides autonomy from the rules; the
+    agent runs only to produce the proposal a human is asked to confirm.
+    """
+    from datetime import UTC, datetime
+
+    from ynab_agent.agentic.enrich import decide_enrichment
+
+    candidates, rules, counters = await _load_enrichment_inputs(snapshot)
+    return await decide_enrichment(
+        snapshot, candidates, rules, counters, now=datetime.now(UTC)
+    )
 
 
 @activity.defn
