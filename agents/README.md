@@ -18,10 +18,13 @@ loops of the *same shape* come next — we resist broadening any single one.
 | `debug-cruft` | regex sweep for `print(` / `breakpoint()` / `pdb` / pytest `skip`/`xfail` | three-bucket map: *Delete now* / *Intentional* / *Stale skip — re-enable* |
 | `doc-coherence` | Markdown scan for broken links, missing file paths, removed `make` targets (+ agent finds semantic drift vs code) | three-bucket map: *Drift confirmed* / *Not drift* / *Judgment-heavy* |
 | `duplicated-constant` | scan for the same numeric literal re-typed on a rule line (comparison / `timedelta` / `Field` bound / `Money`) at 2+ sites | three-bucket map: *Centralise now* / *Legitimately repeated* / *Judgment-heavy* |
+| `dead-code` | AST scan for top-level defs/classes whose name is never referenced (as a word) in `src/` or `tests/` | three-bucket map: *Delete now* / *Reachable* (framework false positive) / *Judgment-heavy* |
 
-The deterministic sweep (`lib.sweep`) and file discovery are shared; each loop
-is just its marker set plus a system prompt — the framework's "replicate the
-template" shape (Stage 2).
+File discovery (`lib.iter_python_files`) and the locked-down agent pass
+(`lib.run_loop`) are shared; the regex-sweep loops (`type-debt`, `comment-debt`,
+`debug-cruft`) add only a marker set plus a system prompt, while the rest bring a
+purpose-built scan (a Markdown ref-check, a literal-dedup, an AST reference
+count) — the framework's "replicate the template" shape (Stage 2).
 
 ## Running
 
@@ -35,6 +38,7 @@ uv run python -m agents.comment_debt [scope]
 uv run python -m agents.debug_cruft [scope]
 uv run python -m agents.doc_coherence [scope]
 uv run python -m agents.duplicated_constant [scope]
+uv run python -m agents.dead_code [scope]
 ```
 
 ## Auth & safety
