@@ -155,6 +155,10 @@ def create_app(
         if not hasattr(app.state, "temporal"):
             app.state.temporal = await _connect()
         yield
+        # uvicorn fires this on SIGTERM; flush buffered spans before exit.
+        from ynab_agent.telemetry import shutdown_tracing
+
+        shutdown_tracing()
 
     app = FastAPI(lifespan=lifespan, title="ynab-agent webhook")
 

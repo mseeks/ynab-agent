@@ -62,6 +62,67 @@ def test_flag_enables_the_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
     assert telemetry.metrics_runtime() is not None
 
 
+def test_flag_on_runs_the_instrumentation_bodies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The enabled bodies (OTLP exporter + httpx/fastapi instrument) only run
+    # when the flag is on; a broken import/API there passes every other test.
+    # Running them here (no raise) + asserting a real provider is the guard.
+    import httpx
+    from fastapi import FastAPI
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+
+    monkeypatch.setenv("YNAB_AGENT_OTEL", "1")
+    telemetry.setup_tracing("svc-test")
+    assert telemetry._tracing_configured is True
+    assert isinstance(trace.get_tracer_provider(), TracerProvider)
+    telemetry.instrument_httpx(httpx.Client())
+    telemetry.instrument_fastapi(FastAPI())
+
+
+async def test_production_factory_traces_a_workflow_with_no_parent_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercises the PRODUCTION factory (always_create_workflow_spans=True) with
+    # NO surrounding client span — the schedule/cron path (PollWorkflow,
+    # OverspendMonitorWorkflow). If the flag regressed, no RunWorkflow span.
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    monkeypatch.setenv("YNAB_AGENT_OTEL", "1")
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)  # the factory uses the global provider
+
+    interceptors = list(telemetry.tracing_interceptors())
+    assert len(interceptors) == 1
+
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER, interceptors=interceptors
+        ) as env,
+        Worker(
+            env.client,
+            task_queue="otel-noparent",
+            workflows=[PingWorkflow],
+            activities=[ping],
+        ),
+    ):
+        result = await env.client.execute_workflow(
+            PingWorkflow.run, id="ping-noparent", task_queue="otel-noparent"
+        )
+
+    assert result == "pong"
+    names = {span.name for span in exporter.get_finished_spans()}
+    assert any("RunWorkflow" in name for name in names)
+
+
 async def test_workflow_run_emits_workflow_and_activity_spans() -> None:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor

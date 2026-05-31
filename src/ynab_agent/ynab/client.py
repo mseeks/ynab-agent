@@ -131,6 +131,11 @@ class YnabBackend(Protocol):
         ...
 
 
+# The process-wide cached client built by ``from_env`` (see its docstring).
+# ``tests/conftest.py`` resets this between tests.
+_CACHED: YnabClient | None = None
+
+
 class YnabClient:
     """Reads and writes YNAB through a backend, in domain terms (SPEC §1)."""
 
@@ -140,11 +145,19 @@ class YnabClient:
 
     @classmethod
     def from_env(cls) -> YnabClient:
-        """Build a client backed by the real YNAB REST API (reads the key).
+        """Build (once) a client backed by the real YNAB REST API.
+
+        The pooled httpx client and its OTel instrumentation are built on first
+        use and cached: every activity invocation calls this on the worker's hot
+        path, so a fresh-per-call client (never closed) would leak connections +
+        file descriptors. Tests reset the cache (see ``tests/conftest.py``).
 
         Raises:
             RuntimeError: If ``YNAB_API_KEY`` is not set.
         """
+        global _CACHED
+        if _CACHED is not None:
+            return _CACHED
         token = os.environ.get(_API_KEY_ENV)
         if not token:
             msg = f"{_API_KEY_ENV} is not set"
@@ -160,7 +173,8 @@ class YnabClient:
         from ynab_agent.telemetry import instrument_httpx
 
         instrument_httpx(client)
-        return cls(_HttpxBackend(client, budget))
+        _CACHED = cls(_HttpxBackend(client, budget))
+        return _CACHED
 
     def snapshot(self, txn_id: str) -> YnabSnapshot | None:
         """The current snapshot of a transaction, or ``None`` if deleted."""

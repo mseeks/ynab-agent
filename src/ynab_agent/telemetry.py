@@ -1,10 +1,12 @@
 """OpenTelemetry wiring: a global tracer, SDK metrics, and instrumentation.
 
-The one place the worker and the webhook turn telemetry on. Traces export
-OTLP/HTTP; the Temporal SDK's runtime metrics export OTLP/gRPC via Temporal's
-own Rust exporter (so no Python ``grpcio`` wheel is pulled). Both go to the
-in-cluster collector ``temporal-otel-collector.temporal.svc.cluster.local`` —
-no auth in-cluster; that collector adds the ClickStack ingest token on forward.
+The one place the worker and the webhook turn telemetry on. Traces and the
+Temporal SDK's runtime metrics both export OTLP/HTTP (metrics via Temporal's own
+Rust exporter, so no Python ``grpcio`` wheel is pulled) to the in-cluster
+collector ``temporal-otel-collector.temporal.svc.cluster.local`` — no auth
+in-cluster; that collector adds the ClickStack ingest token on forward. Metrics
+are CUMULATIVE (the temporalio default, and what the Temporal-server + nginx
+metrics already in ClickStack use, so HyperDX renders them consistently).
 
 Everything here is gated on the ``YNAB_AGENT_OTEL`` flag and is a no-op when it
 is unset, so tests and local runs stay completely telemetry-free (no background
@@ -27,8 +29,8 @@ if TYPE_CHECKING:
     from temporalio.client import Interceptor as ClientInterceptor
     from temporalio.runtime import Runtime
 
-# In-cluster collector. Traces -> OTLP/HTTP :4318 (avoids the grpcio wheel);
-# metrics -> OTLP/gRPC :4317 (Temporal's Rust exporter, also no python grpcio).
+# In-cluster collector. Both traces + metrics export OTLP/HTTP :4318; metrics
+# go through Temporal's own Rust exporter, so no python grpcio wheel either way.
 _COLLECTOR = "temporal-otel-collector.temporal.svc.cluster.local"
 _ENABLED_ENV = "YNAB_AGENT_OTEL"
 _TRACES_ENV = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
@@ -52,7 +54,7 @@ def _traces_endpoint() -> str:
 
 
 def _metrics_endpoint() -> str:
-    return os.environ.get(_METRICS_ENV, f"http://{_COLLECTOR}:4317")
+    return os.environ.get(_METRICS_ENV, f"http://{_COLLECTOR}:4318/v1/metrics")
 
 
 def setup_tracing(service_name: str) -> None:
@@ -116,8 +118,9 @@ def metrics_runtime() -> Runtime | None:
         telemetry=TelemetryConfig(
             metrics=OpenTelemetryConfig(
                 url=_metrics_endpoint(),
-                metric_temporality=OpenTelemetryMetricTemporality.DELTA,
+                metric_temporality=(OpenTelemetryMetricTemporality.CUMULATIVE),
                 metric_periodicity=timedelta(seconds=30),
+                http=True,
             )
         )
     )
@@ -139,3 +142,21 @@ def instrument_fastapi(app: FastAPI) -> None:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
     FastAPIInstrumentor.instrument_app(app)
+
+
+def shutdown_tracing() -> None:
+    """Flush + shut down the tracer provider on graceful termination.
+
+    The BatchSpanProcessor buffers spans (~5s), and Python's ``atexit`` does NOT
+    run on an unhandled SIGTERM — so without an explicit flush the last batch is
+    lost when a pod is rolled. The worker calls this from a SIGTERM handler, the
+    webhook from its lifespan shutdown. (The Temporal SDK metrics Runtime has no
+    public flush, so the in-flight metric interval is inherently best-effort.)
+    """
+    if not otel_enabled():
+        return
+    from opentelemetry import trace
+
+    shutdown = getattr(trace.get_tracer_provider(), "shutdown", None)
+    if shutdown is not None:
+        shutdown()

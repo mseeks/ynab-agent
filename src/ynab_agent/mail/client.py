@@ -66,6 +66,11 @@ class MailBackend(Protocol):
         ...
 
 
+# The process-wide cached client built by ``from_env`` (see its docstring).
+# ``tests/conftest.py`` resets this between tests.
+_CACHED: MailClient | None = None
+
+
 class MailClient:
     """Sends a transaction's outbound mail through AgentMail (SPEC §5)."""
 
@@ -75,11 +80,18 @@ class MailClient:
 
     @classmethod
     def from_env(cls) -> MailClient:
-        """Build a client backed by the real AgentMail SDK (reads the key).
+        """Build (once) a client backed by the real AgentMail SDK.
+
+        Cached like the YNAB client: the instrumented httpx client is built once
+        and reused, so a per-call client (never closed) can't leak sockets.
+        Tests reset the cache (see ``tests/conftest.py``).
 
         Raises:
             RuntimeError: If ``AGENTMAIL_API_KEY`` is not set.
         """
+        global _CACHED
+        if _CACHED is not None:
+            return _CACHED
         key = os.environ.get(_API_KEY_ENV)
         if not key:
             msg = f"{_API_KEY_ENV} is not set"
@@ -93,9 +105,10 @@ class MailClient:
         # (the SDK accepts one); instrument it the same way the YNAB client is.
         http_client = httpx.Client(timeout=60.0)
         instrument_httpx(http_client)
-        return cls(
+        _CACHED = cls(
             _AgentMailBackend(AgentMail(api_key=key, httpx_client=http_client))
         )
+        return _CACHED
 
     def send(self, email: OutboundEmail) -> SentEmail:
         """Send a new thread, or a reply if a message to reply to is set."""

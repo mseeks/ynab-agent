@@ -21,7 +21,9 @@ reads the recipient config — all from the environment, never the repo.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import signal
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -29,6 +31,7 @@ from temporalio.worker import Worker
 from ynab_agent.telemetry import (
     metrics_runtime,
     setup_tracing,
+    shutdown_tracing,
     tracing_interceptors,
 )
 from ynab_agent.workflow.runtime import (
@@ -73,7 +76,20 @@ async def run_worker(
         workflows=WORKFLOWS,
         activities=ALL_ACTIVITIES,
     )
-    await worker.run()
+    # Run until SIGTERM/SIGINT, then shut down gracefully and flush telemetry.
+    # `uv run` forwards SIGTERM to us, and Python's atexit does NOT run on an
+    # unhandled signal — so without this the worker's last span batch is dropped
+    # on every (Recreate) rollout.
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(sig, stop.set)
+    try:
+        async with worker:
+            await stop.wait()
+    finally:
+        shutdown_tracing()
 
 
 def main() -> None:
