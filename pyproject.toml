@@ -35,6 +35,9 @@ loops = [
 ai = [
     "pydantic-ai-slim[openai]>=0.0.20",
 ]
+mail = [
+    "agentmail>=0.5.2",
+]
 
 [build-system]
 requires = ["hatchling"]
