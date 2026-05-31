@@ -13,10 +13,12 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from ynab_agent.workflow import (
     activities,
     dispatch_activities,
+    monitor_activities,
     poll_activities,
     receipt_activities,
 )
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
+from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
 from ynab_agent.workflow.poll_workflow import PollWorkflow
 from ynab_agent.workflow.receipt_workflow import ReceiptJoinWorkflow
 from ynab_agent.workflow.txn_workflow import TransactionWorkflow
@@ -28,6 +30,7 @@ WORKFLOWS = [
     PollWorkflow,
     DispatchWorkflow,
     ReceiptJoinWorkflow,
+    OverspendMonitorWorkflow,
 ]
 
 ALL_ACTIVITIES = [
@@ -54,4 +57,8 @@ ALL_ACTIVITIES = [
     receipt_activities.ask_disambiguation,
     receipt_activities.ask_no_match,
     receipt_activities.save_receipt_status,
+    monitor_activities.fetch_category_spends,
+    monitor_activities.load_prior_alert,
+    monitor_activities.send_overspend_alert,
+    monitor_activities.save_alert,
 ]
