@@ -157,6 +157,9 @@ class YnabClient:
             headers={"Authorization": f"Bearer {token}"},
             timeout=30.0,
         )
+        from ynab_agent.telemetry import instrument_httpx
+
+        instrument_httpx(client)
         return cls(_HttpxBackend(client, budget))
 
     def snapshot(self, txn_id: str) -> YnabSnapshot | None:

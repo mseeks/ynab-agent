@@ -26,6 +26,11 @@ import os
 from temporalio.client import Client
 from temporalio.worker import Worker
 
+from ynab_agent.telemetry import (
+    metrics_runtime,
+    setup_tracing,
+    tracing_interceptors,
+)
 from ynab_agent.workflow.runtime import (
     ALL_ACTIVITIES,
     DATA_CONVERTER,
@@ -54,8 +59,13 @@ async def run_worker(
     queue = task_queue or os.environ.get(
         "TEMPORAL_TASK_QUEUE", DEFAULT_TASK_QUEUE
     )
+    setup_tracing("ynab-agent-worker")
     client = await Client.connect(
-        host, namespace=ns, data_converter=DATA_CONVERTER
+        host,
+        namespace=ns,
+        data_converter=DATA_CONVERTER,
+        interceptors=tracing_interceptors(),
+        runtime=metrics_runtime(),
     )
     worker = Worker(
         client,

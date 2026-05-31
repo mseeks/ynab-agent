@@ -20,7 +20,7 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - name: Sync (all extras, matching `make sync`)
-        run: uv sync --extra dev --extra loops --extra ai --extra mail --extra ynab --extra webhook
+        run: uv sync --extra dev --extra loops --extra ai --extra mail --extra ynab --extra webhook --extra otel
       - run: uv run ruff format --check src tests agents
       - run: uv run ruff check src tests agents
       - run: uv run mypy

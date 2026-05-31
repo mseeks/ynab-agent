@@ -120,10 +120,14 @@ async def _connect() -> Client:
     from temporalio.client import Client
     from temporalio.contrib.pydantic import pydantic_data_converter
 
+    from ynab_agent.telemetry import metrics_runtime, tracing_interceptors
+
     return await Client.connect(
         os.environ.get("TEMPORAL_HOST", "localhost:7233"),
         namespace=os.environ.get("TEMPORAL_NAMESPACE", "default"),
         data_converter=pydantic_data_converter,
+        interceptors=tracing_interceptors(),
+        runtime=metrics_runtime(),
     )
 
 
@@ -153,6 +157,11 @@ def create_app(
         yield
 
     app = FastAPI(lifespan=lifespan, title="ynab-agent webhook")
+
+    from ynab_agent.telemetry import instrument_fastapi, setup_tracing
+
+    setup_tracing("ynab-agent-webhook")
+    instrument_fastapi(app)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

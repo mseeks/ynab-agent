@@ -16,6 +16,6 @@ ENV UV_COMPILE_BYTECODE=1 \
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --frozen --no-editable \
-    --extra ai --extra mail --extra ynab --extra webhook
+    --extra ai --extra mail --extra ynab --extra webhook --extra otel
 
 ENTRYPOINT ["uv", "run", "--no-sync", "python", "-m", "ynab_agent.worker"]

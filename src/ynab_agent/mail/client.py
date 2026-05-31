@@ -84,9 +84,18 @@ class MailClient:
         if not key:
             msg = f"{_API_KEY_ENV} is not set"
             raise RuntimeError(msg)
+        import httpx
         from agentmail import AgentMail
 
-        return cls(_AgentMailBackend(AgentMail(api_key=key)))
+        from ynab_agent.telemetry import instrument_httpx
+
+        # Inject our own httpx client so trace context propagates on mail sends
+        # (the SDK accepts one); instrument it the same way the YNAB client is.
+        http_client = httpx.Client(timeout=60.0)
+        instrument_httpx(http_client)
+        return cls(
+            _AgentMailBackend(AgentMail(api_key=key, httpx_client=http_client))
+        )
 
     def send(self, email: OutboundEmail) -> SentEmail:
         """Send a new thread, or a reply if a message to reply to is set."""
