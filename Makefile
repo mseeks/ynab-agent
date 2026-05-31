@@ -1,7 +1,7 @@
 # YNAB Agent — developer terrain.
 # Short, single-purpose targets: each is one tool, easy to read and approve.
 
-.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft
+.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence
 
 SCOPE ?=
 
@@ -44,3 +44,7 @@ loop-comment-debt:
 # Run the debug-cruft loop (read-only). Optional: make loop-debug-cruft SCOPE=src
 loop-debug-cruft:
 	uv run python -m agents.debug_cruft $(SCOPE)
+
+# Run the doc-coherence loop (read-only). Scope is a .md file or dir; default: .
+loop-doc-coherence:
+	uv run python -m agents.doc_coherence $(SCOPE)

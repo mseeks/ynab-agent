@@ -16,6 +16,7 @@ loops of the *same shape* come next — we resist broadening any single one.
 | `type-debt` | regex sweep for `Any`, `cast(`, `# type: ignore` / `# mypy:` / `# pyright:` | three-bucket map: *Tightenable now* / *Legitimately needed* / *Judgment-heavy* |
 | `comment-debt` | regex sweep for `TODO` / `FIXME` / `HACK` / `XXX` | three-bucket map: *Action now* / *Legitimately kept* / *Judgment-heavy* |
 | `debug-cruft` | regex sweep for `print(` / `breakpoint()` / `pdb` / pytest `skip`/`xfail` | three-bucket map: *Delete now* / *Intentional* / *Stale skip — re-enable* |
+| `doc-coherence` | Markdown scan for broken links, missing file paths, removed `make` targets (+ agent finds semantic drift vs code) | three-bucket map: *Drift confirmed* / *Not drift* / *Judgment-heavy* |
 
 The deterministic sweep (`lib.sweep`) and file discovery are shared; each loop
 is just its marker set plus a system prompt — the framework's "replicate the
@@ -31,6 +32,7 @@ make loop-comment-debt SCOPE=src/ynab_agent/domain
 uv run python -m agents.type_debt [scope]
 uv run python -m agents.comment_debt [scope]
 uv run python -m agents.debug_cruft [scope]
+uv run python -m agents.doc_coherence [scope]
 ```
 
 ## Auth & safety
