@@ -15,8 +15,9 @@ from temporalio import activity
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from ynab_agent.domain.allocations import ResolvedCategory
-from ynab_agent.domain.enums import ClearedState, DecidedBy
+from ynab_agent.domain.allocations import ProposedCategory, ResolvedCategory
+from ynab_agent.domain.effects import FeedRuleLearning, RuleLearningKind
+from ynab_agent.domain.enums import ClearedState, DecidedBy, TrustState
 from ynab_agent.domain.events import (
     AskHuman,
     AutoApply,
@@ -28,6 +29,7 @@ from ynab_agent.domain.ids import (
     AccountId,
     CategoryId,
     MessageId,
+    RuleId,
     ThreadId,
     YnabTransactionId,
 )
@@ -35,6 +37,7 @@ from ynab_agent.domain.money import Money
 from ynab_agent.domain.proposal import Decision, Proposal
 from ynab_agent.domain.signals import ReplySignal
 from ynab_agent.domain.transaction import YnabSnapshot
+from ynab_agent.learn.handler import plan_rule_update
 from ynab_agent.policy.converge import TargetState, target_of
 from ynab_agent.workflow.runtime import DATA_CONVERTER
 from ynab_agent.workflow.txn_workflow import TransactionWorkflow
@@ -101,6 +104,7 @@ def _activities(
     interpret: ReplyOutcome | None = None,
     converge_outcome: ConvergeOutcome | None = None,
     read_back_seq: list[object] | None = None,
+    learning_sink: list[FeedRuleLearning] | None = None,
 ) -> list[Callable[..., object]]:
     """Build mock activity implementations for one scenario."""
     committed: dict[str, object] = {}
@@ -145,10 +149,9 @@ def _activities(
         return converge_outcome
 
     @activity.defn(name="feed_rule_learning")
-    async def feed_rule_learning(
-        event: object, decision: object, prior: object
-    ) -> None:
-        return None
+    async def feed_rule_learning(feed: FeedRuleLearning) -> None:
+        if learning_sink is not None:
+            learning_sink.append(feed)
 
     @activity.defn(name="close_thread")
     async def close_thread(thread_id: str) -> None:
@@ -233,6 +236,51 @@ async def test_ask_then_answer_reaches_open_and_archives() -> None:
             start_signal_args=[_reply()],
         )
         await handle.result()
+
+
+async def test_human_confirm_feeds_rule_learning() -> None:
+    # A human answer drives APPLIED → OPEN, which emits the W5 effect carrying
+    # the payee + the human decision; plan_rule_update then learns the rule.
+    sink: list[FeedRuleLearning] = []
+    acts = _activities(
+        snapshot=_snapshot(reconciled=True),
+        enrich_outcome=AskHuman(proposal=_proposal()),
+        interpret=AnswerOutcome(decision=_decision(DecidedBy.HUMAN)),
+        learning_sink=sink,
+    )
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[TransactionWorkflow],
+            activities=acts,
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            TransactionWorkflow.run,
+            TransactionParams(ynab_id=YnabTransactionId("t1")),
+            id="txn-learn",
+            task_queue=TASK_QUEUE,
+            start_signal="submit_inbound",
+            start_signal_args=[_reply()],
+        )
+        await handle.result()
+
+    assert len(sink) == 1
+    feed = sink[0]
+    assert feed.event is RuleLearningKind.CONFIRM
+    assert feed.payee == "Blue Bottle"
+
+    # The captured effect, fed to the handler, learns a confirmed dining rule.
+    outcome = plan_rule_update((), feed, now=_EPOCH, next_id=RuleId("r-new"))
+    assert outcome is not None
+    rule = outcome.rules[0]
+    assert rule.trust is TrustState.CONFIRMED
+    assert isinstance(rule.action.allocation, ProposedCategory)
+    assert rule.action.allocation.category == "dining"
 
 
 async def test_patience_timeout_lapses() -> None:

@@ -87,13 +87,15 @@ class CancelTimer(Frozen):
 class FeedRuleLearning(Frozen):
     """Feed a confirm/correct event to rule learning (W5; SPEC §9).
 
-    For a correction, ``prior`` carries the decision being overturned, so W5 can
-    demote *the rule that produced the prior decision* (§3 rule 6), not the new
-    one.
+    ``payee`` is carried so W5 can key the rule's match on it without re-reading
+    the snapshot. For a correction, ``prior`` carries the decision being
+    overturned, so W5 can demote *the rule that produced the prior decision*
+    (§3 rule 6), not the new one.
     """
 
     kind: Literal["feed_rule_learning"] = "feed_rule_learning"
     event: RuleLearningKind
+    payee: str
     decision: Decision | None = None
     prior: Decision | None = None
 

@@ -324,7 +324,11 @@ def _resolve_write_verify(
             )
             if learning is not None:
                 effects = (
-                    FeedRuleLearning(event=learning, decision=decision),
+                    FeedRuleLearning(
+                        event=learning,
+                        payee=core.snapshot.payee,
+                        decision=decision,
+                    ),
                     *effects,
                 )
             return _advanced(Open(core=core, decision=decision), *effects)
@@ -538,15 +542,17 @@ def _reapply(
     is_correction = (
         txn.prior is not None and txn.prior.allocation != decision.allocation
     )
+    payee = txn.core.snapshot.payee
     if is_correction:
         learning = FeedRuleLearning(
             event=RuleLearningKind.CORRECT,
+            payee=payee,
             decision=decision,
             prior=txn.prior,
         )
     else:
         learning = FeedRuleLearning(
-            event=RuleLearningKind.CONFIRM, decision=decision
+            event=RuleLearningKind.CONFIRM, payee=payee, decision=decision
         )
     return _advanced(
         Open(core=txn.core, decision=decision),

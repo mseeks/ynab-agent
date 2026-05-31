@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from temporalio import activity
 
-from ynab_agent.domain.effects import MessagePurpose, RuleLearningKind
+from ynab_agent.domain.effects import FeedRuleLearning, MessagePurpose
 from ynab_agent.domain.events import ConvergeOutcome, EnrichmentOutcome
 from ynab_agent.domain.proposal import Decision
 from ynab_agent.domain.signals import InboundSignal
@@ -82,12 +82,13 @@ async def converge(
 
 
 @activity.defn
-async def feed_rule_learning(
-    event: RuleLearningKind,
-    decision: Decision | None,
-    prior: Decision | None,
-) -> None:
-    """Feed a confirm/correct event to rule learning (W5)."""
+async def feed_rule_learning(feed: FeedRuleLearning) -> None:
+    """Feed a confirm/correct event to rule learning (W5; SPEC §9).
+
+    The real body loads the payee's rules, runs
+    :func:`ynab_agent.learn.handler.plan_rule_update`, and persists the result;
+    the workflow tests register a mock that drives an in-memory rule store.
+    """
     raise NotImplementedError(_STUB)
 
 

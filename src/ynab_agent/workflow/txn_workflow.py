@@ -236,7 +236,7 @@ class TransactionWorkflow:
         elif isinstance(effect, FeedRuleLearning):
             await workflow.execute_activity(
                 activities.feed_rule_learning,
-                args=[effect.event, effect.decision, effect.prior],
+                effect,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
         elif isinstance(effect, CloseThread):
