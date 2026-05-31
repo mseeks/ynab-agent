@@ -10,13 +10,18 @@ from __future__ import annotations
 
 from temporalio.contrib.pydantic import pydantic_data_converter
 
-from ynab_agent.workflow import activities, poll_activities
+from ynab_agent.workflow import (
+    activities,
+    dispatch_activities,
+    poll_activities,
+)
+from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.poll_workflow import PollWorkflow
 from ynab_agent.workflow.txn_workflow import TransactionWorkflow
 
 DATA_CONVERTER = pydantic_data_converter
 
-WORKFLOWS = [TransactionWorkflow, PollWorkflow]
+WORKFLOWS = [TransactionWorkflow, PollWorkflow, DispatchWorkflow]
 
 ALL_ACTIVITIES = [
     activities.fetch_snapshot,
@@ -32,4 +37,9 @@ ALL_ACTIVITIES = [
     poll_activities.fetch_delta,
     poll_activities.address_transaction,
     poll_activities.save_cursor,
+    dispatch_activities.resolve_thread,
+    dispatch_activities.classify_inbound,
+    dispatch_activities.signal_transaction,
+    dispatch_activities.route_receipt,
+    dispatch_activities.handle_command,
 ]
