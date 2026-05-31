@@ -119,7 +119,7 @@ def _activities(
         return enrich_outcome
 
     @activity.defn(name="commit_to_ynab")
-    async def commit_to_ynab(decision: Decision) -> None:
+    async def commit_to_ynab(ynab_id: str, decision: Decision) -> None:
         committed["target"] = target_of(decision)
 
     @activity.defn(name="read_back")

@@ -208,7 +208,7 @@ class TransactionWorkflow:
         if isinstance(effect, CommitToYnab):
             await workflow.execute_activity(
                 activities.commit_to_ynab,
-                effect.decision,
+                args=[self._ynab_id, effect.decision],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
             read = await workflow.execute_activity(

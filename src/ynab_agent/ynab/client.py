@@ -27,6 +27,7 @@ from ynab_agent.domain.ids import (
 )
 from ynab_agent.domain.money import Money
 from ynab_agent.domain.transaction import YnabSnapshot
+from ynab_agent.policy.converge import TargetState
 from ynab_agent.ynab.wire import WireCategory, WireTransaction
 
 if TYPE_CHECKING:
@@ -69,6 +70,22 @@ def to_category_spend(wire: WireCategory) -> CategorySpend:
         budgeted=Money.from_milliunits(wire.budgeted),
         activity=Money.from_milliunits(wire.activity),
         balance=Money.from_milliunits(wire.balance),
+    )
+
+
+def to_target(snapshot: YnabSnapshot) -> TargetState | None:
+    """The read-back end-state of a transaction for verification (SPEC §3 r4).
+
+    Returns ``None`` when there is no single category to verify — a split (whose
+    subtransactions a snapshot does not detail) or an uncategorized txn — so the
+    spine treats it as could-not-confirm rather than a false divergence.
+    """
+    if snapshot.category_id is None:
+        return None
+    return TargetState(
+        allocation=ResolvedCategory(category=snapshot.category_id),
+        memo=snapshot.memo,
+        approved=snapshot.approved,
     )
 
 
@@ -158,6 +175,11 @@ class YnabClient:
     def commit(self, txn_id: str, decision: Decision) -> None:
         """Commit a decision to a transaction (SPEC §3)."""
         self._backend.patch_transaction(txn_id, to_patch(decision))
+
+    def read_back(self, txn_id: str) -> TargetState | None:
+        """Re-read a transaction's end-state for verification (SPEC §3 r4)."""
+        snapshot = self.snapshot(txn_id)
+        return to_target(snapshot) if snapshot is not None else None
 
 
 class _HttpxBackend:

@@ -26,6 +26,7 @@ from ynab_agent.ynab.client import (
     to_category_spend,
     to_patch,
     to_snapshot,
+    to_target,
 )
 from ynab_agent.ynab.wire import WireCategory, WireTransaction
 
@@ -149,6 +150,26 @@ def test_client_snapshot_maps_through_the_backend() -> None:
 def test_client_snapshot_is_none_when_deleted() -> None:
     client = YnabClient(_FakeBackend(_wire_txn(deleted=True)))
     assert client.snapshot("t1") is None
+
+
+def test_to_target_maps_a_categorized_snapshot() -> None:
+    target = to_target(to_snapshot(_wire_txn(memo="lunch")))
+    assert target is not None
+    assert isinstance(target.allocation, ResolvedCategory)
+    assert target.allocation.category == "dining"
+    assert target.memo == "lunch"
+
+
+def test_to_target_is_none_for_an_uncategorized_snapshot() -> None:
+    # No single category to verify (split/uncategorized) → could-not-confirm.
+    assert to_target(to_snapshot(_wire_txn(category_id=None))) is None
+
+
+def test_client_read_back_round_trips_to_a_target() -> None:
+    target = YnabClient(_FakeBackend(_wire_txn())).read_back("t1")
+    assert target is not None
+    assert isinstance(target.allocation, ResolvedCategory)
+    assert target.allocation.category == "dining"
 
 
 def test_client_commit_patches_the_transaction() -> None:

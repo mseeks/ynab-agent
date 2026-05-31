@@ -77,15 +77,29 @@ async def enrich(snapshot: YnabSnapshot) -> EnrichmentOutcome:
 
 
 @activity.defn
-async def commit_to_ynab(decision: Decision) -> None:
-    """Commit a decision to YNAB (the deterministic write)."""
-    raise NotImplementedError(_STUB)
+async def commit_to_ynab(ynab_id: str, decision: Decision) -> None:
+    """Commit a decision to YNAB (the deterministic write).
+
+    Lazy YNAB client (httpx stays out of the sandbox); the blocking write runs
+    off the event loop.
+    """
+    import asyncio
+
+    from ynab_agent.ynab.client import YnabClient
+
+    client = YnabClient.from_env()
+    await asyncio.to_thread(client.commit, ynab_id, decision)
 
 
 @activity.defn
 async def read_back(ynab_id: str) -> TargetState | None:
     """Read the post-write end-state for verification, or ``None`` if unread."""
-    raise NotImplementedError(_STUB)
+    import asyncio
+
+    from ynab_agent.ynab.client import YnabClient
+
+    client = YnabClient.from_env()
+    return await asyncio.to_thread(client.read_back, ynab_id)
 
 
 @activity.defn
