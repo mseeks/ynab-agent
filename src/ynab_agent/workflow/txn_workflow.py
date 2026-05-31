@@ -79,9 +79,9 @@ with workflow.unsafe.imports_passed_through():
     )
     from ynab_agent.policy.converge import classify_verify, target_of
     from ynab_agent.workflow import activities
+    from ynab_agent.workflow.constants import ACTIVITY_TIMEOUT
     from ynab_agent.workflow.types import AnswerOutcome, TransactionParams
 
-_ACTIVITY_TIMEOUT = timedelta(seconds=30)
 # History-length ceiling before a resting workflow continues-as-new. High enough
 # that ordinary flows never trip it; long-lived (30-45 day) transactions do.
 _CONTINUE_AS_NEW_AFTER = 4_000
@@ -209,12 +209,12 @@ class TransactionWorkflow:
             await workflow.execute_activity(
                 activities.commit_to_ynab,
                 effect.decision,
-                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
             read = await workflow.execute_activity(
                 activities.read_back,
                 self._ynab_id,
-                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
             return WriteVerified(
                 outcome=classify_verify(read, target_of(effect.decision))
@@ -223,7 +223,7 @@ class TransactionWorkflow:
             tid = await workflow.execute_activity(
                 activities.open_thread,
                 self._ynab_id,
-                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
             self._set_thread_id(tid)
         elif isinstance(effect, SendThreadMessage):
@@ -231,20 +231,20 @@ class TransactionWorkflow:
             await workflow.execute_activity(
                 activities.send_thread_message,
                 args=[self._thread_id, effect.purpose, self._action_seq],
-                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
         elif isinstance(effect, FeedRuleLearning):
             await workflow.execute_activity(
                 activities.feed_rule_learning,
                 args=[effect.event, effect.decision, effect.prior],
-                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
         elif isinstance(effect, CloseThread):
             if self._thread_id is not None:
                 await workflow.execute_activity(
                     activities.close_thread,
                     self._thread_id,
-                    start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                    start_to_close_timeout=ACTIVITY_TIMEOUT,
                 )
         elif isinstance(effect, SetTimer):
             self._deadlines[effect.timer] = effect.deadline
@@ -273,7 +273,7 @@ class TransactionWorkflow:
         snapshot = await workflow.execute_activity(
             activities.fetch_snapshot,
             self._ynab_id,
-            start_to_close_timeout=_ACTIVITY_TIMEOUT,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
         )
         if snapshot is not None:
             await self._dispatch(
@@ -305,7 +305,7 @@ class TransactionWorkflow:
         outcome = await workflow.execute_activity(
             activities.enrich,
             st.core.snapshot,
-            start_to_close_timeout=_ACTIVITY_TIMEOUT,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
         )
         await self._dispatch(Enriched(outcome=outcome))
 
@@ -346,7 +346,7 @@ class TransactionWorkflow:
         interpretation = await workflow.execute_activity(
             activities.interpret_inbound,
             args=[signal, snapshot],
-            start_to_close_timeout=_ACTIVITY_TIMEOUT,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
         )
         if isinstance(interpretation, AnswerOutcome):
             await self._dispatch(
@@ -399,7 +399,7 @@ class TransactionWorkflow:
         outcome = await workflow.execute_activity(
             activities.converge,
             args=[st.core.snapshot, st.instruction],
-            start_to_close_timeout=_ACTIVITY_TIMEOUT,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
         )
         await self._dispatch(Converged(outcome=outcome))
 

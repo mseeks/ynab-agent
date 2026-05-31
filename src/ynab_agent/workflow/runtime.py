@@ -14,14 +14,21 @@ from ynab_agent.workflow import (
     activities,
     dispatch_activities,
     poll_activities,
+    receipt_activities,
 )
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.poll_workflow import PollWorkflow
+from ynab_agent.workflow.receipt_workflow import ReceiptJoinWorkflow
 from ynab_agent.workflow.txn_workflow import TransactionWorkflow
 
 DATA_CONVERTER = pydantic_data_converter
 
-WORKFLOWS = [TransactionWorkflow, PollWorkflow, DispatchWorkflow]
+WORKFLOWS = [
+    TransactionWorkflow,
+    PollWorkflow,
+    DispatchWorkflow,
+    ReceiptJoinWorkflow,
+]
 
 ALL_ACTIVITIES = [
     activities.fetch_snapshot,
@@ -42,4 +49,9 @@ ALL_ACTIVITIES = [
     dispatch_activities.signal_transaction,
     dispatch_activities.route_receipt,
     dispatch_activities.handle_command,
+    receipt_activities.match_receipt,
+    receipt_activities.signal_match,
+    receipt_activities.ask_disambiguation,
+    receipt_activities.ask_no_match,
+    receipt_activities.save_receipt_status,
 ]

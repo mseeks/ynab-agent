@@ -9,7 +9,6 @@ ignore do nothing. Fired off a signed webhook; the trigger is infrastructure.
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import assert_never
 
 from temporalio import workflow
@@ -26,12 +25,11 @@ with workflow.unsafe.imports_passed_through():
     )
     from ynab_agent.domain.ids import YnabTransactionId
     from ynab_agent.workflow import dispatch_activities
+    from ynab_agent.workflow.constants import ACTIVITY_TIMEOUT
     from ynab_agent.workflow.dispatch_types import (
         DispatchParams,
         DispatchResult,
     )
-
-_ACTIVITY_TIMEOUT = timedelta(seconds=30)
 
 
 @workflow.defn
@@ -48,7 +46,7 @@ class DispatchWorkflow:
         txn_id_str = await workflow.execute_activity(
             dispatch_activities.resolve_thread,
             thread,
-            start_to_close_timeout=_ACTIVITY_TIMEOUT,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
         )
         txn_id = (
             YnabTransactionId(txn_id_str) if txn_id_str is not None else None
@@ -60,7 +58,7 @@ class DispatchWorkflow:
                 await workflow.execute_activity(
                     dispatch_activities.signal_transaction,
                     args=[tid, message],
-                    start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                    start_to_close_timeout=ACTIVITY_TIMEOUT,
                 )
                 return DispatchResult(action="transaction")
             case RouteToInterpret():
@@ -75,20 +73,20 @@ class DispatchWorkflow:
         kind = await workflow.execute_activity(
             dispatch_activities.classify_inbound,
             message,
-            start_to_close_timeout=_ACTIVITY_TIMEOUT,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
         )
         if kind is InboundKind.RECEIPT:
             await workflow.execute_activity(
                 dispatch_activities.route_receipt,
                 message,
-                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
             return DispatchResult(action="receipt")
         if kind is InboundKind.COMMAND:
             await workflow.execute_activity(
                 dispatch_activities.handle_command,
                 message,
-                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
             return DispatchResult(action="command")
         return DispatchResult(action="ignore", detail="classified as noise")
