@@ -1,7 +1,7 @@
 # YNAB Agent — developer terrain.
 # Short, single-purpose targets: each is one tool, easy to read and approve.
 
-.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence loop-duplicated-constant loop-dead-code
+.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence loop-duplicated-constant loop-dead-code loop-test-backfill
 
 SCOPE ?=
 
@@ -56,3 +56,7 @@ loop-duplicated-constant:
 # Run the dead-code loop (read-only). Optional scope (a path); default: src
 loop-dead-code:
 	uv run python -m agents.dead_code $(SCOPE)
+
+# Run the test-backfill loop (read-only). Best run per package; default: src
+loop-test-backfill:
+	uv run python -m agents.test_backfill $(SCOPE)

@@ -20,6 +20,7 @@ from ynab_agent.policy.gate import (
     GateVerdict,
     build_auto_decision,
     evaluate_gate,
+    matching_rules,
     rule_matches,
 )
 
@@ -76,6 +77,30 @@ def test_rule_matches_amount_range() -> None:
         ),
     )
     assert rule_matches(_rule(TrustState.TRUSTED, match=band), _snapshot())
+
+
+# matching_rules — the filter that decides which rules reach the AUTO path.
+# A false match here auto-applies a wrong category with no human review, so the
+# AND logic and the None-memo guard are tested directly (test-backfill #1).
+def test_matching_rules_returns_matches() -> None:
+    rule = _rule(TrustState.SUGGESTED, payee="Blue Bottle")
+    assert matching_rules([rule], _snapshot()) == [rule]
+
+
+def test_matching_rules_excludes_payee_miss() -> None:
+    rule = _rule(TrustState.SUGGESTED, payee="Amazon")
+    assert matching_rules([rule], _snapshot(payee="Whole Foods")) == []
+
+
+def test_matching_rules_none_memo_with_item_keyword_is_excluded() -> None:
+    band = RuleMatch(payee_pattern="Blue Bottle", item_keyword="prime")
+    rule = _rule(TrustState.SUGGESTED, match=band)
+    # snapshot.memo is None → `memo or ""` guards against a crash and a match.
+    assert matching_rules([rule], _snapshot(memo=None)) == []
+
+
+def test_matching_rules_empty_input_returns_empty() -> None:
+    assert matching_rules([], _snapshot()) == []
 
 
 def test_single_trusted_rule_is_auto() -> None:
