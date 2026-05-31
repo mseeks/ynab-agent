@@ -38,6 +38,11 @@ ai = [
 mail = [
     "agentmail>=0.5.2",
 ]
+# The YNAB REST client (read snapshots, commit decisions, read budget figures).
+# A thin httpx adapter behind a protocol; the token comes from the environment.
+ynab = [
+    "httpx>=0.27",
+]
 
 [build-system]
 requires = ["hatchling"]
