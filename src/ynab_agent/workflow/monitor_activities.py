@@ -20,8 +20,16 @@ _STUB = "workflow activity stub — register a real or mock implementation"
 
 @activity.defn
 async def fetch_category_spends() -> list[CategorySpend]:
-    """Read each category's month-to-date budget figures from YNAB (§7)."""
-    raise NotImplementedError(_STUB)
+    """Read each category's month-to-date budget figures from YNAB (§7).
+
+    The YNAB client is imported lazily and its blocking call runs off the loop.
+    """
+    import asyncio
+
+    from ynab_agent.ynab.client import YnabClient
+
+    client = YnabClient.from_env()
+    return list(await asyncio.to_thread(client.category_spends))
 
 
 @activity.defn

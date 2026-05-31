@@ -35,8 +35,17 @@ _STUB = "workflow activity stub — register a real or mock implementation"
 
 @activity.defn
 async def fetch_snapshot(ynab_id: str) -> YnabSnapshot | None:
-    """Read the current YNAB snapshot, or ``None`` if not yet imported."""
-    raise NotImplementedError(_STUB)
+    """Read the current YNAB snapshot, or ``None`` if not yet imported.
+
+    The YNAB client is imported lazily (keeping httpx out of the sandbox) and
+    its blocking call runs off the event loop.
+    """
+    import asyncio
+
+    from ynab_agent.ynab.client import YnabClient
+
+    client = YnabClient.from_env()
+    return await asyncio.to_thread(client.snapshot, ynab_id)
 
 
 async def _load_enrichment_inputs(

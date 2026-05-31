@@ -65,6 +65,16 @@ def test_passthrough_block_forbidden_import_is_flagged(tmp_path: Path) -> None:
     }
 
 
+def test_module_level_httpx_in_an_activity_is_flagged(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path / "act.py",
+        "import httpx\n\n\n@activity.defn\nasync def fetch():\n    pass\n",
+    )
+    assert {h.kind for h in scan_sandbox_imports(tmp_path)} == {"httpx"}
+
+
 def test_non_workflow_file_is_ignored(tmp_path: Path) -> None:
     # No @workflow.defn / @activity.defn → not part of the sandbox graph.
     _write(

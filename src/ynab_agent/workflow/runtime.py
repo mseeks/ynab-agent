@@ -8,6 +8,8 @@ activity implementations for the stubs.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from temporalio.contrib.pydantic import pydantic_data_converter
 
 from ynab_agent.workflow import (
@@ -17,6 +19,9 @@ from ynab_agent.workflow import (
     poll_activities,
     receipt_activities,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
 from ynab_agent.workflow.poll_workflow import PollWorkflow
@@ -33,7 +38,7 @@ WORKFLOWS = [
     OverspendMonitorWorkflow,
 ]
 
-ALL_ACTIVITIES = [
+ALL_ACTIVITIES: list[Callable[..., object]] = [
     activities.fetch_snapshot,
     activities.enrich,
     activities.commit_to_ynab,

@@ -53,12 +53,14 @@ if TYPE_CHECKING:
 _SANDBOX_MARKERS = ("@workflow.defn", "@activity.defn")
 
 # Packages that must never be re-imported inside a Temporal workflow sandbox:
-# the model stack, the mail SDK, and this project's wrappers around them.
+# the model stack, the mail/YNAB SDKs, and this project's wrappers around them.
 _FORBIDDEN = (
     "pydantic_ai",
     "agentmail",
+    "httpx",
     "ynab_agent.agentic",
     "ynab_agent.mail",
+    "ynab_agent.ynab",
 )
 
 
