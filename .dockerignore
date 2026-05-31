@@ -1,0 +1,20 @@
+# Keep the build context to the runtime package + its lockfile.
+.git
+.github
+.venv
+tests
+agents
+Makefile
+SPEC.md
+Dockerfile
+.dockerignore
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.hypothesis
+.coverage
+.coverage.*
+htmlcov
+.env
+.env.*
