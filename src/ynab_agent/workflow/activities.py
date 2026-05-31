@@ -55,17 +55,21 @@ async def open_thread(ynab_id: str) -> str:
 
 @activity.defn
 async def send_thread_message(
-    thread_id: str | None, purpose: MessagePurpose
+    thread_id: str | None, purpose: MessagePurpose, action_seq: int
 ) -> None:
-    """Send a message on the transaction's thread."""
+    """Send a message on the transaction's thread.
+
+    ``action_seq`` is the per-transaction idempotency key: the implementation
+    must dedup on it so a retry never double-sends (SPEC §3).
+    """
     raise NotImplementedError(_STUB)
 
 
 @activity.defn
-async def interpret_reply(
+async def interpret_inbound(
     signal: InboundSignal, snapshot: YnabSnapshot
 ) -> ReplyOutcome:
-    """Interpret a human reply into an answer or a clarifying question."""
+    """Interpret an inbound reply or matched receipt (answer or question)."""
     raise NotImplementedError(_STUB)
 
 

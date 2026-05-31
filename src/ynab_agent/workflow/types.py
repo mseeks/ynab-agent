@@ -54,3 +54,4 @@ class TransactionParams(Frozen):
         default_factory=dict
     )
     resume_inbound: tuple[InboundSignal, ...] = ()
+    resume_action_seq: int = 0

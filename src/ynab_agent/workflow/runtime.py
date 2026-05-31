@@ -24,7 +24,7 @@ ALL_ACTIVITIES = [
     activities.read_back,
     activities.open_thread,
     activities.send_thread_message,
-    activities.interpret_reply,
+    activities.interpret_inbound,
     activities.converge,
     activities.feed_rule_learning,
     activities.close_thread,

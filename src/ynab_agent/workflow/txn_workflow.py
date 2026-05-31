@@ -9,6 +9,13 @@ activities; the workflow uses only pure state and Temporal APIs
 (``workflow.now`` for time), so it replays deterministically. Long-lived
 transactions survive via ``continue-as-new`` from a resting state, carrying
 their state forward.
+
+Deferred (a cohesive subsystem for its own step, SPEC §3, §9): the externalized,
+append-only **audit log**. ``TxnCore.audit_log_ref`` and the
+``_action_seq`` outbound-dedup key are plumbed here, but no audit entries are
+written yet — Temporal's own event history provides replay-safety in the
+meantime, and ``_action_seq`` is the idempotency key the real send activity will
+use so a retry never double-emails.
 """
 
 from __future__ import annotations
@@ -79,7 +86,10 @@ _ACTIVITY_TIMEOUT = timedelta(seconds=30)
 # that ordinary flows never trip it; long-lived (30-45 day) transactions do.
 _CONTINUE_AS_NEW_AFTER = 4_000
 
-_RESTING = (AwaitingHuman, Open, Lapsed, HoldAmazon)
+# Resting states the workflow may sit in for days while waiting on signals or
+# timers; continue-as-new fires only from one of these. DISCOVERED counts: a
+# transaction born from a signal can wait here for a slow YNAB import (SPEC §3).
+_RESTING = (Discovered, AwaitingHuman, Open, Lapsed, HoldAmazon)
 
 
 def _is_amazon(payee: str) -> bool:
@@ -103,6 +113,9 @@ class TransactionWorkflow:
         self._deadlines: dict[TimerKind, datetime.datetime] = {}
         self._inbound: deque[InboundSignal] = deque()
         self._snapshot_ready: YnabSnapshot | None = None
+        # Monotonic per-transaction counter: the outbound-send idempotency key
+        # so a replay/retry never double-emails (SPEC §3 outbound dedup).
+        self._action_seq: int = 0
 
     # ── Signals (the external world pushes in) ──────────────────────────────
     @workflow.signal
@@ -128,14 +141,18 @@ class TransactionWorkflow:
         self._thread_id = params.thread_id
         self._deadlines = dict(params.resume_deadlines)
         self._inbound.extend(params.resume_inbound)
+        self._action_seq = params.resume_action_seq
         self._txn = params.resume_txn or born(
             YnabTransactionId(params.ynab_id), params.thread_id
         )
+        self._sync_thread_id()
 
         while not isinstance(self._txn, Archived):
             await self._step()
-            if isinstance(self._txn, _RESTING) and (
-                workflow.info().get_current_history_length()
+            if (
+                isinstance(self._txn, _RESTING)
+                and not self._inbound  # drain pending signals first (SPEC §0.5)
+                and workflow.info().get_current_history_length()
                 > _CONTINUE_AS_NEW_AFTER
             ):
                 # continue_as_new raises to restart; nothing runs after it.
@@ -150,6 +167,7 @@ class TransactionWorkflow:
             resume_txn=self._txn,
             resume_deadlines=dict(self._deadlines),
             resume_inbound=tuple(self._inbound),
+            resume_action_seq=self._action_seq,
         )
 
     async def _step(self) -> None:
@@ -178,6 +196,9 @@ class TransactionWorkflow:
             self._txn, event, now=workflow.now(), policy=DEFAULT_POLICY
         )
         self._txn = transition.next
+        # Keep the thread-id mirror in step with the state machine, which can
+        # adopt a reply's thread on its own (e.g. a reply in DISCOVERED).
+        self._sync_thread_id()
         for effect in transition.effects:
             followup = await self._execute(effect)
             if followup is not None:
@@ -206,9 +227,10 @@ class TransactionWorkflow:
             )
             self._set_thread_id(tid)
         elif isinstance(effect, SendThreadMessage):
+            self._action_seq += 1
             await workflow.execute_activity(
                 activities.send_thread_message,
-                args=[self._thread_id, effect.purpose],
+                args=[self._thread_id, effect.purpose, self._action_seq],
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
             )
         elif isinstance(effect, FeedRuleLearning):
@@ -238,6 +260,13 @@ class TransactionWorkflow:
         if not isinstance(st, Discovered):
             new_core = st.core.model_copy(update={"thread_id": ThreadId(tid)})
             self._txn = st.model_copy(update={"core": new_core})
+
+    def _sync_thread_id(self) -> None:
+        """Mirror the current transaction's thread id (SM may adopt it)."""
+        st = self._txn
+        tid = st.thread_id if isinstance(st, Discovered) else st.core.thread_id
+        if tid is not None:
+            self._thread_id = str(tid)
 
     # ── per-state steps ─────────────────────────────────────────────────────
     async def _on_discovered(self) -> None:
@@ -297,16 +326,26 @@ class TransactionWorkflow:
             )
 
     async def _on_awaiting(self, st: AwaitingHuman) -> None:
-        ready = await self._wait_until(
-            st.patience_deadline, lambda: len(self._inbound) > 0
+        got_inbound = await self._wait_until(
+            st.patience_deadline, self._has_inbound
         )
-        if not ready:
+        if not got_inbound:
+            before = type(self._txn)
             await self._dispatch(PatienceExpired())
-            return
+            if type(self._txn) is not before:
+                return  # lapsed (or otherwise transitioned)
+            # Flagged (verify-failure) entry: PatienceExpired is ignored and
+            # does not lapse (SPEC §3). Drop the passed timer and wait for an
+            # inbound instead of re-spinning the expired deadline.
+            self._deadlines.pop(TimerKind.PATIENCE, None)
+            await workflow.wait_condition(self._has_inbound)
+        await self._interpret_inbound(st.core.snapshot)
+
+    async def _interpret_inbound(self, snapshot: YnabSnapshot) -> None:
         signal = self._inbound.popleft()
         interpretation = await workflow.execute_activity(
-            activities.interpret_reply,
-            args=[signal, st.core.snapshot],
+            activities.interpret_inbound,
+            args=[signal, snapshot],
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )
         if isinstance(interpretation, AnswerOutcome):

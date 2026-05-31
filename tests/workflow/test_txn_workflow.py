@@ -35,7 +35,7 @@ from ynab_agent.domain.money import Money
 from ynab_agent.domain.proposal import Decision, Proposal
 from ynab_agent.domain.signals import ReplySignal
 from ynab_agent.domain.transaction import YnabSnapshot
-from ynab_agent.policy.converge import target_of
+from ynab_agent.policy.converge import TargetState, target_of
 from ynab_agent.workflow.runtime import DATA_CONVERTER
 from ynab_agent.workflow.txn_workflow import TransactionWorkflow
 from ynab_agent.workflow.types import (
@@ -100,9 +100,11 @@ def _activities(
     enrich_outcome: EnrichmentOutcome,
     interpret: ReplyOutcome | None = None,
     converge_outcome: ConvergeOutcome | None = None,
+    read_back_seq: list[object] | None = None,
 ) -> list[Callable[..., object]]:
     """Build mock activity implementations for one scenario."""
     committed: dict[str, object] = {}
+    read_seq = list(read_back_seq or [])
 
     @activity.defn(name="fetch_snapshot")
     async def fetch_snapshot(ynab_id: str) -> YnabSnapshot | None:
@@ -118,6 +120,8 @@ def _activities(
 
     @activity.defn(name="read_back")
     async def read_back(ynab_id: str) -> object:
+        if read_seq:
+            return read_seq.pop(0)
         return committed.get("target")
 
     @activity.defn(name="open_thread")
@@ -126,12 +130,12 @@ def _activities(
 
     @activity.defn(name="send_thread_message")
     async def send_thread_message(
-        thread_id: str | None, purpose: object
+        thread_id: str | None, purpose: object, action_seq: int
     ) -> None:
         return None
 
-    @activity.defn(name="interpret_reply")
-    async def interpret_reply(signal: object, snap: object) -> ReplyOutcome:
+    @activity.defn(name="interpret_inbound")
+    async def interpret_inbound(signal: object, snap: object) -> ReplyOutcome:
         assert interpret is not None
         return interpret
 
@@ -157,7 +161,7 @@ def _activities(
         read_back,
         open_thread,
         send_thread_message,
-        interpret_reply,
+        interpret_inbound,
         converge,
         feed_rule_learning,
         close_thread,
@@ -285,4 +289,44 @@ async def test_open_inbound_revises_then_archives() -> None:
             start_signal="submit_inbound",
             start_signal_args=[_reply()],
         )
+        await handle.result()
+
+
+async def test_diverged_verify_flags_awaiting_and_does_not_livelock() -> None:
+    # First read-back diverges (forcing a flagged AWAITING_HUMAN); the second
+    # (after the human reply re-commits) matches.
+    divergent = TargetState(
+        allocation=ResolvedCategory(category=CategoryId("gifts")),
+        approved=True,
+    )
+    acts = _activities(
+        snapshot=_snapshot(reconciled=True),
+        enrich_outcome=AutoApply(decision=_decision(DecidedBy.AGENT)),
+        interpret=AnswerOutcome(decision=_decision(DecidedBy.HUMAN)),
+        read_back_seq=[divergent],
+    )
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[TransactionWorkflow],
+            activities=acts,
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            TransactionWorkflow.run,
+            TransactionParams(ynab_id=YnabTransactionId("t1")),
+            id="txn-diverge",
+            task_queue=TASK_QUEUE,
+        )
+        # The diverged verify parks it in a flagged AWAITING_HUMAN.
+        await _wait_for_state(handle, "awaiting_human")
+        # Past the patience window it must NOT lapse and must NOT livelock.
+        await env.sleep(datetime.timedelta(days=8))
+        assert await handle.query(TransactionWorkflow.state) == "awaiting_human"
+        # A reply still resolves it, all the way to archived.
+        await handle.signal(TransactionWorkflow.submit_inbound, _reply())
         await handle.result()
