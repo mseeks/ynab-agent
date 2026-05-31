@@ -20,12 +20,18 @@ loops of the *same shape* come next — we resist broadening any single one.
 | `duplicated-constant` | scan for the same numeric literal re-typed on a rule line (comparison / `timedelta` / `Field` bound / `Money`) at 2+ sites | three-bucket map: *Centralise now* / *Legitimately repeated* / *Judgment-heavy* |
 | `dead-code` | AST scan for top-level defs/classes whose name is never referenced (as a word) in `src/` or `tests/` | three-bucket map: *Delete now* / *Reachable* (framework false positive) / *Judgment-heavy* |
 | `test-backfill` | AST scan for *public* symbols used in `src/` but named in no test (the tests-axis of dead-code) | three-bucket map: *Worth testing* (cases proposed) / *Skip* / *Worth testing but hard* |
+| `determinism` | scan `@workflow.defn` files for bare nondeterminism (`datetime.now(`, `random.`, `uuid.`, `asyncio.sleep(`) that must use `workflow.*` | three-bucket map: *Hazard* (replacement named) / *Safe* (in an activity / a type / a comment) / *Judgment-heavy* |
 
 File discovery (`lib.iter_python_files`) and the locked-down agent pass
 (`lib.run_loop`) are shared; the regex-sweep loops (`type-debt`, `comment-debt`,
 `debug-cruft`) add only a marker set plus a system prompt, while the rest bring a
 purpose-built scan (a Markdown ref-check, a literal-dedup, an AST reference
-count) — the framework's "replicate the template" shape (Stage 2).
+count, a workflow-hazard sweep) — the framework's "replicate the template" shape
+(Stage 2).
+
+The first six loops are Python ports of Revisionist's; `determinism` is the
+first *net-new* loop — Temporal-specific (replay-determinism), with no
+Revisionist analogue.
 
 ## Running
 
@@ -41,6 +47,7 @@ uv run python -m agents.doc_coherence [scope]
 uv run python -m agents.duplicated_constant [scope]
 uv run python -m agents.dead_code [scope]
 uv run python -m agents.test_backfill [scope]   # best run per package
+uv run python -m agents.determinism [scope]
 ```
 
 ## Auth & safety
