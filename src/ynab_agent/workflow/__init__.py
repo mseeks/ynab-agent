@@ -7,6 +7,8 @@ until the MCP / Pydantic AI implementations are wired in.
 
 from __future__ import annotations
 
+from ynab_agent.workflow.poll_types import DeltaPage, PollParams, PollResult
+from ynab_agent.workflow.poll_workflow import PollWorkflow
 from ynab_agent.workflow.runtime import (
     ALL_ACTIVITIES,
     DATA_CONVERTER,
@@ -26,6 +28,10 @@ __all__ = [
     "WORKFLOWS",
     "AnswerOutcome",
     "ClarifyOutcome",
+    "DeltaPage",
+    "PollParams",
+    "PollResult",
+    "PollWorkflow",
     "ReplyOutcome",
     "TransactionParams",
     "TransactionWorkflow",
