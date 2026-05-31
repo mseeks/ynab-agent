@@ -8,16 +8,20 @@ a deployment turns on.
 
 Run it once a Temporal server is reachable::
 
-    python -m ynab_agent.worker            # localhost:7233, queue "ynab-agent"
+    python -m ynab_agent.worker
 
-Environment: the clients read their own keys (``YNAB_API_KEY``,
-``AGENTMAIL_API_KEY``) and :class:`~ynab_agent.settings.Settings` reads the
-non-secret config; none of it is in the repo.
+The connection is env-configured so the same image runs anywhere:
+``TEMPORAL_HOST`` (default ``localhost:7233``), ``TEMPORAL_NAMESPACE`` (default
+``default``), and ``TEMPORAL_TASK_QUEUE`` (default ``ynab-agent``). The clients
+read their own keys (``YNAB_API_KEY``, ``AGENTMAIL_API_KEY``), the model endpoint
+(``YNAB_AGENT_OLLAMA_URL`` / ``YNAB_AGENT_MODEL``), and ``Settings`` reads the
+recipient config — all from the environment, never the repo.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -29,19 +33,33 @@ from ynab_agent.workflow.runtime import (
 )
 
 DEFAULT_HOST = "localhost:7233"
+DEFAULT_NAMESPACE = "default"
 DEFAULT_TASK_QUEUE = "ynab-agent"
 
 
 async def run_worker(
     *,
-    target_host: str = DEFAULT_HOST,
-    task_queue: str = DEFAULT_TASK_QUEUE,
+    target_host: str | None = None,
+    namespace: str | None = None,
+    task_queue: str | None = None,
 ) -> None:
-    """Connect to Temporal and run the worker until cancelled (SPEC §0.5)."""
-    client = await Client.connect(target_host, data_converter=DATA_CONVERTER)
+    """Connect to Temporal and run the worker until cancelled (SPEC §0.5).
+
+    Each parameter falls back to its ``TEMPORAL_*`` environment variable, then
+    to the in-cluster default, so a deployment configures the worker purely
+    through the environment.
+    """
+    host = target_host or os.environ.get("TEMPORAL_HOST", DEFAULT_HOST)
+    ns = namespace or os.environ.get("TEMPORAL_NAMESPACE", DEFAULT_NAMESPACE)
+    queue = task_queue or os.environ.get(
+        "TEMPORAL_TASK_QUEUE", DEFAULT_TASK_QUEUE
+    )
+    client = await Client.connect(
+        host, namespace=ns, data_converter=DATA_CONVERTER
+    )
     worker = Worker(
         client,
-        task_queue=task_queue,
+        task_queue=queue,
         workflows=WORKFLOWS,
         activities=ALL_ACTIVITIES,
     )
@@ -49,7 +67,7 @@ async def run_worker(
 
 
 def main() -> None:
-    """Console entrypoint: run the worker against the default Temporal."""
+    """Console entrypoint: run the worker, configured from the environment."""
     asyncio.run(run_worker())
 
 
