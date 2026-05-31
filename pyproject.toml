@@ -9,6 +9,7 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "pydantic>=2.10",
+    "temporalio>=1.27.2",
 ]
 
 [project.optional-dependencies]
@@ -102,6 +103,14 @@ runtime-evaluated-base-classes = [
     "pydantic.BaseModel",
     "ynab_agent.domain.base.Frozen",
 ]
+# Temporal resolves signal/query/run/activity type hints at runtime to (de)
+# serialize payloads, so those imports must NOT move into a TYPE_CHECKING block.
+runtime-evaluated-decorators = [
+    "temporalio.workflow.signal",
+    "temporalio.workflow.query",
+    "temporalio.workflow.run",
+    "temporalio.activity.defn",
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["ynab_agent", "agents"]
@@ -109,6 +118,9 @@ known-first-party = ["ynab_agent", "agents"]
 [tool.ruff.lint.per-file-ignores]
 # Tests document behavior through their names; full docstring coverage is noise.
 "tests/**" = ["D100", "D101", "D102", "D103", "D104", "ARG"]
+# Activity stubs are unimplemented ports: their signatures are the contract, so
+# the params are intentionally unused until the real implementations land.
+"src/ynab_agent/workflow/activities.py" = ["ARG001"]
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
