@@ -22,6 +22,7 @@ loops of the *same shape* come next — we resist broadening any single one.
 | `test-backfill` | AST scan for *public* symbols used in `src/` but named in no test (the tests-axis of dead-code) | three-bucket map: *Worth testing* (cases proposed) / *Skip* / *Worth testing but hard* |
 | `determinism` | scan `@workflow.defn` files for bare nondeterminism (`datetime.now(`, `random.`, `uuid.`, `asyncio.sleep(`) that must use `workflow.*` | three-bucket map: *Hazard* (replacement named) / *Safe* (in an activity / a type / a comment) / *Judgment-heavy* |
 | `sandbox-imports` | AST scan of `@workflow.defn`/`@activity.defn` files for module-level imports of forbidden stacks (`pydantic_ai`, `agentmail`, `agentic`, `mail`) that would enter the Temporal sandbox | three-bucket map: *Hazard* (move lazy / TYPE_CHECKING) / *Safe* (already lazy / type-only) / *Judgment-heavy* |
+| `secret-leak` | scan for a secret-named binding (`api_key`/`token`/`password`…) to a 16+ char string literal (env reads excluded) | three-bucket map: *Secret* (rotate + move to env) / *Not a secret* (placeholder / fixture) / *Judgment-heavy*; values masked |
 
 File discovery (`lib.iter_python_files`) and the locked-down agent pass
 (`lib.run_loop`) are shared; the regex-sweep loops (`type-debt`, `comment-debt`,
@@ -50,6 +51,7 @@ uv run python -m agents.dead_code [scope]
 uv run python -m agents.test_backfill [scope]   # best run per package
 uv run python -m agents.determinism [scope]
 uv run python -m agents.sandbox_imports [scope]
+uv run python -m agents.secret_leak [scope]
 ```
 
 ## Auth & safety
