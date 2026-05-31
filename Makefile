@@ -1,7 +1,7 @@
 # YNAB Agent — developer terrain.
 # Short, single-purpose targets: each is one tool, easy to read and approve.
 
-.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence loop-duplicated-constant loop-dead-code loop-test-backfill loop-determinism
+.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence loop-duplicated-constant loop-dead-code loop-test-backfill loop-determinism loop-sandbox-imports
 
 SCOPE ?=
 
@@ -64,3 +64,7 @@ loop-test-backfill:
 # Run the determinism loop (read-only). Scans workflow files; default: src
 loop-determinism:
 	uv run python -m agents.determinism $(SCOPE)
+
+# Run the sandbox-imports loop (read-only). Scans workflow/activity files; src
+loop-sandbox-imports:
+	uv run python -m agents.sandbox_imports $(SCOPE)

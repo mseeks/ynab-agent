@@ -21,6 +21,7 @@ loops of the *same shape* come next — we resist broadening any single one.
 | `dead-code` | AST scan for top-level defs/classes whose name is never referenced (as a word) in `src/` or `tests/` | three-bucket map: *Delete now* / *Reachable* (framework false positive) / *Judgment-heavy* |
 | `test-backfill` | AST scan for *public* symbols used in `src/` but named in no test (the tests-axis of dead-code) | three-bucket map: *Worth testing* (cases proposed) / *Skip* / *Worth testing but hard* |
 | `determinism` | scan `@workflow.defn` files for bare nondeterminism (`datetime.now(`, `random.`, `uuid.`, `asyncio.sleep(`) that must use `workflow.*` | three-bucket map: *Hazard* (replacement named) / *Safe* (in an activity / a type / a comment) / *Judgment-heavy* |
+| `sandbox-imports` | AST scan of `@workflow.defn`/`@activity.defn` files for module-level imports of forbidden stacks (`pydantic_ai`, `agentmail`, `agentic`, `mail`) that would enter the Temporal sandbox | three-bucket map: *Hazard* (move lazy / TYPE_CHECKING) / *Safe* (already lazy / type-only) / *Judgment-heavy* |
 
 File discovery (`lib.iter_python_files`) and the locked-down agent pass
 (`lib.run_loop`) are shared; the regex-sweep loops (`type-debt`, `comment-debt`,
@@ -29,9 +30,9 @@ purpose-built scan (a Markdown ref-check, a literal-dedup, an AST reference
 count, a workflow-hazard sweep) — the framework's "replicate the template" shape
 (Stage 2).
 
-The first six loops are Python ports of Revisionist's; `determinism` is the
-first *net-new* loop — Temporal-specific (replay-determinism), with no
-Revisionist analogue.
+The first six loops are Python ports of Revisionist's; `determinism` and
+`sandbox-imports` are *net-new* — Temporal-specific guards (replay-determinism
+and the sandbox import graph) with no Revisionist analogue.
 
 ## Running
 
@@ -48,6 +49,7 @@ uv run python -m agents.duplicated_constant [scope]
 uv run python -m agents.dead_code [scope]
 uv run python -m agents.test_backfill [scope]   # best run per package
 uv run python -m agents.determinism [scope]
+uv run python -m agents.sandbox_imports [scope]
 ```
 
 ## Auth & safety
