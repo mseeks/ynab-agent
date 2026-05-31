@@ -5,9 +5,9 @@
 
 SCOPE ?=
 
-# Install/refresh the dev env (uv venv: dev, loops, ai, mail, ynab extras).
+# Install/refresh the dev env (uv venv: dev, loops, ai, mail, ynab, webhook).
 sync:
-	uv sync --extra dev --extra loops --extra ai --extra mail --extra ynab
+	uv sync --extra dev --extra loops --extra ai --extra mail --extra ynab --extra webhook
 
 # Auto-format (ruff formatter) and fix lint where safe.
 fmt:

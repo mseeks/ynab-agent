@@ -88,9 +88,7 @@ def _app_with_capture(
         captured.append(inbound)
         return True
 
-    monkeypatch.setattr(
-        "ynab_agent.webhook.app.start_dispatch", fake_start
-    )
+    monkeypatch.setattr("ynab_agent.webhook.app.start_dispatch", fake_start)
     app = create_app(
         webhook_secret=_SECRET, allowlist=_ALLOW, task_queue="ynab-agent"
     )

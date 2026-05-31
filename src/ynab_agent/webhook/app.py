@@ -4,7 +4,7 @@ A tiny HTTP front door, deployed alongside the worker. AgentMail POSTs a
 Svix-signed event here when an email arrives; this app verifies the signature
 (proving the request really came from AgentMail — the ``signature_verified``
 provenance check, SPEC §0.6), maps the message onto the domain
-domain ``InboundMessage``, and starts a ``DispatchWorkflow`` on Temporal. The
+``InboundMessage``, and starts a ``DispatchWorkflow`` on Temporal. The
 *dispatcher* then does the routing (reply / receipt / command / quarantine);
 this only authenticates the transport and hands off.
 
@@ -65,9 +65,7 @@ def to_inbound(message: _WireMessage, *, verified: bool) -> InboundMessage:
         from_address=message.from_address,
         subject=message.subject,
         body=message.text or "",
-        thread_id=ThreadId(message.thread_id)
-        if message.thread_id
-        else None,
+        thread_id=ThreadId(message.thread_id) if message.thread_id else None,
         signature_verified=verified,
     )
 
