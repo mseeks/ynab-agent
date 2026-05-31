@@ -23,6 +23,7 @@ loops of the *same shape* come next — we resist broadening any single one.
 | `determinism` | scan `@workflow.defn` files for bare nondeterminism (`datetime.now(`, `random.`, `uuid.`, `asyncio.sleep(`) that must use `workflow.*` | three-bucket map: *Hazard* (replacement named) / *Safe* (in an activity / a type / a comment) / *Judgment-heavy* |
 | `sandbox-imports` | AST scan of `@workflow.defn`/`@activity.defn` files for module-level imports of forbidden stacks (`pydantic_ai`, `agentmail`, `agentic`, `mail`) that would enter the Temporal sandbox | three-bucket map: *Hazard* (move lazy / TYPE_CHECKING) / *Safe* (already lazy / type-only) / *Judgment-heavy* |
 | `secret-leak` | scan for a secret-named binding (`api_key`/`token`/`password`…) to a 16+ char string literal (env reads excluded) | three-bucket map: *Secret* (rotate + move to env) / *Not a secret* (placeholder / fixture) / *Judgment-heavy*; values masked |
+| `derived-state` | regex sweep for a persistent-store smell (a DB/cache/ORM driver import, an on-disk kv/pickle store, a `*_DATABASE_URL`-style env, or a local `store`/`persistence`/`db` import) | three-bucket map: *Violates derived-state* (move to Temporal state / search attribute, or derive from YNAB/AgentMail) / *Not a store* (transient / fixture / config read) / *Judgment-heavy* |
 
 File discovery (`lib.iter_python_files`) and the locked-down agent pass
 (`lib.run_loop`) are shared; the regex-sweep loops (`type-debt`, `comment-debt`,
@@ -31,8 +32,11 @@ purpose-built scan (a Markdown ref-check, a literal-dedup, an AST reference
 count, a workflow-hazard sweep) — the framework's "replicate the template" shape
 (Stage 2).
 
-The first six loops are Python ports of Revisionist's; `determinism` and
-`sandbox-imports` are *net-new* — Temporal-specific guards (replay-determinism
+The first six loops are Python ports of Revisionist's; `determinism`,
+`sandbox-imports`, and `derived-state` are *net-new* — project-specific guards
+(`derived-state` enforces the placement decision that durable state lives only in
+Temporal or is derived from YNAB/AgentMail, never an external store);
+`determinism`/`sandbox-imports` are Temporal-specific guards (replay-determinism
 and the sandbox import graph) with no Revisionist analogue.
 
 ## Running
@@ -52,6 +56,7 @@ uv run python -m agents.test_backfill [scope]   # best run per package
 uv run python -m agents.determinism [scope]
 uv run python -m agents.sandbox_imports [scope]
 uv run python -m agents.secret_leak [scope]
+uv run python -m agents.derived_state [scope]
 ```
 
 ## Auth & safety
