@@ -176,9 +176,7 @@ def test_client_snapshot_falls_back_to_list_for_unapproved() -> None:
     # YNAB's single GET 404s (None) for unapproved txns; snapshot finds it in
     # the transactions list instead.
     wire = _wire_txn(approved=False)
-    backend = _FakeBackend(
-        wire, get_returns_none=True, delta=((wire,), 5)
-    )
+    backend = _FakeBackend(wire, get_returns_none=True, delta=((wire,), 5))
     snap = YnabClient(backend).snapshot("t1")
     assert snap is not None
     assert snap.ynab_id == "t1"
