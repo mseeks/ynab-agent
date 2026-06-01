@@ -37,8 +37,6 @@ if TYPE_CHECKING:
     from ynab_agent.domain.rule import Rule
     from ynab_agent.policy.floor import AutoActionCounters
 
-_STUB = "workflow activity stub — register a real or mock implementation"
-
 
 @activity.defn
 async def fetch_snapshot(ynab_id: str) -> YnabSnapshot | None:
@@ -447,11 +445,12 @@ async def converge(
 async def feed_rule_learning(feed: FeedRuleLearning) -> None:
     """Feed a confirm/correct event to rule learning (W5; SPEC §9).
 
-    The real body loads the payee's rules, runs
-    :func:`ynab_agent.learn.handler.plan_rule_update`, and persists the result;
-    the workflow tests register a mock that drives an in-memory rule store.
+    No-op in v1: there is no rule store yet (Gemma-only), so confirm/correct
+    events are not learned from and every transaction is proposed to a human.
+    Rule learning + the autonomy ramp arrive in a later stage; the W2 still
+    emits the event so the wiring is in place for when this body lands.
     """
-    raise NotImplementedError(_STUB)
+    return None
 
 
 @activity.defn
