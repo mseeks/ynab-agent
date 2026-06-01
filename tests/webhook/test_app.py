@@ -44,9 +44,12 @@ def _signed(body: str) -> dict[str, str]:
 
 
 def _event(event_type: str = "message.received") -> str:
+    # AgentMail's Svix envelope: top-level ``type`` is always "event"; the
+    # event name lives in ``event_type``.
     return json.dumps(
         {
-            "type": event_type,
+            "type": "event",
+            "event_type": event_type,
             "message": {
                 "message_id": "m1",
                 "from": "matthew@example.com",
@@ -73,6 +76,20 @@ def test_to_inbound_maps_the_message() -> None:
     assert inbound.body == "hi"
     assert inbound.thread_id == "t1"
     assert inbound.signature_verified is True
+
+
+def test_to_inbound_prefers_extracted_text() -> None:
+    # The stripped reply text wins over the full quoted body.
+    message = _WireMessage.model_validate(
+        {
+            "message_id": "m1",
+            "from": "a@x.com",
+            "text": "change to Dining\n\n> [the whole quoted proposal]",
+            "extracted_text": "change to Dining",
+            "thread_id": "t1",
+        }
+    )
+    assert to_inbound(message, verified=True).body == "change to Dining"
 
 
 def _app_with_capture(

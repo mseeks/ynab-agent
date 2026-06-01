@@ -46,15 +46,25 @@ class _WireMessage(BaseModel):
     from_address: str = Field(alias="from")
     subject: str = ""
     text: str | None = None
+    # The new reply text with the quoted history stripped — what the human
+    # actually wrote. Preferred over ``text`` so the interpreter isn't fed the
+    # whole quoted proposal back.
+    extracted_text: str | None = None
     thread_id: str | None = None
 
 
 class _WebhookPayload(BaseModel):
-    """An AgentMail webhook event — only the parts we use."""
+    """An AgentMail webhook event — only the parts we use.
+
+    The Svix envelope's top-level ``type`` is always the literal ``"event"``;
+    the actual event name (``message.received`` and its ``.spam`` / ``.blocked``
+    / ``.unauthenticated`` variants) is in ``event_type``. We act only on an
+    exact ``message.received``.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
-    type: str = ""
+    event_type: str = ""
     message: _WireMessage | None = None
 
 
@@ -64,7 +74,7 @@ def to_inbound(message: _WireMessage, *, verified: bool) -> InboundMessage:
         message_id=MessageId(message.message_id),
         from_address=message.from_address,
         subject=message.subject,
-        body=message.text or "",
+        body=message.extracted_text or message.text or "",
         thread_id=ThreadId(message.thread_id) if message.thread_id else None,
         signature_verified=verified,
     )
@@ -188,7 +198,7 @@ def create_app(
             ) from err
 
         event = _WebhookPayload.model_validate(payload)
-        if event.type != _RECEIVED or event.message is None:
+        if event.event_type != _RECEIVED or event.message is None:
             return {"status": "ignored"}
 
         inbound = to_inbound(event.message, verified=True)
