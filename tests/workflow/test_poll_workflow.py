@@ -1,9 +1,9 @@
 """End-to-end tests for the W1 poll workflow on the time-skipping server.
 
-The one-shot path (``continuous=False``) covers the per-tick logic — cold-start
-capture and in-scope addressing. A separate test drives the durable loop
-(``continuous=True``) and proves the delta cursor is carried across
-continue-as-new in workflow state (no external cursor store, SPEC §0.5).
+The one-shot path (``continuous=False``) covers the per-tick logic — addressing
+the in-scope unapproved transactions. A separate test drives the durable loop
+(``continuous=True``) and proves it keeps ticking via continue-as-new (no cursor
+to carry — the outstanding set is re-read from YNAB each tick, SPEC §0.5).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from ynab_agent.domain.money import Money
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.ingest.plan import AddressTxn
 from ynab_agent.ingest.scope import IngestScope
-from ynab_agent.workflow.poll_types import DeltaPage, PollParams, PollResult
+from ynab_agent.workflow.poll_types import PollParams, PollResult
 from ynab_agent.workflow.poll_workflow import PollWorkflow
 from ynab_agent.workflow.runtime import DATA_CONVERTER
 
@@ -50,24 +50,24 @@ def _scope() -> IngestScope:
 
 
 def _poll_activities(
-    *, page: DeltaPage, addressed: list[str]
+    *, unapproved: tuple[YnabSnapshot, ...], addressed: list[str]
 ) -> list[Callable[..., object]]:
-    @activity.defn(name="fetch_delta")
-    async def fetch_delta(scope: IngestScope, cursor: int | None) -> DeltaPage:
-        return page
+    @activity.defn(name="fetch_unapproved")
+    async def fetch_unapproved() -> tuple[YnabSnapshot, ...]:
+        return unapproved
 
     @activity.defn(name="address_transaction")
     async def address_transaction(action: AddressTxn) -> None:
         addressed.append(action.snapshot.ynab_id)
 
-    return [fetch_delta, address_transaction]
+    return [fetch_unapproved, address_transaction]
 
 
 async def _run(
-    *, wf_id: str, page: DeltaPage, params: PollParams
+    *, wf_id: str, unapproved: tuple[YnabSnapshot, ...], params: PollParams
 ) -> tuple[PollResult, list[str]]:
     addressed: list[str] = []
-    acts = _poll_activities(page=page, addressed=addressed)
+    acts = _poll_activities(unapproved=unapproved, addressed=addressed)
     async with (
         await WorkflowEnvironment.start_time_skipping(
             data_converter=DATA_CONVERTER
@@ -85,49 +85,45 @@ async def _run(
     return result, addressed
 
 
-async def test_poll_addresses_in_scope_transactions() -> None:
-    page = DeltaPage(
-        snapshots=(
-            _snapshot("t1", account="a1"),
-            _snapshot("t2", account="a1"),
+async def test_poll_addresses_in_scope_unapproved() -> None:
+    unapproved = (
+        _snapshot("t1", account="a1"),
+        _snapshot("t2", account="a1"),
+        # out of scope: dated before install — never addressed.
+        _snapshot("t3", account="a1", day=15).model_copy(
+            update={"txn_date": datetime.date(2026, 4, 1)}
         ),
-        server_knowledge=42,
     )
     result, addressed = await _run(
         wf_id="poll-inscope",
-        page=page,
-        params=PollParams(scope=_scope(), cursor=5),
+        unapproved=unapproved,
+        params=PollParams(scope=_scope()),
     )
     assert result.addressed == 2
     assert set(addressed) == {"t1", "t2"}
-    assert result.new_cursor == 42
 
 
-async def test_cold_start_captures_cursor_without_acting() -> None:
-    page = DeltaPage(snapshots=(_snapshot("t1"),), server_knowledge=7)
-    # cursor=None → cold start: nothing addressed, but the cursor advances.
+async def test_poll_addresses_nothing_when_set_empty() -> None:
     result, addressed = await _run(
-        wf_id="poll-cold",
-        page=page,
-        params=PollParams(scope=_scope(), cursor=None),
+        wf_id="poll-empty",
+        unapproved=(),
+        params=PollParams(scope=_scope()),
     )
     assert result.addressed == 0
     assert addressed == []
-    assert result.new_cursor == 7
 
 
-async def test_continuous_loop_carries_cursor_across_continue_as_new() -> None:
-    # The durable loop has no external cursor store: each tick must continue-as
-    # -new with the prior tick's server_knowledge. Capture the cursor each tick
-    # and break the otherwise-infinite loop on the second by raising.
-    cursors: list[int | None] = []
+async def test_continuous_loop_keeps_ticking_via_continue_as_new() -> None:
+    # The durable loop re-reads the unapproved set each tick. Count ticks and
+    # break the otherwise-infinite loop on the second by raising.
+    ticks: list[int] = []
 
-    @activity.defn(name="fetch_delta")
-    async def fetch_delta(scope: IngestScope, cursor: int | None) -> DeltaPage:
-        cursors.append(cursor)
-        if len(cursors) >= 2:
+    @activity.defn(name="fetch_unapproved")
+    async def fetch_unapproved() -> tuple[YnabSnapshot, ...]:
+        ticks.append(1)
+        if len(ticks) >= 2:
             raise ApplicationError("stop the loop", non_retryable=True)
-        return DeltaPage(snapshots=(), server_knowledge=99)
+        return ()
 
     @activity.defn(name="address_transaction")
     async def address_transaction(action: AddressTxn) -> None:
@@ -141,15 +137,15 @@ async def test_continuous_loop_carries_cursor_across_continue_as_new() -> None:
             env.client,
             task_queue=TASK_QUEUE,
             workflows=[PollWorkflow],
-            activities=[fetch_delta, address_transaction],
+            activities=[fetch_unapproved, address_transaction],
         ),
     ):
         with pytest.raises(WorkflowFailureError):
             await env.client.execute_workflow(
                 PollWorkflow.run,
-                PollParams(scope=_scope(), cursor=None, continuous=True),
+                PollParams(scope=_scope(), continuous=True),
                 id="poll-loop",
                 task_queue=TASK_QUEUE,
             )
-    # Tick 1 ran cold (None); tick 2 inherited the advanced cursor from state.
-    assert cursors == [None, 99]
+    # A second tick ran only because the first continued-as-new.
+    assert len(ticks) == 2

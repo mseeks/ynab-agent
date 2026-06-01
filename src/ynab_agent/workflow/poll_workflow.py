@@ -1,12 +1,14 @@
 """W1 · the YNAB Ingestion Poller (SPEC §2, §13).
 
-A durable poll loop. Each tick polls the YNAB transactions delta, plans which
-transactions to address via the pure
+A durable poll loop. Each tick reads YNAB's *unapproved* transactions (the
+outstanding work), plans which to address via the pure
 :func:`~ynab_agent.ingest.plan.plan_ingest`, starts a W2 for each, then sleeps
-and continues-as-new carrying the advanced cursor in workflow state — so the
-delta cursor is durable without any external store (SPEC §0.5). The first tick
-(``cursor is None``) captures the cursor without acting: the cold-start cutover
-that avoids emailing the backlog.
+and continues-as-new. There is no cursor: the outstanding set is YNAB's
+``type=unapproved`` view, re-read each tick and derived from YNAB rather than
+stored (SPEC §0.5). A transaction approved (by the owner or the agent's own
+triage) simply leaves the set; a new import enters it. ``REJECT_DUPLICATE`` on
+the per-transaction workflow id makes re-addressing an already-handled one a
+no-op.
 
 A one-shot run (``continuous=False``, the default) performs a single tick and
 returns its :class:`PollResult` — what tests and a manual kick use. Production
@@ -33,16 +35,15 @@ class PollWorkflow:
 
     @workflow.run
     async def run(self, params: PollParams) -> PollResult:
-        """Poll the delta, address in-scope txns, then loop or return."""
-        cold_start = params.cursor is None
-        page = await workflow.execute_activity(
-            poll_activities.fetch_delta,
-            args=[params.scope, params.cursor],
+        """Read the unapproved set, address it, then loop or return."""
+        snapshots = await workflow.execute_activity(
+            poll_activities.fetch_unapproved,
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
         )
-        actions = plan_ingest(
-            page.snapshots, params.scope, cold_start=cold_start
-        )
+        # The fetched set is already unapproved; the scope bounds it by install
+        # date + account, and cold_start is moot (no backlog to suppress — the
+        # outstanding set IS the work).
+        actions = plan_ingest(snapshots, params.scope, cold_start=False)
         for action in actions:
             await workflow.execute_activity(
                 poll_activities.address_transaction,
@@ -52,18 +53,15 @@ class PollWorkflow:
         result = PollResult(
             addressed=len(actions),
             routed_to_human=sum(1 for a in actions if a.route_to_human),
-            new_cursor=page.server_knowledge,
         )
         if not params.continuous:
             return result
-        # Durable loop: sleep, then restart fresh carrying the advanced cursor
-        # in state (the store-free delta cursor). continue_as_new raises, so
+        # Durable loop: sleep, then restart fresh. continue_as_new raises, so
         # nothing runs after it and history stays bounded to one tick.
         await workflow.sleep(timedelta(seconds=params.interval_seconds))
         workflow.continue_as_new(
             PollParams(
                 scope=params.scope,
-                cursor=page.server_knowledge,
                 interval_seconds=params.interval_seconds,
                 continuous=True,
             )

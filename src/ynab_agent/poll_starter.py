@@ -3,15 +3,14 @@
 Run as a one-shot after the worker is up (a k8s Job, or ``python -m
 ynab_agent.poll_starter`` locally). It submits the single long-lived
 ``PollWorkflow`` — workflow id ``ynab-poll``, ``REJECT_DUPLICATE`` so it stays a
-singleton — in *acting* mode (``cursor=0``), so the current outstanding
-(unapproved) transactions surface as emails right away; the loop then
-continues-as-new on the YNAB delta cursor, carrying it in workflow state (no
-external cursor store, SPEC §0.5).
+singleton. Each tick reads YNAB's unapproved set (the outstanding work), so the
+current outstanding transactions surface as emails right away; the loop then
+continues-as-new (no cursor — the set is derived from YNAB, SPEC §0.5).
 
 Config from the environment: ``TEMPORAL_HOST`` / ``TEMPORAL_NAMESPACE`` /
 ``TEMPORAL_TASK_QUEUE``, the ``YNAB_BUDGET_ID``, an optional
-``YNAB_AGENT_INSTALL_DATE`` (ISO date — the ingest cutover that bounds the first
-fetch; defaults to ~90 days back) and ``YNAB_AGENT_POLL_INTERVAL_SECONDS``
+``YNAB_AGENT_INSTALL_DATE`` (ISO date — the ingest cutover that bounds the scope
+by date; defaults to ~90 days back) and ``YNAB_AGENT_POLL_INTERVAL_SECONDS``
 (seconds between ticks; default 3600). Re-running is safe: an already-started
 loop is left untouched.
 """
@@ -54,7 +53,6 @@ async def _start() -> None:
             budget_id=os.environ.get("YNAB_BUDGET_ID", "last-used"),
             install_date=install_date,
         ),
-        cursor=0,  # acting mode: triage the current outstanding txns at once
         continuous=True,
         interval_seconds=int(
             os.environ.get("YNAB_AGENT_POLL_INTERVAL_SECONDS", "3600")

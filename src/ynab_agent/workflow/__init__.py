@@ -1,13 +1,13 @@
 """The Temporal runtime layer: the W2 lifecycle workflow and its I/O ports.
 
 This is the deterministic spine. The workflow drives the pure domain core; the
-activities (:mod:`ynab_agent.workflow.activities`) are the I/O ports, stubbed
-until the MCP / Pydantic AI implementations are wired in.
+activities (:mod:`ynab_agent.workflow.activities`) are the I/O ports over YNAB,
+AgentMail, and the Pydantic AI agents.
 """
 
 from __future__ import annotations
 
-from ynab_agent.workflow.poll_types import DeltaPage, PollParams, PollResult
+from ynab_agent.workflow.poll_types import PollParams, PollResult
 from ynab_agent.workflow.poll_workflow import PollWorkflow
 from ynab_agent.workflow.runtime import (
     ALL_ACTIVITIES,
@@ -28,7 +28,6 @@ __all__ = [
     "WORKFLOWS",
     "AnswerOutcome",
     "ClarifyOutcome",
-    "DeltaPage",
     "PollParams",
     "PollResult",
     "PollWorkflow",

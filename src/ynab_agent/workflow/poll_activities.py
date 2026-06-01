@@ -11,30 +11,25 @@ from __future__ import annotations
 
 from temporalio import activity
 
+from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.ingest.plan import AddressTxn
-from ynab_agent.ingest.scope import IngestScope
-from ynab_agent.workflow.poll_types import DeltaPage
 
 
 @activity.defn
-async def fetch_delta(scope: IngestScope, cursor: int | None) -> DeltaPage:
-    """Poll the YNAB transactions delta from ``cursor`` (SPEC §2 W1).
+async def fetch_unapproved() -> tuple[YnabSnapshot, ...]:
+    """Read YNAB's currently unapproved transactions (SPEC §2 W1).
 
-    The fetch is bounded by ``scope.install_date`` so a cold start (``cursor``
-    is ``None``) never pulls years of history; once warm, ``cursor`` is YNAB's
-    ``server_knowledge`` and only changed transactions come back. The advanced
-    cursor rides home in the page — the W1 workflow carries it forward across
-    continue-as-new (no stored cursor, SPEC §0.5).
+    The agent's outstanding-work set — YNAB's own ``type=unapproved`` view. It
+    excludes tentatively scheduled/auto-matched imports until they land. The
+    poll re-reads it each tick; the set is small, so there is no cursor to carry
+    (what's outstanding is derived from YNAB, not stored — SPEC §0.5).
     """
     import asyncio
 
     from ynab_agent.ynab.client import YnabClient
 
     client = YnabClient.from_env()
-    snapshots, server_knowledge = await asyncio.to_thread(
-        client.delta, scope.install_date, cursor
-    )
-    return DeltaPage(snapshots=snapshots, server_knowledge=server_knowledge)
+    return await asyncio.to_thread(client.unapproved)
 
 
 @activity.defn

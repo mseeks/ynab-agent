@@ -49,7 +49,7 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     activities.converge,
     activities.feed_rule_learning,
     activities.close_thread,
-    poll_activities.fetch_delta,
+    poll_activities.fetch_unapproved,
     poll_activities.address_transaction,
     dispatch_activities.resolve_thread,
     dispatch_activities.classify_inbound,

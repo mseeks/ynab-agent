@@ -140,6 +140,10 @@ class YnabBackend(Protocol):
         """The transactions delta and the advanced ``server_knowledge``."""
         ...
 
+    def list_unapproved(self) -> tuple[WireTransaction, ...]:
+        """The budget's ``type=unapproved`` transactions."""
+        ...
+
 
 # The process-wide cached client built by ``from_env`` (see its docstring).
 # ``tests/conftest.py`` resets this between tests.
@@ -216,23 +220,21 @@ class YnabClient:
             to_category_spend(c) for c in self._backend.list_categories()
         )
 
-    def delta(
-        self, since_date: datetime.date, cursor: int | None
-    ) -> tuple[tuple[YnabSnapshot, ...], int]:
-        """The transactions delta since ``cursor`` and the advanced cursor (§2).
+    def unapproved(self) -> tuple[YnabSnapshot, ...]:
+        """The budget's currently *unapproved* transactions (SPEC §2 W1).
 
-        ``since_date`` bounds the fetch to the install cutover (so a cold start
-        never pulls years of history); ``cursor`` is YNAB's ``server_knowledge``
-        — ``None`` fetches the bounded backlog, an int fetches only what changed
-        since. Deleted rows drop out, so callers see only live transactions.
+        This is YNAB's own ``type=unapproved`` view — the transactions awaiting
+        the owner's review. It is the agent's outstanding-work set: a
+        tentatively scheduled/auto-matched import is *not* in it (YNAB excludes
+        it until it is combined), so the agent ignores those until they truly
+        land. Deleted rows drop out. The poll re-reads this each tick — the set
+        is small, so no cursor is needed (and none is stored, SPEC §0.5).
         """
-        wires, server_knowledge = self._backend.list_transactions(
-            since_date.isoformat(), cursor
+        return tuple(
+            to_snapshot(wire)
+            for wire in self._backend.list_unapproved()
+            if not wire.deleted
         )
-        snapshots = tuple(
-            to_snapshot(wire) for wire in wires if not wire.deleted
-        )
-        return snapshots, server_knowledge
 
     def commit(self, txn_id: str, decision: Decision) -> None:
         """Commit a decision to a transaction (SPEC §3)."""
@@ -281,6 +283,15 @@ class _HttpxBackend:
             for item in data["transactions"]
         )
         return transactions, int(data["server_knowledge"])
+
+    def list_unapproved(self) -> tuple[WireTransaction, ...]:
+        path = f"/budgets/{self._budget}/transactions"
+        response = self._client.get(path, params={"type": "unapproved"})
+        response.raise_for_status()
+        return tuple(
+            WireTransaction.model_validate(item)
+            for item in response.json()["data"]["transactions"]
+        )
 
     def list_categories(self) -> tuple[WireCategory, ...]:
         path = f"/budgets/{self._budget}/categories"

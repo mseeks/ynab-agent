@@ -131,10 +131,12 @@ class _FakeBackend:
         txn: WireTransaction,
         *,
         delta: tuple[tuple[WireTransaction, ...], int] = ((), 0),
+        unapproved: tuple[WireTransaction, ...] = (),
         get_returns_none: bool = False,
     ) -> None:
         self._txn = txn
         self._delta = delta
+        self._unapproved = unapproved
         self._get_returns_none = get_returns_none
         self.patched: list[tuple[str, dict[str, object]]] = []
         self.delta_calls: list[tuple[str, int | None]] = []
@@ -153,6 +155,9 @@ class _FakeBackend:
     ) -> tuple[tuple[WireTransaction, ...], int]:
         self.delta_calls.append((since_date, server_knowledge))
         return self._delta
+
+    def list_unapproved(self) -> tuple[WireTransaction, ...]:
+        return self._unapproved
 
 
 def test_client_snapshot_maps_through_the_backend() -> None:
@@ -221,25 +226,18 @@ def test_client_commit_patches_the_transaction() -> None:
     assert backend.patched[0][1]["category_id"] == "dining"
 
 
-def test_client_delta_maps_snapshots_and_drops_deleted() -> None:
+def test_client_unapproved_maps_snapshots_and_drops_deleted() -> None:
     backend = _FakeBackend(
         _wire_txn(),
-        delta=(
-            (_wire_txn(id="t1"), _wire_txn(id="t2", deleted=True)),
-            55,
-        ),
+        unapproved=(_wire_txn(id="t1"), _wire_txn(id="t2", deleted=True)),
     )
-    snapshots, cursor = YnabClient(backend).delta(
-        datetime.date(2026, 5, 1), None
-    )
+    snapshots = YnabClient(backend).unapproved()
     assert [s.ynab_id for s in snapshots] == ["t1"]  # deleted t2 dropped
-    assert cursor == 55
 
 
-def test_client_delta_passes_since_date_and_cursor() -> None:
-    backend = _FakeBackend(_wire_txn(), delta=((), 7))
-    YnabClient(backend).delta(datetime.date(2026, 5, 1), 42)
-    assert backend.delta_calls == [("2026-05-01", 42)]
+def test_client_unapproved_is_empty_when_none() -> None:
+    backend = _FakeBackend(_wire_txn(), unapproved=())
+    assert YnabClient(backend).unapproved() == ()
 
 
 @pytest.mark.skipif(
