@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
+from ynab_agent.domain.allocations import ProposedCategory, ProposedSplit
 from ynab_agent.domain.effects import FeedRuleLearning, MessagePurpose
 from ynab_agent.domain.events import ConvergeOutcome, EnrichmentOutcome
 from ynab_agent.domain.proposal import Decision, Proposal
@@ -102,6 +103,87 @@ async def read_back(ynab_id: str) -> TargetState | None:
     return await asyncio.to_thread(client.read_back, ynab_id)
 
 
+def _txn_label(ynab_id: str) -> str:
+    """The per-transaction idempotency label (open-thread dedup; SPEC §5)."""
+    return f"yatxn-{ynab_id}"
+
+
+def _seq_label(ynab_id: str, action_seq: int) -> str:
+    """The per-action idempotency label (send dedup; SPEC §3)."""
+    return f"yaseq-{ynab_id}-{action_seq}"
+
+
+def _subject(snapshot: YnabSnapshot) -> str:
+    """The deterministic email subject (only the body is model-written)."""
+    return f"[YNAB] {snapshot.payee} — {snapshot.amount}"
+
+
+def _allocation_display(
+    allocation: ProposedCategory | ProposedSplit, names: dict[str, str]
+) -> str:
+    """A human display of the proposed allocation, by category name."""
+    if isinstance(allocation, ProposedCategory):
+        return names.get(str(allocation.category), str(allocation.category))
+    return " + ".join(
+        names.get(str(line.category), str(line.category))
+        for line in allocation.lines
+    )
+
+
+async def _read_for_compose(
+    ynab_id: str,
+) -> tuple[YnabSnapshot, dict[str, str]]:
+    """Re-read the YNAB snapshot and a category-id→name map for composing.
+
+    Both come from YNAB (the source of truth) at send time — there is no stored
+    copy of the facts or the category names (SPEC §0.5, store-free).
+    """
+    import asyncio
+
+    from ynab_agent.ynab.client import YnabClient
+
+    client = YnabClient.from_env()
+    snapshot = await asyncio.to_thread(client.snapshot, ynab_id)
+    if snapshot is None:
+        msg = f"transaction {ynab_id} not found in YNAB at compose time"
+        raise RuntimeError(msg)
+    spends = await asyncio.to_thread(client.category_spends)
+    names = {str(spend.category): spend.name for spend in spends}
+    return snapshot, names
+
+
+async def _compose_body(
+    snapshot: YnabSnapshot,
+    proposal: Proposal | None,
+    purpose: MessagePurpose,
+    names: dict[str, str],
+) -> str:
+    """Compose one message body for the thread (the agentic prose; SPEC §5).
+
+    The model stack is imported lazily so pydantic-ai never enters the workflow
+    sandbox. ``alternatives`` is left empty until enrichment carries candidate
+    categories into the proposal (a later slice); the compose agent degrades
+    gracefully, simply not listing alternatives when there are none.
+    """
+    from ynab_agent.agentic.compose import ComposeRequest, compose
+
+    proposed = (
+        _allocation_display(proposal.allocation, names)
+        if proposal is not None
+        else None
+    )
+    request = ComposeRequest(
+        purpose=purpose.value,
+        payee=snapshot.payee,
+        amount_display=str(snapshot.amount),
+        txn_date=snapshot.txn_date.isoformat(),
+        memo=snapshot.memo,
+        proposed_category=proposed,
+        rationale=proposal.rationale if proposal is not None else None,
+    )
+    return await compose(request)
+
+
 @activity.defn
 async def open_thread(ynab_id: str, proposal: Proposal | None) -> str:
     """Open the AgentMail thread by sending the proposal; returns its id.
@@ -109,9 +191,29 @@ async def open_thread(ynab_id: str, proposal: Proposal | None) -> str:
     A thread starts on its first send (AgentMail has no empty-thread create), so
     this composes + sends the proposal as the opening email. ``proposal`` is the
     current best guess (carried from workflow state); the txn facts + category
-    names are re-read from YNAB (the source of truth) at compose time.
+    names are re-read from YNAB (the source of truth) at compose time. The open
+    is idempotent on the per-transaction label, so a retry re-finds the thread
+    rather than sending a duplicate.
     """
-    raise NotImplementedError(_STUB)
+    import asyncio
+
+    from ynab_agent.mail.client import MailClient
+    from ynab_agent.settings import Settings
+
+    settings = Settings()
+    snapshot, names = await _read_for_compose(ynab_id)
+    body = await _compose_body(
+        snapshot, proposal, MessagePurpose.PROPOSAL, names
+    )
+    mail = MailClient.from_env()
+    return await asyncio.to_thread(
+        mail.open_thread,
+        inbox_id=settings.inbox,
+        to=list(settings.owners),
+        subject=_subject(snapshot),
+        body=body,
+        txn_label=_txn_label(ynab_id),
+    )
 
 
 @activity.defn
@@ -124,12 +226,30 @@ async def send_thread_message(
 ) -> None:
     """Send a follow-up message on the transaction's thread.
 
-    ``action_seq`` is the per-transaction idempotency key: the implementation
-    must dedup on it so a retry never double-sends (SPEC §3). ``proposal`` is
-    the current best guess where the purpose needs it (re-proposal); other
-    purposes derive their content from a re-read of the YNAB snapshot.
+    ``action_seq`` is the per-transaction idempotency key: the send dedups on it
+    so a retry never double-sends (SPEC §3). ``proposal`` is the current best
+    guess where the purpose needs it (re-proposal); other purposes derive their
+    content from a re-read of the YNAB snapshot.
     """
-    raise NotImplementedError(_STUB)
+    import asyncio
+
+    from ynab_agent.mail.client import MailClient
+    from ynab_agent.settings import Settings
+
+    if thread_id is None:
+        msg = f"cannot send {purpose.value} for {ynab_id}: no thread open yet"
+        raise RuntimeError(msg)
+    settings = Settings()
+    snapshot, names = await _read_for_compose(ynab_id)
+    body = await _compose_body(snapshot, proposal, purpose, names)
+    mail = MailClient.from_env()
+    await asyncio.to_thread(
+        mail.send_on_thread,
+        inbox_id=settings.inbox,
+        thread_id=thread_id,
+        body=body,
+        seq_label=_seq_label(ynab_id, action_seq),
+    )
 
 
 @activity.defn
@@ -162,4 +282,13 @@ async def feed_rule_learning(feed: FeedRuleLearning) -> None:
 @activity.defn
 async def close_thread(thread_id: str) -> None:
     """Label and close the AgentMail thread on archive."""
-    raise NotImplementedError(_STUB)
+    import asyncio
+
+    from ynab_agent.mail.client import MailClient
+    from ynab_agent.settings import Settings
+
+    settings = Settings()
+    mail = MailClient.from_env()
+    await asyncio.to_thread(
+        mail.close, inbox_id=settings.inbox, thread_id=thread_id
+    )

@@ -24,6 +24,10 @@ if TYPE_CHECKING:
     from agentmail import AgentMail
 
 _API_KEY_ENV = "AGENTMAIL_API_KEY"
+# Every agent message carries this label, plus per-transaction / per-action
+# labels that serve as idempotency keys (no separate store — derived from the
+# AgentMail thread, SPEC §5).
+_AGENT_LABEL = "ynab-agent"
 
 
 class SentEmail(Frozen):
@@ -51,18 +55,43 @@ class OutboundEmail(Frozen):
 
 
 class MailBackend(Protocol):
-    """The two mail operations the client needs (implemented over AgentMail)."""
+    """The mail operations the client needs (implemented over AgentMail)."""
 
     def send_new(
-        self, inbox_id: str, to: list[str], subject: str, text: str
+        self,
+        inbox_id: str,
+        to: list[str],
+        subject: str,
+        text: str,
+        labels: list[str] | None = None,
     ) -> SentEmail:
         """Start a new thread."""
         ...
 
     def send_reply(
-        self, inbox_id: str, message_id: str, text: str
+        self,
+        inbox_id: str,
+        message_id: str,
+        text: str,
+        labels: list[str] | None = None,
     ) -> SentEmail:
         """Reply on an existing thread."""
+        ...
+
+    def find_thread(self, inbox_id: str, label: str) -> str | None:
+        """The thread id of the first message carrying ``label``, or None.
+
+        Labels are the agent's idempotency keys: a per-transaction label lets
+        ``open_thread`` find an already-opened thread instead of duplicating it.
+        """
+        ...
+
+    def latest_message_id(self, inbox_id: str, thread_id: str) -> str | None:
+        """The newest message id on a thread (the target to reply to)."""
+        ...
+
+    def archive(self, inbox_id: str, thread_id: str) -> None:
+        """Mark a thread closed (an ``ynab-archived`` label)."""
         ...
 
 
@@ -120,6 +149,50 @@ class MailClient:
             email.inbox_id, list(email.to), email.subject, email.text
         )
 
+    def open_thread(
+        self,
+        *,
+        inbox_id: str,
+        to: list[str],
+        subject: str,
+        body: str,
+        txn_label: str,
+    ) -> str:
+        """Open the transaction's thread (idempotent); return its id.
+
+        If a thread already carries ``txn_label`` (a retry of this open), return
+        it rather than starting a duplicate; otherwise send the opening message.
+        """
+        existing = self._backend.find_thread(inbox_id, txn_label)
+        if existing is not None:
+            return existing
+        sent = self._backend.send_new(
+            inbox_id, to, subject, body, labels=[_AGENT_LABEL, txn_label]
+        )
+        return sent.thread_id
+
+    def send_on_thread(
+        self, *, inbox_id: str, thread_id: str, body: str, seq_label: str
+    ) -> bool:
+        """Reply on a thread (idempotent on ``seq_label``); True if sent.
+
+        Skips if a message with ``seq_label`` is already on record, so a retry
+        never double-sends (SPEC §3 outbound dedup).
+        """
+        if self._backend.find_thread(inbox_id, seq_label) is not None:
+            return False
+        target = self._backend.latest_message_id(inbox_id, thread_id)
+        if target is None:
+            return False
+        self._backend.send_reply(
+            inbox_id, target, body, labels=[_AGENT_LABEL, seq_label]
+        )
+        return True
+
+    def close(self, *, inbox_id: str, thread_id: str) -> None:
+        """Mark the transaction's thread closed."""
+        self._backend.archive(inbox_id, thread_id)
+
 
 class _AgentMailBackend:
     """Adapts the AgentMail SDK to the :class:`MailBackend` protocol."""
@@ -128,21 +201,47 @@ class _AgentMailBackend:
         self._client = client
 
     def send_new(
-        self, inbox_id: str, to: list[str], subject: str, text: str
+        self,
+        inbox_id: str,
+        to: list[str],
+        subject: str,
+        text: str,
+        labels: list[str] | None = None,
     ) -> SentEmail:
         result = self._client.inboxes.messages.send(
-            inbox_id, to=to, subject=subject, text=text
+            inbox_id, to=to, subject=subject, text=text, labels=labels
         )
         return SentEmail(
             message_id=result.message_id, thread_id=result.thread_id
         )
 
     def send_reply(
-        self, inbox_id: str, message_id: str, text: str
+        self,
+        inbox_id: str,
+        message_id: str,
+        text: str,
+        labels: list[str] | None = None,
     ) -> SentEmail:
         result = self._client.inboxes.messages.reply(
-            inbox_id, message_id, text=text
+            inbox_id, message_id, text=text, labels=labels
         )
         return SentEmail(
             message_id=result.message_id, thread_id=result.thread_id
+        )
+
+    def find_thread(self, inbox_id: str, label: str) -> str | None:
+        result = self._client.inboxes.messages.list(
+            inbox_id, labels=[label], limit=1
+        )
+        messages = result.messages
+        return messages[0].thread_id if messages else None
+
+    def latest_message_id(self, inbox_id: str, thread_id: str) -> str | None:
+        thread = self._client.inboxes.threads.get(inbox_id, thread_id)
+        message_id: str | None = thread.last_message_id
+        return message_id
+
+    def archive(self, inbox_id: str, thread_id: str) -> None:
+        self._client.inboxes.threads.update(
+            inbox_id, thread_id, add_labels=["ynab-archived"]
         )
