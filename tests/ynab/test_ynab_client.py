@@ -131,14 +131,16 @@ class _FakeBackend:
         txn: WireTransaction,
         *,
         delta: tuple[tuple[WireTransaction, ...], int] = ((), 0),
+        get_returns_none: bool = False,
     ) -> None:
         self._txn = txn
         self._delta = delta
+        self._get_returns_none = get_returns_none
         self.patched: list[tuple[str, dict[str, object]]] = []
         self.delta_calls: list[tuple[str, int | None]] = []
 
-    def get_transaction(self, txn_id: str) -> WireTransaction:
-        return self._txn
+    def get_transaction(self, txn_id: str) -> WireTransaction | None:
+        return None if self._get_returns_none else self._txn
 
     def patch_transaction(self, txn_id: str, fields: dict[str, object]) -> None:
         self.patched.append((txn_id, fields))
@@ -163,6 +165,27 @@ def test_client_snapshot_maps_through_the_backend() -> None:
 def test_client_snapshot_is_none_when_deleted() -> None:
     client = YnabClient(_FakeBackend(_wire_txn(deleted=True)))
     assert client.snapshot("t1") is None
+
+
+def test_client_snapshot_falls_back_to_list_for_unapproved() -> None:
+    # YNAB's single GET 404s (None) for unapproved txns; snapshot finds it in
+    # the transactions list instead.
+    wire = _wire_txn(approved=False)
+    backend = _FakeBackend(
+        wire, get_returns_none=True, delta=((wire,), 5)
+    )
+    snap = YnabClient(backend).snapshot("t1")
+    assert snap is not None
+    assert snap.ynab_id == "t1"
+    # The fallback list is the delta-from-zero (cursor 0), which is the only
+    # form that surfaces matched/scheduled unapproved transactions.
+    assert backend.delta_calls and backend.delta_calls[0][1] == 0
+
+
+def test_client_snapshot_none_when_missing_everywhere() -> None:
+    # 404 on the single GET and absent from the list → genuinely gone.
+    backend = _FakeBackend(_wire_txn(), get_returns_none=True, delta=((), 0))
+    assert YnabClient(backend).snapshot("t1") is None
 
 
 def test_to_target_maps_a_categorized_snapshot() -> None:

@@ -39,6 +39,10 @@ _API_KEY_ENV = "YNAB_API_KEY"
 _BUDGET_ENV = "YNAB_BUDGET_ID"
 _DEFAULT_BUDGET = "last-used"
 _BASE_URL = "https://api.ynab.com/v1"
+# How far back the snapshot fallback list scans when the single GET 404s (an
+# unapproved txn). The agent only reads recent transactions, so a year is ample.
+_FALLBACK_LOOKBACK_DAYS = 365
+_HTTP_NOT_FOUND = 404
 
 
 def to_snapshot(wire: WireTransaction) -> YnabSnapshot:
@@ -118,8 +122,8 @@ def to_patch(decision: Decision) -> dict[str, object]:
 class YnabBackend(Protocol):
     """The YNAB operations the client needs (implemented over httpx)."""
 
-    def get_transaction(self, txn_id: str) -> WireTransaction:
-        """Fetch one transaction."""
+    def get_transaction(self, txn_id: str) -> WireTransaction | None:
+        """Fetch one transaction, or ``None`` if the GET 404s (unapproved)."""
         ...
 
     def patch_transaction(self, txn_id: str, fields: dict[str, object]) -> None:
@@ -183,9 +187,26 @@ class YnabClient:
         return _CACHED
 
     def snapshot(self, txn_id: str) -> YnabSnapshot | None:
-        """The current snapshot of a transaction, or ``None`` if deleted."""
+        """The current snapshot of a transaction, or ``None`` if not found.
+
+        YNAB's single-transaction GET returns 404 for *unapproved* transactions
+        — including matched/scheduled imports — which are exactly the ones the
+        agent triages. Those do appear in the transactions list, so on a miss we
+        fall back to a bounded list scan (the agent only ever reads recent
+        transactions). An approved transaction uses the cheap single GET.
+        """
         wire = self._backend.get_transaction(txn_id)
-        if wire.deleted:
+        if wire is None:
+            since = (
+                datetime.datetime.now(datetime.UTC).date()
+                - datetime.timedelta(days=_FALLBACK_LOOKBACK_DAYS)
+            ).isoformat()
+            # ``last_knowledge_of_server=0`` is required: matched/scheduled
+            # unapproved transactions appear only in the delta-from-zero, not a
+            # plain since_date list (a YNAB quirk).
+            wires, _ = self._backend.list_transactions(since, 0)
+            wire = next((w for w in wires if w.id == txn_id), None)
+        if wire is None or wire.deleted:
             return None
         return to_snapshot(wire)
 
@@ -230,9 +251,11 @@ class _HttpxBackend:
         self._client = client
         self._budget = budget_id
 
-    def get_transaction(self, txn_id: str) -> WireTransaction:
+    def get_transaction(self, txn_id: str) -> WireTransaction | None:
         path = f"/budgets/{self._budget}/transactions/{txn_id}"
         response = self._client.get(path)
+        if response.status_code == _HTTP_NOT_FOUND:
+            return None
         response.raise_for_status()
         return WireTransaction.model_validate(
             response.json()["data"]["transaction"]
