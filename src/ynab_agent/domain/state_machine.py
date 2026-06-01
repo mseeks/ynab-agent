@@ -235,17 +235,24 @@ def _from_enriching(
                     )
                 case AskHuman(proposal=proposal):
                     deadline = now + policy.patience_window
-                    effects: tuple[Effect, ...] = ()
-                    if txn.core.thread_id is None:
-                        effects = (OpenThread(),)
+                    # First contact: open_thread sends the proposal as the
+                    # thread's opening email (AgentMail starts a thread on its
+                    # first send), so no separate send is emitted. A re-proposal
+                    # (the thread is already open) sends it as a reply.
+                    send_effect: tuple[Effect, ...] = (
+                        (OpenThread(),)
+                        if txn.core.thread_id is None
+                        else (
+                            SendThreadMessage(purpose=MessagePurpose.PROPOSAL),
+                        )
+                    )
                     return _advanced(
                         AwaitingHuman(
                             core=txn.core,
                             proposal=proposal,
                             patience_deadline=deadline,
                         ),
-                        *effects,
-                        SendThreadMessage(purpose=MessagePurpose.PROPOSAL),
+                        *send_effect,
                         SetTimer(timer=TimerKind.PATIENCE, deadline=deadline),
                     )
             assert_never(outcome)

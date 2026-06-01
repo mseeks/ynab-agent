@@ -235,6 +235,9 @@ def test_enriched_auto_apply_commits() -> None:
 
 
 def test_enriched_ask_human_opens_and_times() -> None:
+    # First contact (no thread yet): open the thread — which sends the proposal
+    # as its first email — and start the patience timer. No SEPARATE proposal
+    # send is emitted; open_thread carries it (a thread starts on its send).
     out = _step(
         Enriching(core=_core(thread=False)),
         Enriched(outcome=AskHuman(proposal=_proposal())),
@@ -243,7 +246,20 @@ def test_enriched_ask_human_opens_and_times() -> None:
     assert out.next.patience_deadline == NOW + POLICY.patience_window
     assert _of(out, OpenThread)
     assert _timers(out, TimerKind.PATIENCE)
+    assert MessagePurpose.PROPOSAL not in _purposes(out)
+
+
+def test_enriched_ask_human_with_open_thread_sends_proposal_reply() -> None:
+    # The thread is already open (a re-proposal): send the proposal as a reply,
+    # and do NOT re-open the thread.
+    out = _step(
+        Enriching(core=_core(thread=True)),
+        Enriched(outcome=AskHuman(proposal=_proposal())),
+    )
+    assert isinstance(out.next, AwaitingHuman)
+    assert not _of(out, OpenThread)
     assert MessagePurpose.PROPOSAL in _purposes(out)
+    assert _timers(out, TimerKind.PATIENCE)
 
 
 # ── AUTO_APPLIED / APPLIED verify ───────────────────────────────────────────
