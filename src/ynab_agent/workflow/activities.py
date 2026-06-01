@@ -29,6 +29,8 @@ from ynab_agent.policy.converge import TargetState
 from ynab_agent.workflow.types import ReplyOutcome
 
 if TYPE_CHECKING:
+    import datetime
+
     # Annotation-only: never imported at runtime, so the agentic/model stack
     # (pydantic-ai) never enters the workflow sandbox. The enrich body imports
     # it lazily, inside the activity, where it runs outside the sandbox.
@@ -140,9 +142,19 @@ def _seq_label(ynab_id: str, action_seq: int) -> str:
     return f"yaseq-{ynab_id}-{action_seq}"
 
 
-def _subject(snapshot: YnabSnapshot) -> str:
-    """The deterministic email subject (only the body is model-written)."""
-    return f"[YNAB] {snapshot.payee} — {snapshot.amount}"
+def _subject(snapshot: YnabSnapshot, category: str | None) -> str:
+    """The thread's subject: payee + amount, and the suggested category.
+
+    No ``[YNAB]`` prefix — the sender address is a known contact. Naming the
+    proposed category lets the owner act from the subject line alone.
+    """
+    base = f"{snapshot.payee} — {snapshot.amount}"
+    return f"{base} · {category}?" if category else base
+
+
+def _date_display(day: datetime.date) -> str:
+    """A short, friendly transaction date, e.g. ``May 29`` (no leading zero)."""
+    return f"{day.strftime('%b')} {day.day}"
 
 
 def _allocation_display(
@@ -179,36 +191,40 @@ async def _read_for_compose(
     return snapshot, names
 
 
-async def _compose_body(
+def _render_message(
     snapshot: YnabSnapshot,
     proposal: Proposal | None,
     purpose: MessagePurpose,
     names: dict[str, str],
 ) -> str:
-    """Compose one message body for the thread (the agentic prose; SPEC §5).
+    """Lay out one message body for the thread (deterministic; SPEC §5).
 
-    The model stack is imported lazily so pydantic-ai never enters the workflow
-    sandbox. ``alternatives`` is left empty until enrichment carries candidate
-    categories into the proposal (a later slice); the compose agent degrades
-    gracefully, simply not listing alternatives when there are none.
+    The proposal's category + alternatives (model-chosen upstream) are resolved
+    to names here and handed to the template — no model call at send time.
     """
-    from ynab_agent.agentic.compose import ComposeRequest, compose
+    from ynab_agent.agentic.compose import ComposeRequest, render_body
 
     proposed = (
         _allocation_display(proposal.allocation, names)
         if proposal is not None
         else None
     )
+    alternatives = (
+        tuple(names.get(str(alt), str(alt)) for alt in proposal.alternatives)
+        if proposal is not None
+        else ()
+    )
     request = ComposeRequest(
         purpose=purpose.value,
         payee=snapshot.payee,
         amount_display=str(snapshot.amount),
-        txn_date=snapshot.txn_date.isoformat(),
+        txn_date=_date_display(snapshot.txn_date),
         memo=snapshot.memo,
         proposed_category=proposed,
+        alternatives=alternatives,
         rationale=proposal.rationale if proposal is not None else None,
     )
-    return await compose(request)
+    return render_body(request)
 
 
 @activity.defn
@@ -229,15 +245,18 @@ async def open_thread(ynab_id: str, proposal: Proposal | None) -> str:
 
     settings = Settings()
     snapshot, names = await _read_for_compose(ynab_id)
-    body = await _compose_body(
-        snapshot, proposal, MessagePurpose.PROPOSAL, names
+    body = _render_message(snapshot, proposal, MessagePurpose.PROPOSAL, names)
+    proposed = (
+        _allocation_display(proposal.allocation, names)
+        if proposal is not None
+        else None
     )
     mail = MailClient.from_env()
     return await asyncio.to_thread(
         mail.open_thread,
         inbox_id=settings.inbox,
         to=list(settings.owners),
-        subject=_subject(snapshot),
+        subject=_subject(snapshot, proposed),
         body=body,
         txn_label=_txn_label(ynab_id),
     )
@@ -268,7 +287,7 @@ async def send_thread_message(
         raise RuntimeError(msg)
     settings = Settings()
     snapshot, names = await _read_for_compose(ynab_id)
-    body = await _compose_body(snapshot, proposal, purpose, names)
+    body = _render_message(snapshot, proposal, purpose, names)
     mail = MailClient.from_env()
     await asyncio.to_thread(
         mail.send_on_thread,

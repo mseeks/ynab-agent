@@ -66,6 +66,7 @@ class EnrichmentSuggestion(Frozen):
     category_id: str
     confidence: Confidence
     rationale: str
+    alternatives: tuple[str, ...] = ()
 
 
 _SYSTEM_PROMPT = """\
@@ -74,9 +75,11 @@ the payee, amount, an optional memo, an optional hint from a learned rule, and a
 list of candidate budget categories (each with an id and a name).
 
 Choose the SINGLE best category for the transaction. Your `category_id` MUST be
-one of the provided candidate ids — never invent one. Rate your confidence
-(high / medium / low) and give a one-sentence rationale. Confidence is framing
-only; a human or a trusted rule decides whether to auto-apply, not you."""
+one of the provided candidate ids — never invent one. Also list up to 2
+`alternatives`: the next-most-likely candidate ids (also from the list, never
+the chosen one) the owner might prefer — or leave empty if none fit. Rate your
+confidence (high / medium / low) and give a one-sentence rationale. Confidence
+is framing only; a human or a trusted rule decides whether to auto-apply."""
 
 _AGENT: Agent[None, EnrichmentSuggestion] = Agent(
     output_type=EnrichmentSuggestion,
@@ -117,7 +120,17 @@ async def propose(
 
 
 def to_proposal(suggestion: EnrichmentSuggestion) -> Proposal:
-    """Map the agent's suggestion onto a domain Proposal (SPEC §4.1)."""
+    """Map the agent's suggestion onto a domain Proposal (SPEC §4.1).
+
+    The model's runner-up ids become the proposal's alternatives (the chosen
+    one filtered out defensively), surfaced in the email so the owner can pick
+    one at a glance.
+    """
+    alternatives = tuple(
+        CategoryId(alt)
+        for alt in suggestion.alternatives
+        if alt and alt != suggestion.category_id
+    )
     return Proposal(
         allocation=ProposedCategory(
             category=CategoryId(suggestion.category_id)
@@ -125,6 +138,7 @@ def to_proposal(suggestion: EnrichmentSuggestion) -> Proposal:
         confidence=suggestion.confidence,
         rationale=suggestion.rationale,
         sources=(ProposalSource(kind=SourceKind.MODEL),),
+        alternatives=alternatives,
     )
 
 

@@ -1,43 +1,70 @@
-"""Offline tests for the compose agent (TestModel, no network)."""
+"""Tests for the deterministic proposal/message template (SPEC §5)."""
 
 from __future__ import annotations
 
-from pydantic_ai.models.test import TestModel
-
-from ynab_agent.agentic.compose import ComposeRequest, compose
-
-_PROPOSAL = ComposeRequest(
-    purpose="proposal",
-    payee="Amazon",
-    amount_display="$54.94",
-    txn_date="2026-05-28",
-    proposed_category="🛍️ Shopping",
-    alternatives=("🍽️ Dining out", "🎁 Gifts"),
-    rationale="Looks like a retail purchase.",
-)
+from ynab_agent.agentic.compose import ComposeRequest, render_body
+from ynab_agent.domain.effects import MessagePurpose
 
 
-async def test_compose_returns_the_models_body() -> None:
-    body = "Amazon $54.94 — best guess Shopping. Reply to confirm."
-    out = await compose(_PROPOSAL, model=TestModel(custom_output_text=body))
-    assert out == body
+def _req(**kw: object) -> ComposeRequest:
+    base: dict[str, object] = {
+        "purpose": MessagePurpose.PROPOSAL.value,
+        "payee": "Hulu",
+        "amount_display": "$-13.07",
+        "txn_date": "May 29",
+    }
+    base.update(kw)
+    return ComposeRequest(**base)  # type: ignore[arg-type]
 
 
-async def test_compose_smoke_with_default_testmodel() -> None:
-    # No custom text: TestModel autofills a string; this exercises the wiring
-    # (prompt render + run + output extraction) end-to-end, offline.
-    out = await compose(_PROPOSAL, model=TestModel())
-    assert isinstance(out, str)
-    assert out
+def test_proposal_lays_out_facts_suggestion_and_reply() -> None:
+    body = render_body(
+        _req(proposed_category="Entertainment", rationale="recurring stream")
+    )
+    assert "Hulu — $-13.07 — May 29" in body
+    assert "Suggested: Entertainment" in body
+    assert "recurring stream" in body
+    assert "reply" in body.lower()
+    assert "[YNAB]" not in body
 
 
-async def test_compose_prompt_includes_alternatives_and_purpose() -> None:
-    # The rendered user prompt must carry the facts the email needs — including
-    # the alternative categories the owner should see.
-    from ynab_agent.agentic.compose import _format_request
+def test_proposal_puts_alternatives_on_the_suggested_line() -> None:
+    body = render_body(
+        _req(
+            proposed_category="Entertainment",
+            alternatives=("Streaming", "Fun Money"),
+        )
+    )
+    suggested = next(
+        line for line in body.splitlines() if line.startswith("Suggested:")
+    )
+    assert "Streaming" in suggested and "Fun Money" in suggested
 
-    rendered = _format_request(_PROPOSAL)
-    assert "proposal" in rendered
-    assert "🛍️ Shopping" in rendered
-    assert "🍽️ Dining out" in rendered
-    assert "🎁 Gifts" in rendered
+
+def test_proposal_shows_the_memo_when_present() -> None:
+    # Amazon-style item detail rides in the memo.
+    body = render_body(
+        _req(proposed_category="Shopping", memo="USB-C cable, phone stand")
+    )
+    assert "USB-C cable, phone stand" in body
+
+
+def test_proposal_omits_memo_block_when_absent() -> None:
+    body = render_body(_req(proposed_category="Shopping"))
+    # The header line stands alone; nothing between it and the blank line.
+    assert body.splitlines()[1] == ""
+
+
+def test_confirm_is_brief_and_names_the_category() -> None:
+    body = render_body(
+        _req(purpose=MessagePurpose.CONFIRM.value, proposed_category="Dining")
+    )
+    assert "approved" in body.lower()
+    assert "Dining" in body
+
+
+def test_clarify_asks_the_question() -> None:
+    body = render_body(
+        _req(purpose=MessagePurpose.CLARIFY.value, question="Which trip?")
+    )
+    assert "Which trip?" in body

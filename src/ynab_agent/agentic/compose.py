@@ -1,36 +1,40 @@
-"""The compose agent: write a transaction's email message (SPEC §5).
+"""Render a transaction's email body (SPEC §5).
 
-The agentic half of the mail activities. Given the message PURPOSE plus the
-transaction's facts (re-read from YNAB), the current best-guess category, and a
-few alternative categories, a Pydantic AI agent writes a short, natural email
-BODY to the budget owner. The subject is templated deterministically by the
-activity; only the prose is model-written (a loose template — warm, specific,
-and it names alternatives so the owner sees what's available).
+A deterministic template — *not* a model call. The model already did the
+thinking upstream (the proposal's category + one-line rationale + alternatives);
+this just lays it out cleanly so a glance is enough to act. Keeping it templated
+(rather than free-form prose) is a deliberate low-cognitive-load choice, and it
+drops a per-email model round-trip.
 
-The model is injected per run so tests drive a ``TestModel``/``FunctionModel``
-offline; production uses :func:`~ynab_agent.agentic.model.build_model` (Ollama).
+The layout, for a proposal:
+
+    Hulu — $13.07 — May 29
+    <memo, when present — e.g. an Amazon item list>
+
+    Suggested: Entertainment   (or: Streaming, Fun Money)
+    recurring streaming subscription
+
+    Just reply in your own words — confirm it, suggest a different category, …
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from pydantic_ai import Agent
-
-from ynab_agent.agentic.model import build_model
 from ynab_agent.domain.base import Frozen
+from ynab_agent.domain.effects import MessagePurpose
 
-if TYPE_CHECKING:
-    from pydantic_ai.models import Model
+_REPLY_HINT = (
+    "Just reply in your own words — confirm it, suggest a different "
+    "category, or ask a question."
+)
 
 
 class ComposeRequest(Frozen):
-    """The facts the agent writes one transaction email from."""
+    """The facts the template lays out for one transaction email."""
 
     purpose: str  # the MessagePurpose value: proposal / confirm / clarify / ...
     payee: str
     amount_display: str
-    txn_date: str
+    txn_date: str  # already display-formatted (e.g. "May 29")
     memo: str | None = None
     proposed_category: str | None = None  # the best-guess category NAME
     alternatives: tuple[str, ...] = ()  # other category names to offer
@@ -40,64 +44,42 @@ class ComposeRequest(Frozen):
     )
 
 
-_SYSTEM_PROMPT = """\
-You write a short, warm email to a person about ONE of their bank transactions,
-on behalf of their budgeting assistant. You are given the message PURPOSE, the
-transaction facts (payee, amount, date, optional memo), and — for a proposal —
-your best-guess category, a one-line rationale, and a few alternatives.
-
-Write ONLY the email body (no subject line, no signature). Keep it brief (2-4
-sentences), natural, and specific to this transaction. Match the purpose:
-
-- proposal: name your best-guess category and the one-line reason, then list the
-  alternative categories as options, and invite a free-form reply — they can
-  say "yes" to confirm, name a different category, or ask a question.
-- confirm: confirm the category was set; one friendly sentence.
-- clarify: ask the given question plainly (or, if none, ask what category fits).
-- fyi / archive_notice / revise_summary / handoff / possibly_inconsistent /
-  diverged_readback: a brief, appropriate note for that situation.
-
-Never invent a category that wasn't given to you. Be concise — this lands in a
-real inbox."""
-
-_AGENT: Agent[None, str] = Agent(system_prompt=_SYSTEM_PROMPT)
+def _facts(request: ComposeRequest) -> str:
+    """The transaction header line, plus the memo line when there is one."""
+    header = f"{request.payee} — {request.amount_display} — {request.txn_date}"
+    if request.memo and request.memo.strip():
+        return f"{header}\n{request.memo.strip()}"
+    return header
 
 
-def _format_request(request: ComposeRequest) -> str:
-    """Render the request as the agent's user prompt."""
-    lines = [
-        f"Purpose: {request.purpose}",
-        f"Payee: {request.payee}",
-        f"Amount: {request.amount_display}",
-        f"Date: {request.txn_date}",
-    ]
-    if request.memo:
-        lines.append(f"Memo: {request.memo}")
-    if request.proposed_category:
-        lines.append(f"Best-guess category: {request.proposed_category}")
-    if request.rationale:
-        lines.append(f"Why: {request.rationale}")
+def _proposal_body(request: ComposeRequest, facts: str) -> str:
+    suggested = (
+        f"Suggested: {request.proposed_category or '(needs a category)'}"
+    )
     if request.alternatives:
-        lines.append(
-            "Alternative categories: " + ", ".join(request.alternatives)
-        )
-    if request.question:
-        lines.append(f"Question to ask: {request.question}")
+        suggested += f"   (or: {', '.join(request.alternatives)})"
+    lines = [facts, "", suggested]
+    if request.rationale:
+        lines.append(request.rationale)
+    lines += ["", _REPLY_HINT]
     return "\n".join(lines)
 
 
-async def compose(
-    request: ComposeRequest, *, model: Model | None = None
-) -> str:
-    """Write the email body for one transaction message (SPEC §5).
+def render_body(request: ComposeRequest) -> str:
+    """Lay out the email body for one transaction message (SPEC §5).
 
-    Args:
-        request: The purpose + transaction facts + proposal/alternatives.
-        model: A model to use; defaults to the configured Ollama/Gemma.
-
-    Returns:
-        The email body text (the subject is templated by the caller).
+    The subject is templated separately by the caller; this is the body.
     """
-    run_model = model if model is not None else build_model()
-    result = await _AGENT.run(_format_request(request), model=run_model)
-    return result.output
+    facts = _facts(request)
+    if request.purpose == MessagePurpose.PROPOSAL.value:
+        return _proposal_body(request, facts)
+    if request.purpose == MessagePurpose.CONFIRM.value:
+        category = request.proposed_category or "the category you picked"
+        return f"{facts}\n\nDone — set to {category} and approved."
+    if request.purpose == MessagePurpose.CLARIFY.value:
+        question = request.question or "Which category should this be?"
+        return f"{facts}\n\n{question}"
+    # fyi / archive_notice / revise_summary / handoff / possibly_inconsistent /
+    # diverged_readback — a brief, neutral note (question carries any detail).
+    note = request.question or "A quick note on this transaction."
+    return f"{facts}\n\n{note}"

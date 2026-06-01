@@ -45,8 +45,16 @@ def test_txn_and_seq_labels_are_namespaced() -> None:
     assert _seq_label("t-1", 3) == "yaseq-t-1-3"
 
 
-def test_subject_names_the_payee_and_amount() -> None:
-    subject = _subject(_snapshot())
+def test_subject_names_payee_amount_and_category() -> None:
+    subject = _subject(_snapshot(), "Dining Out")
+    assert "Blue Bottle" in subject
+    assert "-4.50" in subject
+    assert "Dining Out" in subject
+    assert "[YNAB]" not in subject  # known sender; no prefix
+
+
+def test_subject_without_category_is_just_payee_amount() -> None:
+    subject = _subject(_snapshot(), None)
     assert "Blue Bottle" in subject
     assert "-4.50" in subject
 

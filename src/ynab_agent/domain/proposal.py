@@ -14,7 +14,7 @@ from datetime import datetime
 from ynab_agent.domain.allocations import ProposedAllocation, ResolvedAllocation
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.enums import Confidence, DecidedBy, SourceKind
-from ynab_agent.domain.ids import RuleId
+from ynab_agent.domain.ids import CategoryId, RuleId
 
 
 class ProposalSource(Frozen):
@@ -36,6 +36,9 @@ class Proposal(Frozen):
     confidence: Confidence
     rationale: str
     sources: tuple[ProposalSource, ...] = ()
+    # A few runner-up categories the model also considered, surfaced in the
+    # proposal email so the owner can pick one at a glance (framing only).
+    alternatives: tuple[CategoryId, ...] = ()
 
 
 class Decision(Frozen):

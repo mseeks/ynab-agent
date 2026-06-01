@@ -88,6 +88,18 @@ def test_to_proposal_maps_onto_the_domain_proposal() -> None:
     assert proposal.sources[0].kind is SourceKind.MODEL
 
 
+def test_to_proposal_carries_alternatives_filtering_the_chosen() -> None:
+    suggestion = EnrichmentSuggestion(
+        category_id="dining",
+        confidence=Confidence.LOW,
+        rationale="maybe",
+        # the chosen id and an empty entry are filtered out defensively
+        alternatives=("coffee", "dining", "", "groceries"),
+    )
+    proposal = to_proposal(suggestion)
+    assert [str(a) for a in proposal.alternatives] == ["coffee", "groceries"]
+
+
 def test_build_model_constructs_an_ollama_model() -> None:
     assert isinstance(build_model(model_name="gemma4:e4b"), Model)
 
