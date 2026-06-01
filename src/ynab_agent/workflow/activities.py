@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     # (pydantic-ai) never enters the workflow sandbox. The enrich body imports
     # it lazily, inside the activity, where it runs outside the sandbox.
     from ynab_agent.agentic.enrich import CandidateCategory
+    from ynab_agent.budget.overspend import CategorySpend
     from ynab_agent.domain.rule import Rule
     from ynab_agent.policy.floor import AutoActionCounters
 
@@ -49,14 +50,37 @@ async def fetch_snapshot(ynab_id: str) -> YnabSnapshot | None:
     return await asyncio.to_thread(client.snapshot, ynab_id)
 
 
+def _candidates_from_spends(
+    spends: tuple[CategorySpend, ...],
+) -> tuple[CandidateCategory, ...]:
+    """Map the budget's live categories to the agent's candidate choices."""
+    from ynab_agent.agentic.enrich import CandidateCategory
+
+    return tuple(
+        CandidateCategory(id=str(spend.category), name=spend.name)
+        for spend in spends
+    )
+
+
 async def _load_enrichment_inputs(
     snapshot: YnabSnapshot,
 ) -> tuple[tuple[CandidateCategory, ...], list[Rule], AutoActionCounters]:
     """Fetch the candidate categories, in-scope rules, and auto counters.
 
-    The YNAB read and the rule-store read; stubbed until YNAB is wired.
+    The candidates are the budget's live categories, read from YNAB (the source
+    of truth). v1 is Gemma-only: there is no rule store yet and the auto-action
+    counters start at zero, so the gate always asks a human — rule learning and
+    the autonomy ramp arrive in later stages (SPEC §4.2, §9).
     """
-    raise NotImplementedError(_STUB)
+    import asyncio
+
+    from ynab_agent.policy.floor import AutoActionCounters
+    from ynab_agent.ynab.client import YnabClient
+
+    client = YnabClient.from_env()
+    spends = await asyncio.to_thread(client.category_spends)
+    rules: list[Rule] = []
+    return _candidates_from_spends(spends), rules, AutoActionCounters()
 
 
 @activity.defn
