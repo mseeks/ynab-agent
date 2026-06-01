@@ -43,6 +43,11 @@ from ynab_agent.workflow.runtime import (
 DEFAULT_HOST = "localhost:7233"
 DEFAULT_NAMESPACE = "default"
 DEFAULT_TASK_QUEUE = "ynab-agent"
+# Process one activity at a time: a burst of transactions must not fan many
+# model calls at the single local Gemma at once (Ollama serializes them anyway,
+# so concurrency only makes the late ones queue past their timeout). Serial
+# keeps each generation's wait minimal; the household's volume never needs more.
+_MAX_CONCURRENT_ACTIVITIES = 1
 
 
 async def run_worker(
@@ -75,6 +80,7 @@ async def run_worker(
         task_queue=queue,
         workflows=WORKFLOWS,
         activities=ALL_ACTIVITIES,
+        max_concurrent_activities=_MAX_CONCURRENT_ACTIVITIES,
     )
     # Run until SIGTERM/SIGINT, then shut down gracefully and flush telemetry.
     # `uv run` forwards SIGTERM to us, and Python's atexit does NOT run on an
