@@ -37,12 +37,14 @@ async def address_transaction(action: AddressTxn) -> None:
     """Start the transaction's W2 by ``ynab_id`` (SPEC §2, §3).
 
     Idempotent by construction: the W2's workflow id *is* the YNAB transaction
-    id, started ``REJECT_DUPLICATE``, so "what's new" is derived from whether a
-    workflow already exists — no stored seen-set. A txn already in flight (or
-    archived) raises :class:`WorkflowAlreadyStartedError`, which is the no-op
-    signal. The W2 reads its own snapshot in ``DISCOVERED``. ``route_to_human``
-    is not yet differentiated in v1 — the autonomy gate already routes
-    conservatively — so it is carried for observability only.
+    id, so "what's new" is derived from whether a workflow already exists — no
+    stored seen-set. The reuse policy is ``ALLOW_DUPLICATE_FAILED_ONLY``: a txn
+    already in flight, or one that *completed* (archived — even un-replied),
+    raises :class:`WorkflowAlreadyStartedError` and is a no-op, so the agent
+    never re-triages settled work; but a run that was *terminated* (an operator
+    reset) can be re-created. The W2 reads its own snapshot in ``DISCOVERED``.
+    ``route_to_human`` is not yet differentiated in v1 — the autonomy gate
+    already routes conservatively — so it is carried for observability only.
     """
     from temporalio.common import WorkflowIDReusePolicy
     from temporalio.exceptions import WorkflowAlreadyStartedError
@@ -58,7 +60,7 @@ async def address_transaction(action: AddressTxn) -> None:
             TransactionParams(ynab_id=ynab_id),
             id=str(ynab_id),
             task_queue=task_queue(),
-            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+            id_reuse_policy=(WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY),
         )
     except WorkflowAlreadyStartedError:
         return

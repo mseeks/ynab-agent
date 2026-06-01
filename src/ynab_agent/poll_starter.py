@@ -69,14 +69,16 @@ async def _start() -> None:
             params,
             id=_POLL_ID,
             task_queue=os.environ.get("TEMPORAL_TASK_QUEUE", "ynab-agent"),
-            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+            # Singleton, but re-creatable after an operator reset: a running
+            # loop is a no-op (below), a terminated one can be restarted.
+            id_reuse_policy=(WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY),
         )
     except WorkflowAlreadyStartedError:
         print(f"poll loop {_POLL_ID!r} already running — nothing to do")
         return
     print(
         f"started poll loop {handle.id!r} "
-        f"(install_date={install_date}, cursor=0, continuous)"
+        f"(install_date={install_date}, continuous)"
     )
 
 
