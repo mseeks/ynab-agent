@@ -85,3 +85,12 @@ def test_plan_routes_duplicate_imports_to_human() -> None:
     plan = plan_ingest([_snapshot(matched="t9")], _scope(), cold_start=False)
     assert len(plan) == 1
     assert plan[0].route_to_human
+
+
+def test_plan_skips_already_approved_transactions() -> None:
+    # An approved transaction is settled — never re-triaged (SPEC §2/§13). Only
+    # the outstanding, unapproved one is addressed.
+    approved = _snapshot(ynab_id="t1").model_copy(update={"approved": True})
+    unapproved = _snapshot(ynab_id="t2")
+    plan = plan_ingest([approved, unapproved], _scope(), cold_start=False)
+    assert [a.snapshot.ynab_id for a in plan] == ["t2"]

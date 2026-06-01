@@ -55,12 +55,20 @@ def plan_ingest(
         cold_start: Whether this is the first poll (capture-cursor-only).
 
     Returns:
-        One :class:`AddressTxn` per in-scope txn, or empty on cold start.
+        One :class:`AddressTxn` per in-scope, unapproved txn — empty on cold
+        start.
+
+    Only *unapproved* transactions are addressed (SPEC §2/§13 "new/unapproved").
+    An approved transaction is the owner's settled state — the agent never
+    re-triages or emails about something already approved (whether the owner
+    approved it in YNAB or the agent's own triage did). This is what makes "act
+    on the current backlog" safe: only the outstanding, unapproved transactions
+    surface.
     """
     if cold_start:
         return ()
     return tuple(
         AddressTxn(snapshot=snap, route_to_human=is_duplicate_import(snap))
         for snap in snapshots
-        if in_scope(snap, scope)
+        if in_scope(snap, scope) and not snap.approved
     )
