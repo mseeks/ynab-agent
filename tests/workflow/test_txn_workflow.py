@@ -12,6 +12,8 @@ import datetime
 from typing import TYPE_CHECKING
 
 from temporalio import activity
+from temporalio.api.enums.v1 import IndexedValueType
+from temporalio.api.operatorservice.v1 import AddSearchAttributesRequest
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -54,6 +56,28 @@ if TYPE_CHECKING:
 
 TASK_QUEUE = "ynab-test"
 _EPOCH = datetime.datetime(2026, 5, 28, tzinfo=datetime.UTC)
+
+
+async def _start_env() -> WorkflowEnvironment:
+    """A time-skipping env with the TxnThreadId search attribute registered.
+
+    The workflow upserts ``TxnThreadId`` on ``open_thread``; the time-skipping
+    test server *hangs* the workflow task on an unregistered search attribute,
+    register it before any run (the real cluster registers it via
+    ``manage/search-attributes.yaml``).
+    """
+    env = await WorkflowEnvironment.start_time_skipping(
+        data_converter=DATA_CONVERTER
+    )
+    await env.client.operator_service.add_search_attributes(
+        AddSearchAttributesRequest(
+            namespace="default",
+            search_attributes={
+                "TxnThreadId": IndexedValueType.INDEXED_VALUE_TYPE_KEYWORD
+            },
+        )
+    )
+    return env
 
 
 def _snapshot(*, reconciled: bool = True) -> YnabSnapshot:
@@ -129,12 +153,16 @@ def _activities(
         return committed.get("target")
 
     @activity.defn(name="open_thread")
-    async def open_thread(ynab_id: str) -> str:
+    async def open_thread(ynab_id: str, proposal: object) -> str:
         return "thread-1"
 
     @activity.defn(name="send_thread_message")
     async def send_thread_message(
-        thread_id: str | None, purpose: object, action_seq: int
+        ynab_id: str,
+        thread_id: str | None,
+        purpose: object,
+        action_seq: int,
+        proposal: object,
     ) -> None:
         return None
 
@@ -189,9 +217,7 @@ async def test_auto_apply_flows_to_open_then_archives() -> None:
         enrich_outcome=AutoApply(decision=_decision(DecidedBy.AGENT)),
     )
     async with (
-        await WorkflowEnvironment.start_time_skipping(
-            data_converter=DATA_CONVERTER
-        ) as env,
+        await _start_env() as env,
         Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -216,9 +242,7 @@ async def test_ask_then_answer_reaches_open_and_archives() -> None:
         interpret=AnswerOutcome(decision=_decision(DecidedBy.HUMAN)),
     )
     async with (
-        await WorkflowEnvironment.start_time_skipping(
-            data_converter=DATA_CONVERTER
-        ) as env,
+        await _start_env() as env,
         Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -249,9 +273,7 @@ async def test_human_confirm_feeds_rule_learning() -> None:
         learning_sink=sink,
     )
     async with (
-        await WorkflowEnvironment.start_time_skipping(
-            data_converter=DATA_CONVERTER
-        ) as env,
+        await _start_env() as env,
         Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -289,9 +311,7 @@ async def test_patience_timeout_lapses() -> None:
         enrich_outcome=AskHuman(proposal=_proposal()),
     )
     async with (
-        await WorkflowEnvironment.start_time_skipping(
-            data_converter=DATA_CONVERTER
-        ) as env,
+        await _start_env() as env,
         Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -318,9 +338,7 @@ async def test_open_inbound_revises_then_archives() -> None:
         converge_outcome=Reapplied(decision=_decision(DecidedBy.HUMAN)),
     )
     async with (
-        await WorkflowEnvironment.start_time_skipping(
-            data_converter=DATA_CONVERTER
-        ) as env,
+        await _start_env() as env,
         Worker(
             env.client,
             task_queue=TASK_QUEUE,
@@ -354,9 +372,7 @@ async def test_diverged_verify_flags_awaiting_and_does_not_livelock() -> None:
         read_back_seq=[divergent],
     )
     async with (
-        await WorkflowEnvironment.start_time_skipping(
-            data_converter=DATA_CONVERTER
-        ) as env,
+        await _start_env() as env,
         Worker(
             env.client,
             task_queue=TASK_QUEUE,

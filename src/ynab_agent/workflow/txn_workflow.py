@@ -26,9 +26,18 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from temporalio import workflow
+from temporalio.common import SearchAttributeKey
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from ynab_agent.domain.proposal import Proposal
+
+# The reply-routing reverse index: each workflow stamps its AgentMail thread_id
+# here on open_thread, so the dispatcher resolves an inbound reply's thread back
+# to this workflow with a Temporal visibility query (no separate store, §5.3).
+# Registered on the namespace by manage/search-attributes.yaml.
+_TXN_THREAD_ID = SearchAttributeKey.for_keyword("TxnThreadId")
 
 with workflow.unsafe.imports_passed_through():
     from ynab_agent.domain.config import DEFAULT_POLICY
@@ -222,15 +231,23 @@ class TransactionWorkflow:
         if isinstance(effect, OpenThread):
             tid = await workflow.execute_activity(
                 activities.open_thread,
-                self._ynab_id,
+                args=[self._ynab_id, self._proposal()],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
             self._set_thread_id(tid)
+            # Index this workflow by its thread for reply routing (§5.3).
+            workflow.upsert_search_attributes([_TXN_THREAD_ID.value_set(tid)])
         elif isinstance(effect, SendThreadMessage):
             self._action_seq += 1
             await workflow.execute_activity(
                 activities.send_thread_message,
-                args=[self._thread_id, effect.purpose, self._action_seq],
+                args=[
+                    self._ynab_id,
+                    self._thread_id,
+                    effect.purpose,
+                    self._action_seq,
+                    self._proposal(),
+                ],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
             )
         elif isinstance(effect, FeedRuleLearning):
@@ -267,6 +284,17 @@ class TransactionWorkflow:
         tid = st.thread_id if isinstance(st, Discovered) else st.core.thread_id
         if tid is not None:
             self._thread_id = str(tid)
+
+    def _proposal(self) -> Proposal | None:
+        """The current best-guess proposal, for states that carry one.
+
+        Passed to the mail activities so the proposal email can name the guess +
+        alternatives; ``None`` for purposes whose content derives from YNAB.
+        """
+        st = self._txn
+        if isinstance(st, (Enriching, AwaitingHuman, Lapsed)):
+            return st.proposal
+        return None
 
     # ── per-state steps ─────────────────────────────────────────────────────
     async def _on_discovered(self) -> None:

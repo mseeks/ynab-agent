@@ -16,7 +16,7 @@ from temporalio import activity
 
 from ynab_agent.domain.effects import FeedRuleLearning, MessagePurpose
 from ynab_agent.domain.events import ConvergeOutcome, EnrichmentOutcome
-from ynab_agent.domain.proposal import Decision
+from ynab_agent.domain.proposal import Decision, Proposal
 from ynab_agent.domain.signals import InboundSignal
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.policy.converge import TargetState
@@ -103,19 +103,31 @@ async def read_back(ynab_id: str) -> TargetState | None:
 
 
 @activity.defn
-async def open_thread(ynab_id: str) -> str:
-    """Create the AgentMail thread; returns its id."""
+async def open_thread(ynab_id: str, proposal: Proposal | None) -> str:
+    """Open the AgentMail thread by sending the proposal; returns its id.
+
+    A thread starts on its first send (AgentMail has no empty-thread create), so
+    this composes + sends the proposal as the opening email. ``proposal`` is the
+    current best guess (carried from workflow state); the txn facts + category
+    names are re-read from YNAB (the source of truth) at compose time.
+    """
     raise NotImplementedError(_STUB)
 
 
 @activity.defn
 async def send_thread_message(
-    thread_id: str | None, purpose: MessagePurpose, action_seq: int
+    ynab_id: str,
+    thread_id: str | None,
+    purpose: MessagePurpose,
+    action_seq: int,
+    proposal: Proposal | None,
 ) -> None:
-    """Send a message on the transaction's thread.
+    """Send a follow-up message on the transaction's thread.
 
     ``action_seq`` is the per-transaction idempotency key: the implementation
-    must dedup on it so a retry never double-sends (SPEC §3).
+    must dedup on it so a retry never double-sends (SPEC §3). ``proposal`` is
+    the current best guess where the purpose needs it (re-proposal); other
+    purposes derive their content from a re-read of the YNAB snapshot.
     """
     raise NotImplementedError(_STUB)
 
