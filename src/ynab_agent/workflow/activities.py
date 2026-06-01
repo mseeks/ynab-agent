@@ -14,9 +14,14 @@ from typing import TYPE_CHECKING
 
 from temporalio import activity
 
-from ynab_agent.domain.allocations import ProposedCategory, ProposedSplit
+from ynab_agent.domain.allocations import (
+    ProposedCategory,
+    ProposedSplit,
+    ResolvedCategory,
+)
 from ynab_agent.domain.effects import FeedRuleLearning, MessagePurpose
 from ynab_agent.domain.events import ConvergeOutcome, EnrichmentOutcome
+from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.proposal import Decision, Proposal
 from ynab_agent.domain.signals import InboundSignal
 from ynab_agent.domain.transaction import YnabSnapshot
@@ -276,20 +281,166 @@ async def send_thread_message(
     )
 
 
+def _proposed_category_id(proposal: Proposal | None) -> CategoryId | None:
+    """The single proposed category id, or None (a split is not approvable)."""
+    if proposal is None:
+        return None
+    allocation = proposal.allocation
+    if isinstance(allocation, ProposedCategory):
+        return allocation.category
+    return None
+
+
 @activity.defn
 async def interpret_inbound(
-    signal: InboundSignal, snapshot: YnabSnapshot
+    signal: InboundSignal,
+    snapshot: YnabSnapshot,
+    proposal: Proposal | None,
 ) -> ReplyOutcome:
-    """Interpret an inbound reply or matched receipt (answer or question)."""
-    raise NotImplementedError(_STUB)
+    """Interpret a human reply into an answer or a question (SPEC §3, §5).
+
+    Free-form: the model reads whether the reply approves the proposal, names a
+    different category, or asks a question. The spine — not the model — stamps
+    the human + time into the resulting Decision. A non-reply inbound, or a
+    missing/split proposal, can't be answered directly, so ask rather than guess
+    a write. Names + candidates are re-read from YNAB at interpret time.
+    """
+    import asyncio
+    from datetime import UTC, datetime
+
+    from ynab_agent.agentic.interpret import (
+        InterpretRequest,
+        interpret,
+        to_reply_outcome,
+    )
+    from ynab_agent.domain.signals import ReplySignal
+    from ynab_agent.workflow.types import ClarifyOutcome
+    from ynab_agent.ynab.client import YnabClient
+
+    proposed_id = _proposed_category_id(proposal)
+    if not isinstance(signal, ReplySignal) or proposed_id is None:
+        return ClarifyOutcome(
+            question="Could you say which category this should be?"
+        )
+
+    client = YnabClient.from_env()
+    spends = await asyncio.to_thread(client.category_spends)
+    names = {str(spend.category): spend.name for spend in spends}
+    request = InterpretRequest(
+        reply_text=signal.text,
+        payee=snapshot.payee,
+        amount_display=str(snapshot.amount),
+        proposed_category_name=names.get(str(proposed_id), str(proposed_id)),
+        candidates=_candidates_from_spends(spends),
+    )
+    interpretation = await interpret(request)
+    return to_reply_outcome(
+        interpretation,
+        proposed_category=proposed_id,
+        decided_at=datetime.now(UTC),
+    )
+
+
+def _target_summary(target: TargetState | None, names: dict[str, str]) -> str:
+    """A short human description of an end-state, for a divergence note."""
+    if target is None:
+        return "(could not read)"
+    allocation = target.allocation
+    if isinstance(allocation, ResolvedCategory):
+        label = names.get(str(allocation.category), str(allocation.category))
+    else:
+        label = "a split"
+    return f"{label} — {target.memo}" if target.memo else label
 
 
 @activity.defn
 async def converge(
     snapshot: YnabSnapshot, instruction: InboundSignal
 ) -> ConvergeOutcome:
-    """Converge a REVISING run to its target and verify it (SPEC §3)."""
-    raise NotImplementedError(_STUB)
+    """Converge a REVISING run to its target and verify it (SPEC §3).
+
+    The agent reads the revision instruction into a target (retarget / memo /
+    no-change); the spine commits, then reads back and classifies the result. A
+    reconciled or closed-month transaction, a non-reply instruction, or anything
+    the model under-specifies routes to a human rather than a silent edit.
+    """
+    import asyncio
+    from datetime import UTC, datetime
+
+    from ynab_agent.agentic.converge import (
+        RevisionRequest,
+        interpret_revision,
+        to_revision_plan,
+    )
+    from ynab_agent.domain.enums import DecidedBy
+    from ynab_agent.domain.events import (
+        CouldNotConfirm,
+        Diverged,
+        NeedsHuman,
+        NoChange,
+        Reapplied,
+        VerifyOutcome,
+    )
+    from ynab_agent.domain.signals import ReplySignal
+    from ynab_agent.policy.converge import (
+        classify_verify,
+        reconciliation_blocks,
+        target_of,
+    )
+    from ynab_agent.ynab.client import YnabClient
+
+    if reconciliation_blocks(snapshot):
+        return NeedsHuman(
+            reason="reconciled or closed-month — propose, don't silently edit"
+        )
+    if not isinstance(instruction, ReplySignal):
+        return NeedsHuman(reason="non-reply revision instruction unsupported")
+
+    client = YnabClient.from_env()
+    spends = await asyncio.to_thread(client.category_spends)
+    names = {str(spend.category): spend.name for spend in spends}
+    current_name = (
+        names.get(str(snapshot.category_id), str(snapshot.category_id))
+        if snapshot.category_id is not None
+        else "(uncategorized)"
+    )
+    target = await interpret_revision(
+        RevisionRequest(
+            instruction=instruction.text,
+            current_category_name=current_name,
+            candidates=_candidates_from_spends(spends),
+            current_memo=snapshot.memo,
+        )
+    )
+    plan = to_revision_plan(target)
+    if not plan.changes:
+        return NoChange()
+
+    category = (
+        CategoryId(plan.category_id)
+        if plan.category_id is not None
+        else snapshot.category_id
+    )
+    if category is None:
+        return NeedsHuman(reason="revision did not resolve a category")
+    decision = Decision(
+        allocation=ResolvedCategory(category=category),
+        memo=plan.memo if plan.memo is not None else snapshot.memo,
+        approved=True,
+        decided_by=DecidedBy.HUMAN,
+        decided_at=datetime.now(UTC),
+    )
+    await asyncio.to_thread(client.commit, snapshot.ynab_id, decision)
+    read = await asyncio.to_thread(client.read_back, snapshot.ynab_id)
+    verdict = classify_verify(read, target_of(decision))
+    if verdict is VerifyOutcome.MATCH:
+        return Reapplied(decision=decision)
+    if verdict is VerifyOutcome.COULD_NOT_CONFIRM:
+        return CouldNotConfirm()
+    return Diverged(
+        ynab_summary=_target_summary(read, names),
+        requested_summary=_target_summary(target_of(decision), names),
+    )
 
 
 @activity.defn

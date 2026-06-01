@@ -167,7 +167,9 @@ def _activities(
         return None
 
     @activity.defn(name="interpret_inbound")
-    async def interpret_inbound(signal: object, snap: object) -> ReplyOutcome:
+    async def interpret_inbound(
+        signal: object, snap: object, proposal: object
+    ) -> ReplyOutcome:
         assert interpret is not None
         return interpret
 

@@ -373,7 +373,7 @@ class TransactionWorkflow:
         signal = self._inbound.popleft()
         interpretation = await workflow.execute_activity(
             activities.interpret_inbound,
-            args=[signal, snapshot],
+            args=[signal, snapshot, self._proposal()],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
         )
         if isinstance(interpretation, AnswerOutcome):
