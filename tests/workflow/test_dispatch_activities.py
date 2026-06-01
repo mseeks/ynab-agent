@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from ynab_agent.workflow import dispatch_activities
+from ynab_agent.workflow import dispatch_activities, temporal_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -46,7 +46,7 @@ def test_resolve_thread_returns_matching_workflow_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = _FakeClient([_FakeExecution("txn-123")])
-    monkeypatch.setattr(dispatch_activities, "_CLIENT", fake)
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
     result = asyncio.run(dispatch_activities.resolve_thread("thread-abc"))
     assert result == "txn-123"
     assert fake.queries == ['TxnThreadId = "thread-abc"']
@@ -56,7 +56,7 @@ def test_resolve_thread_none_when_no_workflow_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = _FakeClient([])
-    monkeypatch.setattr(dispatch_activities, "_CLIENT", fake)
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
     assert asyncio.run(dispatch_activities.resolve_thread("orphan")) is None
 
 
@@ -69,6 +69,6 @@ def test_resolve_thread_escapes_quotes_in_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = _FakeClient([_FakeExecution("txn-9")])
-    monkeypatch.setattr(dispatch_activities, "_CLIENT", fake)
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
     asyncio.run(dispatch_activities.resolve_thread('th"read'))
     assert fake.queries == ['TxnThreadId = "th\\"read"']

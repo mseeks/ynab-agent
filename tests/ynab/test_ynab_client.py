@@ -126,9 +126,16 @@ def test_to_patch_for_a_split_decision() -> None:
 
 
 class _FakeBackend:
-    def __init__(self, txn: WireTransaction) -> None:
+    def __init__(
+        self,
+        txn: WireTransaction,
+        *,
+        delta: tuple[tuple[WireTransaction, ...], int] = ((), 0),
+    ) -> None:
         self._txn = txn
+        self._delta = delta
         self.patched: list[tuple[str, dict[str, object]]] = []
+        self.delta_calls: list[tuple[str, int | None]] = []
 
     def get_transaction(self, txn_id: str) -> WireTransaction:
         return self._txn
@@ -138,6 +145,12 @@ class _FakeBackend:
 
     def list_categories(self) -> tuple[WireCategory, ...]:
         return ()
+
+    def list_transactions(
+        self, since_date: str, server_knowledge: int | None
+    ) -> tuple[tuple[WireTransaction, ...], int]:
+        self.delta_calls.append((since_date, server_knowledge))
+        return self._delta
 
 
 def test_client_snapshot_maps_through_the_backend() -> None:
@@ -183,6 +196,27 @@ def test_client_commit_patches_the_transaction() -> None:
     YnabClient(backend).commit("t1", decision)
     assert backend.patched[0][0] == "t1"
     assert backend.patched[0][1]["category_id"] == "dining"
+
+
+def test_client_delta_maps_snapshots_and_drops_deleted() -> None:
+    backend = _FakeBackend(
+        _wire_txn(),
+        delta=(
+            (_wire_txn(id="t1"), _wire_txn(id="t2", deleted=True)),
+            55,
+        ),
+    )
+    snapshots, cursor = YnabClient(backend).delta(
+        datetime.date(2026, 5, 1), None
+    )
+    assert [s.ynab_id for s in snapshots] == ["t1"]  # deleted t2 dropped
+    assert cursor == 55
+
+
+def test_client_delta_passes_since_date_and_cursor() -> None:
+    backend = _FakeBackend(_wire_txn(), delta=((), 7))
+    YnabClient(backend).delta(datetime.date(2026, 5, 1), 42)
+    assert backend.delta_calls == [("2026-05-01", 42)]
 
 
 @pytest.mark.skipif(

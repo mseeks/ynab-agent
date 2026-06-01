@@ -15,14 +15,20 @@ class DeltaPage(Frozen):
 
 
 class PollParams(Frozen):
-    """The W1 poll's params: the scope and the prior cursor.
+    """The W1 poll's params: scope, prior cursor, and the loop knobs.
 
     ``cursor`` is ``None`` on the very first poll, which triggers the cold-start
-    cutover (capture the cursor without acting; SPEC §13).
+    cutover (capture the cursor without acting; SPEC §13). When ``continuous``
+    is set the workflow is a durable loop: after each tick it sleeps
+    ``interval_seconds`` and continues-as-new carrying the advanced cursor in
+    workflow state (store-free, SPEC §0.5). A one-shot run (the default, and
+    what tests use) returns its :class:`PollResult` instead of looping.
     """
 
     scope: IngestScope
     cursor: int | None = None
+    interval_seconds: int = 3600
+    continuous: bool = False
 
 
 class PollResult(Frozen):

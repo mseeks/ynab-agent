@@ -51,7 +51,6 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     activities.close_thread,
     poll_activities.fetch_delta,
     poll_activities.address_transaction,
-    poll_activities.save_cursor,
     dispatch_activities.resolve_thread,
     dispatch_activities.classify_inbound,
     dispatch_activities.signal_transaction,

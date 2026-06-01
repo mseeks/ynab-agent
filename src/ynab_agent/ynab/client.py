@@ -130,6 +130,12 @@ class YnabBackend(Protocol):
         """List the budget's live categories."""
         ...
 
+    def list_transactions(
+        self, since_date: str, server_knowledge: int | None
+    ) -> tuple[tuple[WireTransaction, ...], int]:
+        """The transactions delta and the advanced ``server_knowledge``."""
+        ...
+
 
 # The process-wide cached client built by ``from_env`` (see its docstring).
 # ``tests/conftest.py`` resets this between tests.
@@ -189,6 +195,24 @@ class YnabClient:
             to_category_spend(c) for c in self._backend.list_categories()
         )
 
+    def delta(
+        self, since_date: datetime.date, cursor: int | None
+    ) -> tuple[tuple[YnabSnapshot, ...], int]:
+        """The transactions delta since ``cursor`` and the advanced cursor (§2).
+
+        ``since_date`` bounds the fetch to the install cutover (so a cold start
+        never pulls years of history); ``cursor`` is YNAB's ``server_knowledge``
+        — ``None`` fetches the bounded backlog, an int fetches only what changed
+        since. Deleted rows drop out, so callers see only live transactions.
+        """
+        wires, server_knowledge = self._backend.list_transactions(
+            since_date.isoformat(), cursor
+        )
+        snapshots = tuple(
+            to_snapshot(wire) for wire in wires if not wire.deleted
+        )
+        return snapshots, server_knowledge
+
     def commit(self, txn_id: str, decision: Decision) -> None:
         """Commit a decision to a transaction (SPEC §3)."""
         self._backend.patch_transaction(txn_id, to_patch(decision))
@@ -218,6 +242,22 @@ class _HttpxBackend:
         path = f"/budgets/{self._budget}/transactions/{txn_id}"
         response = self._client.patch(path, json={"transaction": fields})
         response.raise_for_status()
+
+    def list_transactions(
+        self, since_date: str, server_knowledge: int | None
+    ) -> tuple[tuple[WireTransaction, ...], int]:
+        path = f"/budgets/{self._budget}/transactions"
+        params: dict[str, str | int] = {"since_date": since_date}
+        if server_knowledge is not None:
+            params["last_knowledge_of_server"] = server_knowledge
+        response = self._client.get(path, params=params)
+        response.raise_for_status()
+        data = response.json()["data"]
+        transactions = tuple(
+            WireTransaction.model_validate(item)
+            for item in data["transactions"]
+        )
+        return transactions, int(data["server_knowledge"])
 
     def list_categories(self) -> tuple[WireCategory, ...]:
         path = f"/budgets/{self._budget}/categories"

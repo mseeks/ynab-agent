@@ -1,11 +1,20 @@
-"""End-to-end tests for the W1 poll workflow on the time-skipping server."""
+"""End-to-end tests for the W1 poll workflow on the time-skipping server.
+
+The one-shot path (``continuous=False``) covers the per-tick logic — cold-start
+capture and in-scope addressing. A separate test drives the durable loop
+(``continuous=True``) and proves the delta cursor is carried across
+continue-as-new in workflow state (no external cursor store, SPEC §0.5).
+"""
 
 from __future__ import annotations
 
 import datetime
 from typing import TYPE_CHECKING
 
+import pytest
 from temporalio import activity
+from temporalio.client import WorkflowFailureError
+from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -41,29 +50,24 @@ def _scope() -> IngestScope:
 
 
 def _poll_activities(
-    *, page: DeltaPage, addressed: list[str], saved: list[int]
+    *, page: DeltaPage, addressed: list[str]
 ) -> list[Callable[..., object]]:
     @activity.defn(name="fetch_delta")
-    async def fetch_delta(budget_id: str, cursor: int | None) -> DeltaPage:
+    async def fetch_delta(scope: IngestScope, cursor: int | None) -> DeltaPage:
         return page
 
     @activity.defn(name="address_transaction")
     async def address_transaction(action: AddressTxn) -> None:
         addressed.append(action.snapshot.ynab_id)
 
-    @activity.defn(name="save_cursor")
-    async def save_cursor(budget_id: str, server_knowledge: int) -> None:
-        saved.append(server_knowledge)
-
-    return [fetch_delta, address_transaction, save_cursor]
+    return [fetch_delta, address_transaction]
 
 
 async def _run(
     *, wf_id: str, page: DeltaPage, params: PollParams
 ) -> tuple[PollResult, list[str]]:
     addressed: list[str] = []
-    saved: list[int] = []
-    acts = _poll_activities(page=page, addressed=addressed, saved=saved)
+    acts = _poll_activities(page=page, addressed=addressed)
     async with (
         await WorkflowEnvironment.start_time_skipping(
             data_converter=DATA_CONVERTER
@@ -78,7 +82,6 @@ async def _run(
         result = await env.client.execute_workflow(
             PollWorkflow.run, params, id=wf_id, task_queue=TASK_QUEUE
         )
-    assert saved == [page.server_knowledge]  # cursor always advances
     return result, addressed
 
 
@@ -102,7 +105,7 @@ async def test_poll_addresses_in_scope_transactions() -> None:
 
 async def test_cold_start_captures_cursor_without_acting() -> None:
     page = DeltaPage(snapshots=(_snapshot("t1"),), server_knowledge=7)
-    # cursor=None → cold start: nothing addressed, but the cursor is saved.
+    # cursor=None → cold start: nothing addressed, but the cursor advances.
     result, addressed = await _run(
         wf_id="poll-cold",
         page=page,
@@ -111,3 +114,42 @@ async def test_cold_start_captures_cursor_without_acting() -> None:
     assert result.addressed == 0
     assert addressed == []
     assert result.new_cursor == 7
+
+
+async def test_continuous_loop_carries_cursor_across_continue_as_new() -> None:
+    # The durable loop has no external cursor store: each tick must continue-as
+    # -new with the prior tick's server_knowledge. Capture the cursor each tick
+    # and break the otherwise-infinite loop on the second by raising.
+    cursors: list[int | None] = []
+
+    @activity.defn(name="fetch_delta")
+    async def fetch_delta(scope: IngestScope, cursor: int | None) -> DeltaPage:
+        cursors.append(cursor)
+        if len(cursors) >= 2:
+            raise ApplicationError("stop the loop", non_retryable=True)
+        return DeltaPage(snapshots=(), server_knowledge=99)
+
+    @activity.defn(name="address_transaction")
+    async def address_transaction(action: AddressTxn) -> None:
+        return None
+
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[PollWorkflow],
+            activities=[fetch_delta, address_transaction],
+        ),
+    ):
+        with pytest.raises(WorkflowFailureError):
+            await env.client.execute_workflow(
+                PollWorkflow.run,
+                PollParams(scope=_scope(), cursor=None, continuous=True),
+                id="poll-loop",
+                task_queue=TASK_QUEUE,
+            )
+    # Tick 1 ran cold (None); tick 2 inherited the advanced cursor from state.
+    assert cursors == [None, 99]
