@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 from pydantic_ai import Agent
 
-from ynab_agent.agentic.model import build_model
+from ynab_agent.agentic.model import run_structured
 from ynab_agent.domain.allocations import ProposedCategory
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.enums import Confidence, SourceKind
@@ -114,9 +114,12 @@ async def propose(
     Returns:
         The agent's structured category suggestion.
     """
-    run_model = model if model is not None else build_model()
-    result = await _AGENT.run(_format_request(request), model=run_model)
-    return result.output
+    return await run_structured(
+        _AGENT,
+        _format_request(request),
+        output_type=EnrichmentSuggestion,
+        model=model,
+    )
 
 
 def to_proposal(suggestion: EnrichmentSuggestion) -> Proposal:

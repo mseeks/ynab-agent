@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
 
-from ynab_agent.agentic.model import build_model
+from ynab_agent.agentic.model import run_structured
 from ynab_agent.dispatch.classify import InboundKind
 from ynab_agent.domain.base import Frozen
 
@@ -78,9 +78,12 @@ async def classify_inbound(
     Returns:
         The agent's structured classification.
     """
-    run_model = model if model is not None else build_model()
-    result = await _AGENT.run(_format_message(message), model=run_model)
-    return result.output
+    return await run_structured(
+        _AGENT,
+        _format_message(message),
+        output_type=InboundClassification,
+        model=model,
+    )
 
 
 def to_kind(classification: InboundClassification) -> InboundKind:

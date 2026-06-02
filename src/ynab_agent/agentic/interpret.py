@@ -22,7 +22,7 @@ from pydantic import Field
 from pydantic_ai import Agent
 
 from ynab_agent.agentic.enrich import CandidateCategory
-from ynab_agent.agentic.model import build_model
+from ynab_agent.agentic.model import run_structured
 from ynab_agent.domain.allocations import ResolvedCategory
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.enums import DecidedBy
@@ -108,9 +108,12 @@ async def interpret(
     Returns:
         The agent's structured reading of the reply.
     """
-    run_model = model if model is not None else build_model()
-    result = await _AGENT.run(_format_request(request), model=run_model)
-    return result.output
+    return await run_structured(
+        _AGENT,
+        _format_request(request),
+        output_type=Interpretation,
+        model=model,
+    )
 
 
 def _human_decision(
