@@ -8,6 +8,7 @@ middle's verdict that the deterministic spine then acts on.
 from __future__ import annotations
 
 import datetime
+from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import Field
@@ -50,7 +51,10 @@ class TransactionParams(Frozen):
     ynab_id: YnabTransactionId
     thread_id: ThreadId | None = None
     resume_txn: Transaction | None = None
-    resume_deadlines: dict[TimerKind, datetime.datetime] = Field(
+    # A read-only Mapping, not a dict: the resumable state is a frozen value,
+    # so nothing mutates it in place across a continue-as-new (the workflow
+    # takes its own mutable copy via ``dict(...)``).
+    resume_deadlines: Mapping[TimerKind, datetime.datetime] = Field(
         default_factory=dict
     )
     resume_inbound: tuple[InboundSignal, ...] = ()
