@@ -24,6 +24,9 @@ loops of the *same shape* come next — we resist broadening any single one.
 | `sandbox-imports` | AST scan of `@workflow.defn`/`@activity.defn` files for module-level imports of forbidden stacks (`pydantic_ai`, `agentmail`, `agentic`, `mail`) that would enter the Temporal sandbox | three-bucket map: *Hazard* (move lazy / TYPE_CHECKING) / *Safe* (already lazy / type-only) / *Judgment-heavy* |
 | `secret-leak` | scan for a secret-named binding (`api_key`/`token`/`password`…) to a 16+ char string literal (env reads excluded) | three-bucket map: *Secret* (rotate + move to env) / *Not a secret* (placeholder / fixture) / *Judgment-heavy*; values masked |
 | `derived-state` | regex sweep for a persistent-store smell (a DB/cache/ORM driver import, an on-disk kv/pickle store, a `*_DATABASE_URL`-style env, or a local `store`/`persistence`/`db` import) | three-bucket map: *Violates derived-state* (move to Temporal state / search attribute, or derive from YNAB/AgentMail) / *Not a store* (transient / fixture / config read) / *Judgment-heavy* |
+| `model-seam` | location-aware sweep for an agent invocation that bypasses `run_structured` (a `.run(` inside `agentic/` outside `model.py`, an `Agent(` built outside `agentic/`, or an imported private `_AGENT`) | three-bucket map: *Bypass* (route through `run_structured`) / *Safe* (the seam itself / a comment / a `TYPE_CHECKING` annotation / a test) / *Judgment-heavy* |
+| `activity-retry` | AST scan for `workflow.execute_activity` / `execute_local_activity` calls that pass no `retry_policy` (so they inherit Temporal's unbounded-retry default) | three-bucket map: *No policy* (a write / agentic activity that must bound retries or mark errors non-retryable) / *Acceptable* (an idempotent, retry-safe read) / *Judgment-heavy* |
+| `frozen-mutability` | base-class-aware AST scan: a `Frozen` subclass (closed transitively) with a field typed `list` / `dict` / `set` (mutable in place, incl. under `\| None` / `Optional[...]`) | three-bucket map: *Mutable* (use `tuple` / `Mapping` / `frozenset`) / *Immutable* (already immutable / `ClassVar` / not a frozen model) / *Judgment-heavy* |
 
 File discovery (`lib.iter_python_files`) and the locked-down agent pass
 (`lib.run_loop`) are shared; the regex-sweep loops (`type-debt`, `comment-debt`,
@@ -37,7 +40,13 @@ The first six loops are Python ports of Revisionist's; `determinism`,
 (`derived-state` enforces the placement decision that durable state lives only in
 Temporal or is derived from YNAB/AgentMail, never an external store);
 `determinism`/`sandbox-imports` are Temporal-specific guards (replay-determinism
-and the sandbox import graph) with no Revisionist analogue.
+and the sandbox import graph) with no Revisionist analogue. `model-seam`,
+`activity-retry`, and `frozen-mutability` are the same kind of project-specific
+guard: `model-seam` keeps every agent invocation on the `run_structured` seam
+(NativeOutput + `reasoning_effort:"none"`) that fixed the Ollama #15288 outage,
+`activity-retry` flags activities that inherit Temporal's unbounded-retry default
+(a deterministic failure then spins forever), and `frozen-mutability` enforces
+that the frozen domain core carries only immutable fields.
 
 ## Running
 
@@ -57,6 +66,9 @@ uv run python -m agents.determinism [scope]
 uv run python -m agents.sandbox_imports [scope]
 uv run python -m agents.secret_leak [scope]
 uv run python -m agents.derived_state [scope]
+uv run python -m agents.model_seam [scope]
+uv run python -m agents.activity_retry [scope]
+uv run python -m agents.frozen_mutability [scope]
 ```
 
 ## Auth & safety

@@ -1,7 +1,7 @@
 # YNAB Agent — developer terrain.
 # Short, single-purpose targets: each is one tool, easy to read and approve.
 
-.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence loop-duplicated-constant loop-dead-code loop-test-backfill loop-determinism loop-sandbox-imports loop-secret-leak loop-derived-state
+.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence loop-duplicated-constant loop-dead-code loop-test-backfill loop-determinism loop-sandbox-imports loop-secret-leak loop-derived-state loop-model-seam loop-activity-retry loop-frozen-mutability
 
 SCOPE ?=
 
@@ -76,3 +76,15 @@ loop-secret-leak:
 # Run the derived-state loop (read-only). Scans for persistent-store smells; src
 loop-derived-state:
 	uv run python -m agents.derived_state $(SCOPE)
+
+# Run the model-seam loop (read-only). Flags agent calls that bypass run_structured; src
+loop-model-seam:
+	uv run python -m agents.model_seam $(SCOPE)
+
+# Run the activity-retry loop (read-only). Flags execute_activity calls with no retry_policy; src
+loop-activity-retry:
+	uv run python -m agents.activity_retry $(SCOPE)
+
+# Run the frozen-mutability loop (read-only). Flags mutable fields on frozen models; src
+loop-frozen-mutability:
+	uv run python -m agents.frozen_mutability $(SCOPE)
