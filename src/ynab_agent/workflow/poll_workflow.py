@@ -24,6 +24,7 @@ from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from ynab_agent.ingest.plan import plan_ingest
     from ynab_agent.workflow import poll_activities
+    from ynab_agent.workflow.constants import ACTIVITY_RETRY
     from ynab_agent.workflow.poll_types import PollParams, PollResult
 
 _ACTIVITY_TIMEOUT = timedelta(seconds=60)
@@ -39,6 +40,7 @@ class PollWorkflow:
         snapshots = await workflow.execute_activity(
             poll_activities.fetch_unapproved,
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
+            retry_policy=ACTIVITY_RETRY,
         )
         # The fetched set is already unapproved; the scope bounds it by install
         # date + account, and cold_start is moot (no backlog to suppress — the
@@ -49,6 +51,7 @@ class PollWorkflow:
                 poll_activities.address_transaction,
                 action,
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                retry_policy=ACTIVITY_RETRY,
             )
         result = PollResult(
             addressed=len(actions),
