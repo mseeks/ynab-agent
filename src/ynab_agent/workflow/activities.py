@@ -462,14 +462,32 @@ async def converge(
 
 @activity.defn
 async def feed_rule_learning(feed: FeedRuleLearning) -> None:
-    """Feed a confirm/correct event to rule learning (W5; SPEC §9).
+    """Persist a confirm/correct event into the durable rule registry (W5).
 
-    No-op in v1: there is no rule store yet (Gemma-only), so confirm/correct
-    events are not learned from and every transaction is proposed to a human.
-    Rule learning + the autonomy ramp arrive in a later stage; the W2 still
-    emits the event so the wiring is in place for when this body lands.
+    Signal-with-start on the singleton :class:`RuleRegistryWorkflow`: the first
+    learning event creates it, every later one just delivers the signal, and the
+    workflow folds the event into the rule table the autonomy gate reads (SPEC
+    §9, §14). The conflict policy reuses the running singleton rather than
+    starting a second registry.
     """
-    return None
+    from temporalio.common import WorkflowIDConflictPolicy
+
+    from ynab_agent.workflow.registry_types import (
+        REGISTRY_WORKFLOW_ID,
+        RegistryParams,
+    )
+    from ynab_agent.workflow.temporal_client import client, task_queue
+
+    temporal = await client()
+    await temporal.start_workflow(
+        "RuleRegistryWorkflow",
+        RegistryParams(),
+        id=REGISTRY_WORKFLOW_ID,
+        task_queue=task_queue(),
+        id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+        start_signal="record",
+        start_signal_args=[feed],
+    )
 
 
 @activity.defn

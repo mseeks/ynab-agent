@@ -24,8 +24,11 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
     from pydantic_ai.settings import ModelSettings
 
-# Gemma 4's efficient variant: small and fast enough for dev, env-overridable.
-_DEFAULT_MODEL = "gemma4:e4b"
+# Gemma 4 at its largest weight: we trade latency for the deepest inference on
+# every task — categorization should feel like a genuinely intelligent agent,
+# and the household's volume never needs throughput. Env-overridable, so a dev
+# box can point `YNAB_AGENT_MODEL` at a smaller variant (`gemma4:e4b`).
+_DEFAULT_MODEL = "gemma4:27b"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434/v1"
 
 # Turn Gemma's "thinking" OFF for the production runs. Ollama bug #15288
@@ -45,7 +48,7 @@ def build_model(
 
     Args:
         model_name: Override the model; defaults to ``$YNAB_AGENT_MODEL`` or
-            ``gemma4:e4b``.
+            ``gemma4:27b`` (the largest Gemma 4 weight).
         base_url: Override the endpoint; defaults to ``$YNAB_AGENT_OLLAMA_URL``
             or the local Ollama ``/v1``.
 

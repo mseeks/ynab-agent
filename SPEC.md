@@ -693,3 +693,116 @@ the channel (email) that might be broken.
   (env-injected, never in `.mcp.json`/repo), with rotation, bounded by the fail-closed scope. Note
   retention for receipts/attachments and audit logs (the matching-TTL is not a deletion policy), and
   minimize sensitive detail (e.g. medical/pharmacy line items) in outbound prose.
+
+---
+
+## 14. Learning + autonomy on-ramp (W5, addendum)
+
+Brings rule learning live as a **slow, opt-in on-ramp**. The agent never *takes* autonomy; it earns
+*eligibility* from history and the owner grants the rest. This section amends §4.2 (the ladder) and
+§4.4 (memos), implements §9, and resolves open decisions §11.1/2/12. Guiding line: every
+categorization — proposed or auto — should feel like a deeply-reasoning intelligent agent, and the
+owner keeps full visibility for as long as they want it.
+
+### 14.1 The rule registry (the only store)
+
+One durable Temporal workflow, `RuleRegistryWorkflow` (singleton id `ynab-rule-registry`), holds the
+learned rule table as workflow state — never an external DB (the §0.5 derived-state rule, guarded by
+the `derived-state` loop). It is born on the first learning signal (`feed_rule_learning`
+signal-with-start) and lives forever, continuing-as-new to bound history. A thin durable shell over
+the pure `learn.registry` folds (the `state_machine`↔`txn_workflow` pattern); queries serve the gate
+(`payee_rules`) and the on-ramp (`view`→`eligible`).
+
+**Derive, don't duplicate.** The registry stores only what YNAB structurally cannot: the per-rule
+*autonomy state* and a captured *rationale*. What a payee usually maps to, and how consistent it has
+been, is **derived from YNAB's canonical history** on demand (§4.1 source 2) — including the owner's
+own in-app categorizations — so the agent learns from all behavior, not just the txns it touched, and
+never drifts from reality. The registry is a small index over YNAB, not a second ledger.
+
+### 14.2 Opt-in on-ramp (amends §4.2)
+
+The ladder is unchanged in *levels* but the climb is **gated by an explicit bless**, not automatic:
+
+| Stage | Behavior | Feedback | Reached by |
+|---|---|---|---|
+| **Observe (L0)** | Propose every txn (today) | Owner answers each | Default |
+| **Eligible** | Still proposes; rule is `trusted`+`learned`, surfaced | One-time "auto-handle *Payee* from now on?" | K consistent confirms, no recent correction |
+| **Auto + loud (L2)** | Apply+approve under floor (§0.6) | **Per-action** FYI email, one-reply undo | Owner blesses → `source=human_explicit` |
+| **Auto + quiet (L2)** | Apply+approve | Periodic digest | Owner stops correcting (later) |
+| **Silent (L3)** | Apply+approve | Recap only | Opt-in, out of scope now |
+
+The single change to the gate (§4.2): **AUTO requires a `human_explicit` (blessed) rule**, not merely
+`trusted`. Reaching K by confirmations makes a *learned* rule `trusted` = **eligible** only
+(`registry.eligible_for_bless`); it auto-applies only after the owner's opt-in. An explicit command
+("always categorize X as Y") blesses directly. This is "earned, never on silence" (§4.2) made
+strictly consent-driven. Per-payee, tiny blast radius; an oscillating payee never even reaches
+eligible (competing rules, neither hits K). Caps still bind when blessed: floor amount ceiling,
+per-day auto count, and **a correction of any auto-action demotes the rule and drops the payee back to
+Observe**.
+
+Trust granularity stays **per-payee** (the `RuleMatch.payee_pattern` we already key on); we split into
+`(payee, account)`/amount-band rules only when a payee proves context-dependent (an oscillation that's
+actually two stable sub-cases). Simplicity in the *gate*; full context in the *proposal* (§14.3).
+
+### 14.3 Full-context inference (always)
+
+Two jobs, two mechanisms — keep them apart:
+
+- **Proposal (fuzzy, smart):** the model reasons over *all* available context — payee, amount+sign,
+  account, memo, flag, cleared, and date-derived day-of-week / day-of-month / recurrence cadence —
+  plus the retrieved rationale of similar past txns (§14.4). This is where "infer deeply what
+  something is" lives. (Honest limit: YNAB txns are **date-only**; there is no time-of-day unless a
+  memo carries it.) The §4.1 source ladder feeds this; nothing is dropped for being weak.
+- **Autonomy (crisp, safe):** the gate decides AUTO vs ASK on an explicit, auditable trigger — exactly
+  one blessed rule clearly applies — never on model confidence (principle 6). Confidence is framing
+  only (§4.1).
+
+### 14.4 Rationale → memo, and the storage triad (amends §4.4)
+
+When the owner categorizes, they usually say *why* ("their shopping — gift for mom", "kids' soccer").
+That rationale is learned on and **always written into the YNAB transaction memo** by the system — a
+third, owner-visible storage mechanism alongside (a) the registry's captured note and (b) YNAB's
+category itself. The memo becomes self-documenting history the next enrichment retrieves and the owner
+reads in the app. Rules:
+
+- Compose a concise memo from the decision's rationale (+ receipt/Amazon detail when present, §4.4);
+  per subtransaction when split. Bounded to YNAB's memo limit; never clobber a richer existing memo
+  without confirming (the §4.4 / receipt-join invariant).
+- The REVISING invariant holds: a regenerated memo preserves `person_tag` (§4.4).
+- Auto-applied memos carry the driving rule's `memo_template`, resolved with context.
+
+### 14.5 Visibility & undo
+
+Auto-actions must be *seeable* and *reversible*:
+
+- **Flag color = "agent-applied, unreviewed."** The owner sees it in the YNAB app; clearing the flag
+  is implicit approval. This **resolves §11.1** in favor of flag-as-channel — and contends with the
+  person-tag-via-flag option, which therefore moves to the structured-token channel (§4.3).
+- **Per-action FYI now.** Full visibility while trust is young (the owner asked for this explicitly);
+  graduate to digest later. Every FYI is undoable by one reply, and an undo is a *correction* — it
+  fixes YNAB, rewrites the memo, and demotes the rule (§14.2).
+
+### 14.6 Resolved open decisions
+
+- **§11.1** person-tag channel → structured token (flags reserved for auto-action visibility, §14.5).
+- **§11.2** K stays default 3, but `confirmed→trusted` now means *eligible*, not auto (§14.2).
+- **§11.12** bake-in → the per-action-loud stage *is* the bake-in: real writes, full visibility, easy
+  undo, before any quiet/silent stage.
+- **Store** (was implicit) → the registry workflow; no external DB (§14.1).
+
+### 14.7 Build increments
+
+Shipped here, additive and green, with the gate not yet consulting the registry (no behavior change):
+
+1. **Registry persistence** ✅ — `learn.registry` folds + `RuleRegistryWorkflow` + `feed_rule_learning`
+   now persists. Rules survive for the first time. (This addendum's code.)
+
+Remaining, each its own green increment:
+
+2. **Gate-in-W2** — W2 loads `payee_rules` from the registry and consults `evaluate_gate` before
+   proposing; AUTO tightened to require a blessed rule; auto-decisions flag + FYI.
+3. **Opt-in bless flow** — surface `eligible` payees, send the one-time prompt, route the reply to a
+   `bless` signal; wire the W3 command handler ("always …") to the same.
+4. **Rationale capture + memo** — carry the reply's rationale onto the decision; compose and write the
+   memo on every commit (§14.4).
+5. **Visibility** — flag-on-auto-apply and the per-action FYI + one-reply undo path.
