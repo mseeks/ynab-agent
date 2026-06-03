@@ -27,6 +27,9 @@ loops of the *same shape* come next — we resist broadening any single one.
 | `model-seam` | location-aware sweep for an agent invocation that bypasses `run_structured` (a `.run(` inside `agentic/` outside `model.py`, an `Agent(` built outside `agentic/`, or an imported private `_AGENT`) | three-bucket map: *Bypass* (route through `run_structured`) / *Safe* (the seam itself / a comment / a `TYPE_CHECKING` annotation / a test) / *Judgment-heavy* |
 | `activity-retry` | AST scan for `workflow.execute_activity` / `execute_local_activity` calls that pass no `retry_policy` (so they inherit Temporal's unbounded-retry default) | three-bucket map: *No policy* (a write / agentic activity that must bound retries or mark errors non-retryable) / *Acceptable* (an idempotent, retry-safe read) / *Judgment-heavy* |
 | `frozen-mutability` | base-class-aware AST scan: a `Frozen` subclass (closed transitively) with a field typed `list` / `dict` / `set` (mutable in place, incl. under `\| None` / `Optional[...]`) | three-bucket map: *Mutable* (use `tuple` / `Mapping` / `frozenset`) / *Immutable* (already immutable / `ClassVar` / not a frozen model) / *Judgment-heavy* |
+| `pure-core-isolation` | AST scan of the pure layers (`domain` / `learn` / `policy` / `ingest` / `budget`) for *any* import (module-level, nested, or `TYPE_CHECKING`) of an I/O / framework stack (`temporalio`, the model/mail/web SDKs, the project's own adapter packages); `pydantic` allowed | three-bucket map: *Leak* (push the import down to the spine/activity, or invert via a Protocol) / *Clean* (pure→pure, or not a pure-layer file) / *Judgment-heavy* |
+| `variant-exhaustiveness` | AST scan: a discriminated-union member (`Annotated[A \| B, Field(discriminator=…)]`) whose class name appears in no `case C(…)` pattern and no `isinstance(_, C)` check across `src/` | three-bucket map: *Unwired* (a fold site needs the `case`/branch) / *Wired* (dispatched generically — Pydantic converter on the discriminant, or a base-type handler) / *Judgment-heavy* |
+| `spec-citation` | scan Python `SPEC §N(.M)` citations against the section ids `SPEC.md` defines (numbered headings + the spec's own `§` self-references); flag any id with no such section | three-bucket map: *Dangling* (renumbered / merged / typo — name the right section) / *Resolves* (false positive) / *Judgment-heavy* (resolves but semantically drifted) |
 
 File discovery (`lib.iter_python_files`) and the locked-down agent pass
 (`lib.run_loop`) are shared; the regex-sweep loops (`type-debt`, `comment-debt`,
@@ -46,7 +49,14 @@ guard: `model-seam` keeps every agent invocation on the `run_structured` seam
 (NativeOutput + `reasoning_effort:"none"`) that fixed the Ollama #15288 outage,
 `activity-retry` flags activities that inherit Temporal's unbounded-retry default
 (a deterministic failure then spins forever), and `frozen-mutability` enforces
-that the frozen domain core carries only immutable fields.
+that the frozen domain core carries only immutable fields. `pure-core-isolation`,
+`variant-exhaustiveness`, and `spec-citation` extend the same family as the W5
+learning surface grows: `pure-core-isolation` keeps the pure layers
+(`domain`/`learn`/`policy`/`ingest`/`budget`) free of I/O and framework imports so
+the DDD seam holds; `variant-exhaustiveness` flags a discriminated-union member no
+`case`/`isinstance` dispatches on (the added-a-variant-forgot-to-wire-it bug); and
+`spec-citation` keeps the dense `SPEC §x` cross-references resolving as sections
+move.
 
 ## Running
 
@@ -69,6 +79,9 @@ uv run python -m agents.derived_state [scope]
 uv run python -m agents.model_seam [scope]
 uv run python -m agents.activity_retry [scope]
 uv run python -m agents.frozen_mutability [scope]
+uv run python -m agents.pure_core_isolation [scope]
+uv run python -m agents.variant_exhaustiveness [scope]
+uv run python -m agents.spec_citation [scope]
 ```
 
 ## Auth & safety

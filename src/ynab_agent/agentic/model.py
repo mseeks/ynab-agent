@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # every task — categorization should feel like a genuinely intelligent agent,
 # and the household's volume never needs throughput. Env-overridable, so a dev
 # box can point `YNAB_AGENT_MODEL` at a smaller variant (`gemma4:e4b`).
-_DEFAULT_MODEL = "gemma4:27b"
+_DEFAULT_MODEL = "gemma4:31b"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434/v1"
 
 # Turn Gemma's "thinking" OFF for the production runs. Ollama bug #15288
@@ -48,7 +48,7 @@ def build_model(
 
     Args:
         model_name: Override the model; defaults to ``$YNAB_AGENT_MODEL`` or
-            ``gemma4:27b`` (the largest Gemma 4 weight).
+            ``gemma4:31b`` (the largest Gemma 4 weight).
         base_url: Override the endpoint; defaults to ``$YNAB_AGENT_OLLAMA_URL``
             or the local Ollama ``/v1``.
 

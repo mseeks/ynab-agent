@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 # The reply-routing reverse index: each workflow stamps its AgentMail thread_id
 # here on open_thread, so the dispatcher resolves an inbound reply's thread back
-# to this workflow with a Temporal visibility query (no separate store, §5.3).
+# to this workflow with a Temporal visibility query (no separate store, §5a).
 # Registered on the namespace by manage/search-attributes.yaml.
 _TXN_THREAD_ID = SearchAttributeKey.for_keyword("TxnThreadId")
 
@@ -238,7 +238,7 @@ class TransactionWorkflow:
                 retry_policy=ACTIVITY_RETRY,
             )
             self._set_thread_id(tid)
-            # Index this workflow by its thread for reply routing (§5.3).
+            # Index this workflow by its thread for reply routing (§5a).
             workflow.upsert_search_attributes([_TXN_THREAD_ID.value_set(tid)])
         elif isinstance(effect, SendThreadMessage):
             self._action_seq += 1

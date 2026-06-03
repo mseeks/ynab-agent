@@ -1,7 +1,7 @@
 # YNAB Agent — developer terrain.
 # Short, single-purpose targets: each is one tool, easy to read and approve.
 
-.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence loop-duplicated-constant loop-dead-code loop-test-backfill loop-determinism loop-sandbox-imports loop-secret-leak loop-derived-state loop-model-seam loop-activity-retry loop-frozen-mutability
+.PHONY: sync fmt fmt-check lint type test check loop-type-debt loop-comment-debt loop-debug-cruft loop-doc-coherence loop-duplicated-constant loop-dead-code loop-test-backfill loop-determinism loop-sandbox-imports loop-secret-leak loop-derived-state loop-model-seam loop-activity-retry loop-frozen-mutability loop-pure-core-isolation loop-variant-exhaustiveness loop-spec-citation
 
 SCOPE ?=
 
@@ -88,3 +88,15 @@ loop-activity-retry:
 # Run the frozen-mutability loop (read-only). Flags mutable fields on frozen models; src
 loop-frozen-mutability:
 	uv run python -m agents.frozen_mutability $(SCOPE)
+
+# Run the pure-core-isolation loop (read-only). Flags I/O imports in the pure core; src
+loop-pure-core-isolation:
+	uv run python -m agents.pure_core_isolation $(SCOPE)
+
+# Run the variant-exhaustiveness loop (read-only). Flags undispatched union members; src
+loop-variant-exhaustiveness:
+	uv run python -m agents.variant_exhaustiveness $(SCOPE)
+
+# Run the spec-citation loop (read-only). Flags dangling SPEC §refs in code; src
+loop-spec-citation:
+	uv run python -m agents.spec_citation $(SCOPE)
