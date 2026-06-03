@@ -10,6 +10,7 @@ a thread is handed to the agentic classifier (receipt vs. command).
 
 from __future__ import annotations
 
+from email.utils import parseaddr
 from enum import StrEnum
 from typing import Annotated, Literal
 
@@ -80,8 +81,19 @@ DispatchDecision = Annotated[
 ]
 
 
-def _is_system_sender(address: str) -> bool:
-    return address.lower().startswith(_SYSTEM_SENDERS)
+def _sender_address(raw: str) -> str:
+    """The bare, lower-cased email from a possibly display-named ``From``.
+
+    AgentMail surfaces the raw ``From`` header, which a mail client may send as
+    ``"Real Name <addr@host>"`` rather than a bare address. The owner allow-list
+    holds bare addresses, so the display-name form must be reduced to its
+    address before the membership (and system-sender) checks — otherwise a
+    legitimate owner reply is quarantined as "sender not allow-listed".
+    ``parseaddr`` returns the address unchanged when there is no display name;
+    on a parse miss we fall back to the raw value so the allow-list never
+    silently widens.
+    """
+    return (parseaddr(raw)[1] or raw).lower()
 
 
 def classify(
@@ -104,9 +116,10 @@ def classify(
     """
     if not message.signature_verified:
         return Quarantine(reason="unsigned webhook")
-    if message.is_auto_reply or _is_system_sender(message.from_address):
+    sender = _sender_address(message.from_address)
+    if message.is_auto_reply or sender.startswith(_SYSTEM_SENDERS):
         return Ignore(reason="autoresponder or bounce")
-    if message.from_address.lower() not in allowlist:
+    if sender not in allowlist:
         return Quarantine(reason="sender not allow-listed")
     if txn_id is not None:
         return RouteToTransaction(txn_id=txn_id)

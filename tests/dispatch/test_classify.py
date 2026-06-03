@@ -69,3 +69,23 @@ def test_no_thread_routes_to_interpret() -> None:
 def test_allowlist_is_case_insensitive() -> None:
     out = classify(_msg(sender="Matthew@Example.com"), _ALLOW, txn_id=None)
     assert isinstance(out, RouteToInterpret)
+
+
+def test_display_name_sender_is_allowlisted() -> None:
+    # A mail client may send the From as ``Display Name <addr>`` rather than a
+    # bare address; the owner is still allow-listed (regression: such replies
+    # were quarantined and the transaction never got categorized).
+    out = classify(
+        _msg(sender="Matthew Sullivan <matthew@example.com>"),
+        _ALLOW,
+        txn_id=YnabTransactionId("t1"),
+    )
+    assert isinstance(out, RouteToTransaction)
+    assert out.txn_id == "t1"
+
+
+def test_display_name_stranger_still_quarantined() -> None:
+    out = classify(
+        _msg(sender="Sneaky Person <stranger@evil.com>"), _ALLOW, txn_id=None
+    )
+    assert isinstance(out, Quarantine)
