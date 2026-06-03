@@ -67,15 +67,37 @@ def _candidates_from_spends(
     )
 
 
+async def _load_payee_rules(payee: str) -> list[Rule]:
+    """Query the durable rule registry for this payee's rules (W5, SPEC §14).
+
+    Returns ``[]`` when the registry has not been started yet (no learning has
+    happened) or is unreachable — the conservative fallback, which routes the
+    transaction to ASK rather than risking an auto-apply on stale knowledge.
+    """
+    from temporalio.service import RPCError
+
+    from ynab_agent.workflow.registry_types import REGISTRY_WORKFLOW_ID
+    from ynab_agent.workflow.temporal_client import client
+
+    temporal = await client()
+    handle = temporal.get_workflow_handle(REGISTRY_WORKFLOW_ID)
+    try:
+        rules: tuple[Rule, ...] = await handle.query("payee_rules", payee)
+    except RPCError:
+        return []
+    return list(rules)
+
+
 async def _load_enrichment_inputs(
     snapshot: YnabSnapshot,
 ) -> tuple[tuple[CandidateCategory, ...], list[Rule], AutoActionCounters]:
     """Fetch the candidate categories, in-scope rules, and auto counters.
 
     The candidates are the budget's live categories, read from YNAB (the source
-    of truth). v1 is Gemma-only: there is no rule store yet and the auto-action
-    counters start at zero, so the gate always asks a human — rule learning and
-    the autonomy ramp arrive in later stages (SPEC §4.2, §9).
+    of truth); the rules come from the durable registry, keyed on the payee. The
+    auto-action counters start at zero in v1 (the per-run circuit breaker is a
+    later stage); the gate (SPEC §4.2, §14) decides auto-vs-ask over the loaded
+    rules — and auto-applies only a blessed one.
     """
     import asyncio
 
@@ -84,7 +106,7 @@ async def _load_enrichment_inputs(
 
     client = YnabClient.from_env()
     spends = await asyncio.to_thread(client.category_spends)
-    rules: list[Rule] = []
+    rules = await _load_payee_rules(snapshot.payee)
     return _candidates_from_spends(spends), rules, AutoActionCounters()
 
 

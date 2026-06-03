@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ynab_agent.domain.base import Frozen
-from ynab_agent.domain.enums import DecidedBy, TrustState
+from ynab_agent.domain.enums import DecidedBy, RuleSource, TrustState
 from ynab_agent.domain.proposal import Decision
 from ynab_agent.policy.floor import (
     CAUTIOUS_FLOOR,
@@ -87,32 +87,37 @@ def evaluate_gate(
     counters: AutoActionCounters,
     policy: FloorPolicy = CAUTIOUS_FLOOR,
 ) -> GateOutcome:
-    """Decide whether the transaction may auto-apply (SPEC §4.2). Pure.
+    """Decide whether the transaction may auto-apply (SPEC §4.2, §14). Pure.
 
     The hard floor is consulted first; it can only force ASK, never grant AUTO.
-    Then exactly one trusted matching rule is required to gate auto-apply.
+    Then exactly one *blessed* matching rule is required to gate auto-apply. Per
+    the §14 opt-in on-ramp, a learned rule that reaches ``trusted`` by
+    consistency is only *eligible* — it does not auto-apply until the owner
+    blesses it (``source=human_explicit``). So autonomy is always granted, never
+    taken: a trusted-but-unblessed rule still routes to ASK.
     """
     floor = check_floor(snapshot.amount, counters, policy)
     if floor is not FloorVerdict.ALLOW:
         return GateOutcome(verdict=GateVerdict.ASK, reason=f"floor: {floor}")
 
-    trusted = [
+    blessed = [
         rule
         for rule in matching_rules(rules, snapshot)
         if rule.trust is TrustState.TRUSTED
+        and rule.source is RuleSource.HUMAN_EXPLICIT
     ]
-    if len(trusted) == 1:
+    if len(blessed) == 1:
         return GateOutcome(
             verdict=GateVerdict.AUTO,
-            rule_id=trusted[0].id,
-            reason="single trusted rule clearly applies",
+            rule_id=blessed[0].id,
+            reason="single blessed rule clearly applies",
         )
-    if not trusted:
+    if not blessed:
         return GateOutcome(
-            verdict=GateVerdict.ASK, reason="no trusted rule applies"
+            verdict=GateVerdict.ASK, reason="no blessed rule applies"
         )
     return GateOutcome(
-        verdict=GateVerdict.ASK, reason="conflicting trusted rules"
+        verdict=GateVerdict.ASK, reason="conflicting blessed rules"
     )
 
 

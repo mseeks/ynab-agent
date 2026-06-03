@@ -46,6 +46,7 @@ def _rule(
     category: str = "dining",
     rid: str = "r1",
     match: RuleMatch | None = None,
+    source: RuleSource = RuleSource.LEARNED,
 ) -> Rule:
     return Rule(
         id=RuleId(rid),
@@ -54,8 +55,12 @@ def _rule(
             allocation=ProposedCategory(category=CategoryId(category))
         ),
         trust=trust,
-        source=RuleSource.LEARNED,
+        source=source,
     )
+
+
+# A trusted, human-blessed rule is the only kind the gate auto-applies (§14).
+_BLESSED = RuleSource.HUMAN_EXPLICIT
 
 
 def test_rule_matches_payee_substring_case_insensitive() -> None:
@@ -103,12 +108,24 @@ def test_matching_rules_empty_input_returns_empty() -> None:
     assert matching_rules([], _snapshot()) == []
 
 
-def test_single_trusted_rule_is_auto() -> None:
+def test_single_blessed_rule_is_auto() -> None:
     out = evaluate_gate(
-        _snapshot(), [_rule(TrustState.TRUSTED)], AutoActionCounters()
+        _snapshot(),
+        [_rule(TrustState.TRUSTED, source=_BLESSED)],
+        AutoActionCounters(),
     )
     assert out.verdict is GateVerdict.AUTO
     assert out.rule_id == "r1"
+
+
+def test_trusted_but_unblessed_rule_asks() -> None:
+    # Reaching `trusted` by consistency is eligibility, not autonomy: a learned
+    # rule still ASKs until the owner blesses it (§14 opt-in).
+    out = evaluate_gate(
+        _snapshot(), [_rule(TrustState.TRUSTED)], AutoActionCounters()
+    )
+    assert out.verdict is GateVerdict.ASK
+    assert "blessed" in out.reason
 
 
 def test_no_trusted_rule_asks() -> None:
@@ -118,20 +135,20 @@ def test_no_trusted_rule_asks() -> None:
     assert out.verdict is GateVerdict.ASK
 
 
-def test_conflicting_trusted_rules_ask() -> None:
+def test_conflicting_blessed_rules_ask() -> None:
     rules = [
-        _rule(TrustState.TRUSTED, rid="r1", category="dining"),
-        _rule(TrustState.TRUSTED, rid="r2", category="coffee"),
+        _rule(TrustState.TRUSTED, source=_BLESSED, rid="r1", category="dining"),
+        _rule(TrustState.TRUSTED, source=_BLESSED, rid="r2", category="coffee"),
     ]
     out = evaluate_gate(_snapshot(), rules, AutoActionCounters())
     assert out.verdict is GateVerdict.ASK
 
 
-def test_floor_overrides_a_trusted_rule() -> None:
-    # Over the cautious ceiling, even a single trusted rule must ASK.
+def test_floor_overrides_a_blessed_rule() -> None:
+    # Over the cautious ceiling, even a single blessed rule must ASK.
     out = evaluate_gate(
         _snapshot(amount=Money.from_currency("-200")),
-        [_rule(TrustState.TRUSTED)],
+        [_rule(TrustState.TRUSTED, source=_BLESSED)],
         AutoActionCounters(),
     )
     assert out.verdict is GateVerdict.ASK

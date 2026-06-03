@@ -117,7 +117,7 @@ def _snapshot() -> YnabSnapshot:
     )
 
 
-def _trusted_rule() -> Rule:
+def _blessed_rule() -> Rule:
     return Rule(
         id=RuleId("r1"),
         match=RuleMatch(payee_pattern="Blue Bottle"),
@@ -125,16 +125,16 @@ def _trusted_rule() -> Rule:
             allocation=ProposedCategory(category=CategoryId("dining"))
         ),
         trust=TrustState.TRUSTED,
-        source=RuleSource.LEARNED,
+        source=RuleSource.HUMAN_EXPLICIT,
     )
 
 
-async def test_decide_enrichment_auto_applies_a_trusted_rule() -> None:
-    # A single trusted rule gates AUTO — the model is never consulted.
+async def test_decide_enrichment_auto_applies_a_blessed_rule() -> None:
+    # A single blessed rule gates AUTO — the model is never consulted (§14).
     outcome = await decide_enrichment(
         _snapshot(),
         _REQUEST.candidates,
-        [_trusted_rule()],
+        [_blessed_rule()],
         AutoActionCounters(),
         now=_NOW,
     )
