@@ -99,10 +99,53 @@ async def route_receipt(_message: InboundMessage) -> None:
 
 
 @activity.defn
-async def handle_command(_message: InboundMessage) -> None:
-    """Run an ad-hoc command through the command handler (SPEC §5c).
+async def handle_command(message: InboundMessage) -> None:
+    """Parse a standing command and bless the rule it grants (SPEC §5c, §14).
 
-    No-op in v1: ad-hoc commands are out of the core-triage scope. Wired when
-    the command handler lands (the message arg is kept for that contract).
+    The owner's direct opt-in: "always categorize X as Y" becomes an
+    ``ExplicitCommand`` signalled to the durable registry's ``bless``, which
+    trusts the rule for auto-apply (``source=human_explicit``). Anything not a
+    clear bless — a question or comment — is a deliberate no-op (the parser
+    declines it), so a stray message never grants autonomy.
     """
-    return None
+    import asyncio
+
+    from temporalio.common import WorkflowIDConflictPolicy
+
+    from ynab_agent.agentic.command import (
+        CommandRequest,
+        parse_command,
+        to_explicit_command,
+    )
+    from ynab_agent.agentic.enrich import CandidateCategory
+    from ynab_agent.workflow.registry_types import (
+        REGISTRY_WORKFLOW_ID,
+        RegistryParams,
+    )
+    from ynab_agent.workflow.temporal_client import client, task_queue
+    from ynab_agent.ynab.client import YnabClient
+
+    ynab = YnabClient.from_env()
+    spends = await asyncio.to_thread(ynab.category_spends)
+    candidates = tuple(
+        CandidateCategory(id=str(spend.category), name=spend.name)
+        for spend in spends
+    )
+    if not candidates:
+        return
+    reading = await parse_command(
+        CommandRequest(command_text=message.body, candidates=candidates)
+    )
+    command = to_explicit_command(reading)
+    if command is None:
+        return
+    temporal = await client()
+    await temporal.start_workflow(
+        "RuleRegistryWorkflow",
+        RegistryParams(),
+        id=REGISTRY_WORKFLOW_ID,
+        task_queue=task_queue(),
+        id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+        start_signal="bless",
+        start_signal_args=[command],
+    )
