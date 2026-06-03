@@ -64,6 +64,7 @@ class Interpretation(Frozen):
     intent: ReplyIntent
     category_id: str | None = None
     question: str | None = None
+    memo: str | None = None
 
 
 _SYSTEM_PROMPT = """\
@@ -75,7 +76,13 @@ Classify the reply's intent: `approve` if they accept the current proposal (e.g.
 "ok", "yes", "sounds good"); `recategorize` if they want a different category —
 then set `category_id` to the matching candidate id; or `clarify` if the reply
 is ambiguous or asks a question — then set a short `question` to send back. When
-in doubt, prefer `clarify`: asking again is safe, a wrong write is not."""
+in doubt, prefer `clarify`: asking again is safe, a wrong write is not.
+
+Also set `memo`: if the reply gives any *context or reasoning* beyond the bare
+category — what it was for, who it was for, an occasion ("gift for mom", "kids'
+soccer", "their shopping") — distil it into a short, factual memo (≤ a sentence)
+that will be saved on the transaction. If the reply is only a bare confirmation
+or category with no added context, leave `memo` null. Never invent detail."""
 
 _AGENT: Agent[None, Interpretation] = Agent(
     output_type=Interpretation,
@@ -117,10 +124,14 @@ async def interpret(
 
 
 def _human_decision(
-    category: CategoryId, decided_at: datetime.datetime
+    category: CategoryId,
+    decided_at: datetime.datetime,
+    *,
+    memo: str | None = None,
 ) -> Decision:
     return Decision(
         allocation=ResolvedCategory(category=category),
+        memo=memo,
         approved=True,
         decided_by=DecidedBy.HUMAN,
         decided_at=decided_at,
@@ -133,22 +144,27 @@ def to_reply_outcome(
     proposed_category: CategoryId,
     decided_at: datetime.datetime,
 ) -> ReplyOutcome:
-    """Map the agent's reading onto a domain ReplyOutcome (SPEC §3).
+    """Map the agent's reading onto a domain ReplyOutcome (SPEC §3, §14.4).
 
     ``approve`` commits the proposed category; ``recategorize`` commits the
     named one (or asks, if none was given); ``clarify`` sends the question back.
-    The spine, not the model, sets the decider and timestamp.
+    Any rationale the reply carried rides along as the decision's ``memo`` (the
+    spine writes it to YNAB). The spine, not the model, sets decider and time.
     """
     match interpretation.intent:
         case ReplyIntent.APPROVE:
             return AnswerOutcome(
-                decision=_human_decision(proposed_category, decided_at)
+                decision=_human_decision(
+                    proposed_category, decided_at, memo=interpretation.memo
+                )
             )
         case ReplyIntent.RECATEGORIZE:
             if interpretation.category_id:
                 return AnswerOutcome(
                     decision=_human_decision(
-                        CategoryId(interpretation.category_id), decided_at
+                        CategoryId(interpretation.category_id),
+                        decided_at,
+                        memo=interpretation.memo,
                     )
                 )
             return ClarifyOutcome(question="Which category should this be?")

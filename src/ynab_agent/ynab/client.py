@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from ynab_agent.budget.overspend import CategorySpend
 from ynab_agent.domain.allocations import ResolvedCategory
-from ynab_agent.domain.enums import ClearedState, FlagColor
+from ynab_agent.domain.enums import ClearedState, DecidedBy, FlagColor
 from ynab_agent.domain.ids import (
     AccountId,
     CategoryId,
@@ -43,6 +43,9 @@ _BASE_URL = "https://api.ynab.com/v1"
 # unapproved txn). The agent only reads recent transactions, so a year is ample.
 _FALLBACK_LOOKBACK_DAYS = 365
 _HTTP_NOT_FOUND = 404
+# The flag an agent-applied write carries so the owner sees it in the YNAB app
+# and can clear it as implicit review of an auto-action (SPEC §14.5).
+AGENT_REVIEW_FLAG = FlagColor.PURPLE
 
 
 def to_snapshot(wire: WireTransaction) -> YnabSnapshot:
@@ -104,6 +107,10 @@ def to_patch(decision: Decision) -> dict[str, object]:
     fields: dict[str, object] = {"approved": decision.approved}
     if decision.memo is not None:
         fields["memo"] = decision.memo
+    # Flag an agent-applied write so it surfaces in the YNAB app for review
+    # (SPEC §14.5); a human decision leaves the existing flag untouched.
+    if decision.decided_by is DecidedBy.AGENT:
+        fields["flag_color"] = AGENT_REVIEW_FLAG.value
     if isinstance(allocation, ResolvedCategory):
         fields["category_id"] = str(allocation.category)
     else:

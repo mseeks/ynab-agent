@@ -18,10 +18,11 @@ from ynab_agent.domain.allocations import (
     ResolvedSplitLine,
 )
 from ynab_agent.domain.enums import ClearedState, DecidedBy
-from ynab_agent.domain.ids import CategoryId
+from ynab_agent.domain.ids import CategoryId, RuleId
 from ynab_agent.domain.money import Money
 from ynab_agent.domain.proposal import Decision
 from ynab_agent.ynab.client import (
+    AGENT_REVIEW_FLAG,
     YnabClient,
     to_category_spend,
     to_patch,
@@ -97,6 +98,22 @@ def test_to_patch_for_a_category_decision() -> None:
         "memo": "coffee",
         "category_id": "dining",
     }
+    # A human decision leaves the flag untouched (no auto-action marker).
+    assert "flag_color" not in patch
+
+
+def test_to_patch_agent_decision_is_flagged_for_review() -> None:
+    # An agent-applied write carries the review flag so it surfaces in the YNAB
+    # app for the owner to clear as implicit review (SPEC §14.5).
+    decision = Decision(
+        allocation=ResolvedCategory(category=CategoryId("subscriptions")),
+        approved=True,
+        decided_by=DecidedBy.AGENT,
+        decided_at=_NOW,
+        rule_id=RuleId("r1"),
+    )
+    patch = to_patch(decision)
+    assert patch["flag_color"] == AGENT_REVIEW_FLAG.value
 
 
 def test_to_patch_for_a_split_decision() -> None:

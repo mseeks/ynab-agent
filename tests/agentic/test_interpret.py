@@ -74,6 +74,26 @@ def test_recategorize_without_a_category_asks_instead() -> None:
     assert isinstance(outcome, ClarifyOutcome)
 
 
+def test_reply_rationale_is_carried_onto_the_decision_memo() -> None:
+    # Context the human gives beyond the category rides along as the memo, which
+    # the spine writes to YNAB (SPEC §14.4).
+    outcome = _outcome(
+        Interpretation(
+            intent=ReplyIntent.RECATEGORIZE,
+            category_id="coffee",
+            memo="Gift for mom's birthday",
+        )
+    )
+    assert isinstance(outcome, AnswerOutcome)
+    assert outcome.decision.memo == "Gift for mom's birthday"
+
+
+def test_bare_approval_leaves_the_memo_unset() -> None:
+    outcome = _outcome(Interpretation(intent=ReplyIntent.APPROVE))
+    assert isinstance(outcome, AnswerOutcome)
+    assert outcome.decision.memo is None
+
+
 def test_clarify_sends_the_question_back() -> None:
     outcome = _outcome(
         Interpretation(intent=ReplyIntent.CLARIFY, question="Split it how?")
