@@ -792,17 +792,23 @@ Auto-actions must be *seeable* and *reversible*:
 
 ### 14.7 Build increments
 
-Shipped here, additive and green, with the gate not yet consulting the registry (no behavior change):
+Each landed additive and green (the autonomy path is live, but inert until a rule is blessed):
 
 1. **Registry persistence** ✅ — `learn.registry` folds + `RuleRegistryWorkflow` + `feed_rule_learning`
-   now persists. Rules survive for the first time. (This addendum's code.)
+   persists. Rules survive for the first time.
+2. **Gate-in-W2** ✅ — the `enrich` activity loads `payee_rules` from the registry and consults
+   `evaluate_gate`; AUTO tightened to require a *blessed* rule. A trusted-but-unblessed rule asks.
+3a. **Command → bless** ✅ — the W3 `handle_command` parses "always categorize X as Y" via
+   `agentic.command` and signals the registry's `bless`. Owner-driven, opt-in, never taken.
+4. **Rationale capture + memo** ✅ — the reply interpreter carries any rationale onto the decision's
+   `memo`, which `to_patch` writes to YNAB (§14.4).
+5. **Visibility** ✅ — an agent write carries the review flag (`to_patch`, §14.5); the per-action FYI
+   already lives in the state machine (`MessagePurpose.FYI` on `AUTO_APPLIED`).
 
-Remaining, each its own green increment:
+Remaining (its own green increment):
 
-2. **Gate-in-W2** — W2 loads `payee_rules` from the registry and consults `evaluate_gate` before
-   proposing; AUTO tightened to require a blessed rule; auto-decisions flag + FYI.
-3. **Opt-in bless flow** — surface `eligible` payees, send the one-time prompt, route the reply to a
-   `bless` signal; wire the W3 command handler ("always …") to the same.
-4. **Rationale capture + memo** — carry the reply's rationale onto the decision; compose and write the
-   memo on every commit (§14.4).
-5. **Visibility** — flag-on-auto-apply and the per-action FYI + one-reply undo path.
+3b. **Proactive eligibility offer** — when a learned rule reaches `eligible` (`registry.eligible_for_
+   bless`), volunteer the one-time "want me to auto-handle X?" prompt. Deferred deliberately: doing it
+   right needs a new effect threaded through the W2 spine (an idempotent send) and reply routing that
+   distinguishes a bless-acceptance from a category reply — not a bolt-on. Until it lands, the owner
+   blesses via the command path (3a).
