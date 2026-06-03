@@ -31,14 +31,27 @@ if TYPE_CHECKING:
 _DEFAULT_MODEL = "gemma4:31b"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434/v1"
 
-# Turn Gemma's "thinking" OFF for the production runs. Ollama bug #15288
-# otherwise routes Gemma 4's answer into the response's `reasoning` field and
-# leaves `content` empty/unparsable, which is what breaks structured output (see
-# `run_structured`). `reasoning_effort: "none"` suppresses it so the answer
-# lands in `content` as schema-valid JSON; it is sent raw via `extra_body`
-# because Ollama honours it on the OpenAI-compatible `/v1` (a top-level
-# `think: false` is silently ignored there).
-_OLLAMA_SETTINGS: ModelSettings = {"extra_body": {"reasoning_effort": "none"}}
+# Run Gemma 4 with its reasoning turned ON — we want the deepest inference on
+# every categorization, latency be damned. The catch behind bug #15288 is that
+# while "thinking", Gemma routes its prose into the response's `reasoning` field
+# and leaves `content` empty — fatal for *unconstrained* output. But the
+# production path forces NATIVE structured output (`NativeOutput`, a json_schema
+# `response_format`), and under that constraint Gemma still emits schema-valid
+# JSON into `content` while its chain-of-thought lands in `reasoning`. Verified
+# on gemma4:31b / Ollama 0.24.0: thinking + schema → valid content, every time.
+# So `reasoning_effort: "none"` would needlessly suppress the model's best
+# asset; we ask for "high" instead. Two companion settings keep it robust:
+# `max_tokens` is large so a long chain-of-thought never starves the trailing
+# JSON, and `timeout` is generous so a cold 19 GB model load plus a long
+# reasoned generation is never cut off (the activity timeout in `constants`
+# bounds the outer call). All sent via `extra_body`/settings on the `/v1` API.
+_REASONED_GENERATION_TIMEOUT_S = 1200.0
+_MAX_OUTPUT_TOKENS = 8192
+_OLLAMA_SETTINGS: ModelSettings = {
+    "extra_body": {"reasoning_effort": "high"},
+    "max_tokens": _MAX_OUTPUT_TOKENS,
+    "timeout": _REASONED_GENERATION_TIMEOUT_S,
+}
 
 
 def build_model(
@@ -79,20 +92,19 @@ async def run_structured[OutputT](
     ``TestModel`` supports). Production passes ``model=None``: we build the real
     Ollama/Gemma and force **native** JSON-schema structured output.
 
-    The production path is the SPEC §0.5 mitigation for Ollama bug #15288, which
-    routes Gemma 4's text into the response's ``reasoning`` field and leaves
-    ``content`` empty. With the default tool output that empty content is fatal:
-    when Gemma fails to emit the output tool call (it intermittently "thinks"
-    instead), Pydantic AI retries and echoes the prior turn back as an assistant
-    message with ``content: null`` and no ``tool_calls`` — which Ollama rejects
-    with ``400 invalid message content type: <nil>``, failing the whole activity
-    (no categorization, no reply). Two levers close that off together:
-
-    - ``reasoning_effort: "none"`` (``_OLLAMA_SETTINGS``) turns the thinking
-      off at the source, so the answer lands in ``content``, not ``reasoning``.
-    - ``NativeOutput`` asks Ollama to constrain generation to the schema, so a
-      schema-valid object lands in ``content`` on the first pass — no
-      output-tool gamble, no null-content retry.
+    ``NativeOutput`` is what lets us keep Gemma 4's *reasoning on* (``_OLLAMA_
+    SETTINGS``) without tripping bug #15288. While thinking, Gemma routes its
+    prose into the response's ``reasoning`` field and leaves ``content`` empty —
+    fatal for the default *tool* output (Pydantic AI then retries and echoes a
+    ``content: null`` turn that Ollama rejects with ``400 invalid message
+    content type: <nil>``). But ``NativeOutput`` asks Ollama to *constrain*
+    generation to the JSON schema (`response_format: json_schema`), and under
+    that constraint a schema-valid object lands in ``content`` on the first pass
+    even as the chain-of-thought fills ``reasoning``. So production gets both:
+    the model's deepest reasoning AND reliable structured output (verified on
+    gemma4:31b / Ollama 0.24.0). The offline ``TestModel`` tests never touch
+    this — they ride the default tool output, which is all ``TestModel``
+    supports.
 
     Args:
         agent: The agent to run (its default output type is the tool-mode one

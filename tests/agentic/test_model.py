@@ -70,9 +70,11 @@ async def test_production_path_forces_native_structured_output(
     assert out.value == "ok"
     assert isinstance(calls[0]["model"], OpenAIChatModel)
     assert isinstance(calls[0]["output_type"], NativeOutput)
-    # The reasoning-suppression setting is the heart of the #15288 fix — assert
-    # it reaches the run, so a refactor can't silently drop it.
+    # Reasoning is ON in production (NativeOutput keeps content schema-valid
+    # even while Gemma thinks); assert the settings reach the run so a refactor
+    # can't silently suppress reasoning or drop the long-generation guards.
     assert calls[0]["model_settings"] == _OLLAMA_SETTINGS
-    assert (
-        calls[0]["model_settings"]["extra_body"]["reasoning_effort"] == "none"
-    )
+    settings = calls[0]["model_settings"]
+    assert settings["extra_body"]["reasoning_effort"] == "high"
+    assert settings["max_tokens"] >= 4096
+    assert settings["timeout"] >= 600

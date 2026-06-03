@@ -14,10 +14,13 @@ from temporalio.common import RetryPolicy
 
 # Default per-activity timeout for the short workflows (W2/W3/W4). One window
 # fits them all, sized very generously for the slowest: the agentic activities
-# call a local Gemma over the tailnet, where a cold model load plus a long
-# generation can run for minutes. The fast I/O activities (YNAB/AgentMail)
+# call a local Gemma 4 31b over the tailnet *with reasoning on*, where a cold
+# 19 GB model load plus a long reasoned generation can run for several minutes.
+# We deliberately favour completion over speed (intelligence is the point), so
+# the ceiling sits well above the model's request timeout (see `agentic.model`),
+# which trips first and is retried. The fast I/O activities (YNAB/AgentMail)
 # finish in well under a second, so the high ceiling only bounds a genuine hang.
-ACTIVITY_TIMEOUT = timedelta(seconds=900)
+ACTIVITY_TIMEOUT = timedelta(seconds=1800)
 
 # Deterministic failures a retry cannot fix: a malformed model output, a bad
 # payload, a programming error. Temporal records the raised exception's type
