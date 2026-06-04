@@ -102,7 +102,10 @@ def _import_map(tree: ast.Module) -> dict[str, str]:
                     root = alias.name.split(".")[0]
                     bindings[root] = root
         elif isinstance(node, ast.ImportFrom):
-            if node.module is None:  # relative import — out of scope
+            # Skip ALL relative imports: a relative tail like `.random` is a
+            # local module, never the stdlib root — binding it would risk a
+            # false positive (the gate's cardinal sin).
+            if node.module is None or node.level > 0:
                 continue
             for alias in node.names:
                 bound = alias.asname or alias.name
