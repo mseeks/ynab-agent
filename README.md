@@ -53,6 +53,7 @@ src/ynab_agent/
   agentic/     Pydantic AI agents (the model middle, Ollama/Gemma)
   mail/        AgentMail client (real email)
   ynab/        YNAB REST client (snapshots, commits, budget reads)
+  dashboard/   in-worker ops dashboard (Temporal/YNAB/ClickHouse/AgentMail/GitHub)
   settings.py  deployment config (pydantic-settings, .env)
   worker.py    the Temporal worker entrypoint
 tests/         unit + property-based (hypothesis) + time-skipping workflow tests
@@ -94,6 +95,12 @@ export YNAB_API_KEY=…           export AGENTMAIL_API_KEY=…
 export YNAB_AGENT_INBOX=…       export YNAB_AGENT_OWNERS=a@x.com,b@x.com
 python -m ynab_agent.worker     # connects to localhost:7233, queue "ynab-agent"
 ```
+
+The worker also hosts a private, read-only **ops dashboard** (SPEC §15) on
+`:8080`, reached over `kubectl port-forward` — one page that derives the whole
+system's state live from Temporal, YNAB, ClickHouse, AgentMail, and GitHub
+(stored nowhere). Preview it against live data with `python -m
+ynab_agent.dashboard` (point `TEMPORAL_*` at a port-forwarded frontend).
 
 Opt-in live checks (skipped by default): `YNAB_AGENT_LIVE_OLLAMA=1` runs the live
 Gemma smokes, `YNAB_AGENT_LIVE_EMAIL=1` sends a real AgentMail message, and a set

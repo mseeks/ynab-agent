@@ -836,3 +836,32 @@ Earned autonomy must also degrade gracefully. Three mechanisms, plus the high K 
 
 Out of scope here (their own later increments): a *deterministic* amount-anomaly heuristic, and the full
 `FallbackModel`/Claude routing for the review (it currently runs on the same local model as enrichment).
+
+## 15. Operations dashboard (in-worker, private)
+
+A read-only pane to *see the system as a whole* — is it alive, what's flowing,
+what autonomy has been earned, what's awaiting a human, and where anything broke.
+Modelled on froot's dashboard: the worker hosts a tiny dependency-free asyncio
+HTTP server **in-process** (reusing its Temporal client), reached privately over
+`kubectl port-forward` — never a public ingress, since it surfaces budget and
+email context.
+
+Each request fans five readers out concurrently and renders one self-contained
+HTML page (inline CSS, no JS); it derives everything live and **stores nothing**.
+Every reader degrades to an error string → a red dot, so a source being down
+yields a warning, never a crash (and never touches the worker's actual work).
+
+- **Temporal** (the worker's client) — the poll heartbeat, the W2 lifecycle
+  funnel (each running workflow's `state` query), the autonomy ladder (the
+  registry's `view` query), live offers, the W3 dispatch tally, terminated/
+  failed workflows with their recovered reason.
+- **YNAB** (reuses `YnabClient`) — the unapproved backlog and overspent
+  categories.
+- **ClickHouse** (`otel_traces`/`otel_logs`) — per-activity latencies, error
+  spans, recent errors. Best-effort; "off" when unconfigured.
+- **AgentMail** — recent threads (proposals, offers, replies).
+- **GitHub** — recent PRs + CI (the deploy panel). Best-effort.
+
+The pure core (`render`, `read_model`) is unit-tested without a cluster. The
+whole surface is gated on `YNAB_AGENT_DASHBOARD_ENABLED` and a start failure
+never affects the worker.

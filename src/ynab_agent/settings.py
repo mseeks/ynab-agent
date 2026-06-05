@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -44,3 +44,60 @@ class Settings(BaseSettings):
                 if address.strip()
             )
         return value
+
+
+class DashboardSettings(BaseSettings):
+    """The in-worker ops dashboard's config (``YNAB_AGENT_DASHBOARD_*``).
+
+    Private by design: it binds inside the pod and is reached over
+    ``kubectl port-forward``, never a public ingress (it surfaces budget and
+    email context). Disabled, or a failed start, never affects the worker.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="YNAB_AGENT_DASHBOARD_",
+        env_file=".env",
+        extra="ignore",
+        frozen=True,
+    )
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = Field(default=8080, ge=1, le=65535)
+
+
+class ClickHouseSettings(BaseSettings):
+    """ClickStack ClickHouse read access for the telemetry panel.
+
+    Optional best-effort enrichment (``YNAB_AGENT_CLICKHOUSE_*``): unset →
+    the telemetry panel shows "off" and the dashboard renders without it.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="YNAB_AGENT_CLICKHOUSE_",
+        env_file=".env",
+        extra="ignore",
+        frozen=True,
+    )
+
+    url: str | None = None
+    user: str = "default"
+    password: SecretStr | None = None
+    database: str = "default"
+
+
+class GitHubSettings(BaseSettings):
+    """GitHub read access for the deploy panel (``YNAB_AGENT_GITHUB_*``).
+
+    Optional: unset token → the deploy panel shows a red dot, nothing else.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="YNAB_AGENT_GITHUB_",
+        env_file=".env",
+        extra="ignore",
+        frozen=True,
+    )
+
+    token: SecretStr | None = None
+    repo: str = "mseeks/ynab-agent"
