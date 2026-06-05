@@ -76,13 +76,20 @@ async def _load_payee_rules(payee: str) -> list[Rule]:
     """
     from temporalio.service import RPCError
 
+    from ynab_agent.domain.rule import Rule
     from ynab_agent.workflow.registry_types import REGISTRY_WORKFLOW_ID
     from ynab_agent.workflow.temporal_client import client
 
     temporal = await client()
     handle = temporal.get_workflow_handle(REGISTRY_WORKFLOW_ID)
     try:
-        rules: tuple[Rule, ...] = await handle.query("payee_rules", payee)
+        # ``result_type`` is load-bearing: the pydantic data converter decodes a
+        # query payload to plain ``dict``s without it, and the gate reads real
+        # ``Rule`` objects (``rule.match``) — a dict there raises AttributeError
+        # and the enrich activity retries forever (SPEC §14 gate-load path).
+        rules = await handle.query(
+            "payee_rules", payee, result_type=tuple[Rule, ...]
+        )
     except RPCError:
         return []
     return list(rules)
