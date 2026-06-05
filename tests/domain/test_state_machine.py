@@ -43,6 +43,7 @@ from ynab_agent.domain.events import (
     LifecycleEvent,
     NeedsHuman,
     NoChange,
+    OverrideDetected,
     PatienceExpired,
     Reapplied,
     SnapshotMaterialized,
@@ -54,6 +55,7 @@ from ynab_agent.domain.ids import (
     AccountId,
     CategoryId,
     MessageId,
+    RuleId,
     ThreadId,
     YnabTransactionId,
 )
@@ -360,6 +362,50 @@ def test_open_archive_blocked_when_unreconciled() -> None:
     opened = Open(core=_core(), decision=_decision(DecidedBy.HUMAN))
     out = _step(opened, ArchiveWindowReached())
     assert out.kind is TransitionKind.IGNORED
+
+
+def _agent_rule_decision() -> Decision:
+    return _decision(DecidedBy.AGENT, category="dining").model_copy(
+        update={"rule_id": RuleId("r1")}
+    )
+
+
+def test_open_override_detected_demotes_and_archives_when_reconciled() -> None:
+    # The agent auto-applied "dining" via rule r1; the owner recategorized it to
+    # "groceries" directly in YNAB (a silent correction). The spine demotes the
+    # driving rule and closes on the owner's choice (SPEC §14.2).
+    agent = _agent_rule_decision()
+    opened = Open(core=_core(cleared=ClearedState.RECONCILED), decision=agent)
+    human = _decision(DecidedBy.HUMAN, category="groceries")
+    out = _step(opened, OverrideDetected(decision=human))
+    assert isinstance(out.next, Archived)
+    assert out.next.final == human
+    learn = next(e for e in out.effects if isinstance(e, FeedRuleLearning))
+    assert learn.event is RuleLearningKind.CORRECT
+    assert learn.prior == agent  # demotes the *driving* rule (carries rule_id)
+    assert learn.decision == human
+    assert any(
+        isinstance(e, SendThreadMessage)
+        and e.purpose is MessagePurpose.OVERRIDE_NOTICE
+        for e in out.effects
+    )
+    assert _of(out, CloseThread)
+
+
+def test_open_override_detected_demotes_without_archiving_unreconciled() -> (
+    None
+):
+    # Same silent edit, but the txn is not reconciled yet: still demote and
+    # notify, adopt the owner's value, and stay OPEN (ARCHIVED needs that).
+    agent = _agent_rule_decision()
+    opened = Open(core=_core(), decision=agent)  # default: not reconciled
+    human = _decision(DecidedBy.HUMAN, category="groceries")
+    out = _step(opened, OverrideDetected(decision=human))
+    assert isinstance(out.next, Open)
+    assert out.next.decision == human  # adopted reality
+    learn = next(e for e in out.effects if isinstance(e, FeedRuleLearning))
+    assert learn.event is RuleLearningKind.CORRECT
+    assert not _of(out, CloseThread)
 
 
 # ── LAPSED ──────────────────────────────────────────────────────────────────

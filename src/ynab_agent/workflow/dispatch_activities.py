@@ -8,6 +8,8 @@ enter the workflow sandbox.
 
 from __future__ import annotations
 
+import contextlib
+
 from temporalio import activity
 
 from ynab_agent.dispatch.classify import InboundKind, InboundMessage
@@ -36,6 +38,45 @@ async def resolve_thread(thread_id: str | None) -> str | None:
     ):
         return execution.id
     return None
+
+
+@activity.defn
+async def resolve_offer_thread(thread_id: str | None) -> str | None:
+    """Resolve an AgentMail thread to a *running* offer workflow id (3b).
+
+    The autonomy-offer workflow stamps its thread into the ``OfferThreadId``
+    search attribute, so a reply on that thread maps back to it the same way
+    ``resolve_thread`` maps a transaction. Filtered to ``Running`` executions so
+    a reply landing after the offer has closed is *not* routed (it falls through
+    to the command path, the documented late-accept fallback) rather than
+    resurrecting a finished offer. ``None`` when no live offer owns the thread.
+    """
+    if thread_id is None:
+        return None
+    from ynab_agent.workflow.offer_types import OFFER_THREAD_ID
+
+    temporal = await client()
+    safe = thread_id.replace('"', '\\"')
+    query = f'{OFFER_THREAD_ID} = "{safe}" AND ExecutionStatus = "Running"'
+    async for execution in temporal.list_workflows(query=query):
+        return execution.id
+    return None
+
+
+@activity.defn
+async def signal_offer(offer_id: str, message: InboundMessage) -> None:
+    """Deliver a reply to its autonomy-offer workflow (SPEC §14.7 3b).
+
+    A plain signal (not signal-with-start): the offer must be live to receive it
+    — ``resolve_offer_thread`` already filtered to running executions — so a
+    closed offer is never resurrected. A missing handle is a benign no-op.
+    """
+    from temporalio.service import RPCError
+
+    temporal = await client()
+    handle = temporal.get_workflow_handle(offer_id)
+    with contextlib.suppress(RPCError):
+        await handle.signal("submit_response", message)
 
 
 @activity.defn

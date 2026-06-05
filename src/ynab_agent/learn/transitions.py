@@ -41,7 +41,9 @@ if TYPE_CHECKING:
     from ynab_agent.learn.events import LearningEvent
 
 # Consistent confirmations a learned rule needs to reach `trusted` (SPEC §4.2).
-K_DEFAULT = 3
+# Kept deliberately high (§14.6): autonomy is consequential, so eligibility is
+# only earned after many same-way confirmations of a payee.
+K_DEFAULT = 5
 
 
 def trust_for_hits(hits: int, k_threshold: int) -> TrustState:
@@ -207,7 +209,10 @@ def _correct(
         )
 
     # Rewrite the driving rule's action and demote: the new action is unproven,
-    # so it restarts at suggested as a learned hypothesis (SPEC §9).
+    # so it restarts at suggested as a learned hypothesis (SPEC §9). A blessed
+    # rule corrected here drops all the way back to Observe (source→learned),
+    # and ``offered_at`` is cleared so a re-earned eligibility re-offers
+    # (SPEC §14.2: a correction demotes and drops the payee back to Observe).
     updated = target.model_copy(
         update={
             "action": event.action,
@@ -215,6 +220,7 @@ def _correct(
             "hits": 0,
             "last_corrected_at": now,
             "source": RuleSource.LEARNED,
+            "offered_at": None,
         }
     )
     return LearningOutcome(

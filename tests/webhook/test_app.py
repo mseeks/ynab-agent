@@ -92,6 +92,72 @@ def test_to_inbound_prefers_extracted_text() -> None:
     assert to_inbound(message, verified=True).body == "change to Dining"
 
 
+def _wire(headers: dict[str, str] | None) -> _WireMessage:
+    return _WireMessage.model_validate(
+        {
+            "message_id": "m1",
+            "from": "matthew@example.com",
+            "subject": "Out of office",
+            "text": "I am away until Monday.",
+            "thread_id": "t1",
+            "headers": headers,
+        }
+    )
+
+
+def test_to_inbound_plain_reply_is_not_auto() -> None:
+    # No headers, or an explicit Auto-Submitted: no, is a real human reply.
+    assert to_inbound(_wire(None), verified=True).is_auto_reply is False
+    assert (
+        to_inbound(_wire({"Auto-Submitted": "no"}), verified=True).is_auto_reply
+        is False
+    )
+
+
+def test_to_inbound_flags_auto_submitted() -> None:
+    # RFC 3834: anything but ``no`` means machine-generated.
+    assert (
+        to_inbound(
+            _wire({"Auto-Submitted": "auto-replied"}), verified=True
+        ).is_auto_reply
+        is True
+    )
+
+
+def test_to_inbound_flags_precedence_and_vendor_markers() -> None:
+    # De-facto bulk/auto markers and vendor headers, case-insensitively.
+    for headers in (
+        {"Precedence": "bulk"},
+        {"precedence": "Auto_Reply"},
+        {"X-Autoreply": "yes"},
+        {"X-Autorespond": "yes"},
+        {"List-Id": "<list.example.com>"},
+    ):
+        assert (
+            to_inbound(_wire(headers), verified=True).is_auto_reply is True
+        ), headers
+
+
+def test_owner_autoreply_on_thread_is_ignored_end_to_end() -> None:
+    # The hole this closes: an owner's out-of-office reply lands on a known
+    # transaction thread; deriving is_auto_reply from the headers makes
+    # classify Ignore it instead of treating it as a categorization.
+    from ynab_agent.dispatch.classify import Ignore, classify
+    from ynab_agent.domain.ids import YnabTransactionId
+
+    inbound = to_inbound(
+        _wire({"Auto-Submitted": "auto-replied"}), verified=True
+    )
+    decision = classify(
+        inbound,
+        frozenset({"matthew@example.com"}),
+        txn_id=YnabTransactionId("t1"),
+    )
+    # An autoresponder is Ignored even though it is on a known transaction
+    # thread — the guard precedes routing, so it is never read as a reply.
+    assert isinstance(decision, Ignore)
+
+
 def _app_with_capture(
     monkeypatch: pytest.MonkeyPatch, captured: list[InboundMessage]
 ) -> TestClient:

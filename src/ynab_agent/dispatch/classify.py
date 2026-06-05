@@ -69,6 +69,13 @@ class RouteToTransaction(Frozen):
     txn_id: YnabTransactionId
 
 
+class RouteToOffer(Frozen):
+    """A reply on an autonomy-offer thread; signal that offer workflow (3b)."""
+
+    kind: Literal["offer"] = "offer"
+    offer_id: str
+
+
 class RouteToInterpret(Frozen):
     """No thread: hand to the agentic classifier (receipt vs. command)."""
 
@@ -76,7 +83,7 @@ class RouteToInterpret(Frozen):
 
 
 DispatchDecision = Annotated[
-    Quarantine | Ignore | RouteToTransaction | RouteToInterpret,
+    Quarantine | Ignore | RouteToTransaction | RouteToOffer | RouteToInterpret,
     Field(discriminator="kind"),
 ]
 
@@ -101,6 +108,7 @@ def classify(
     allowlist: frozenset[str],
     *,
     txn_id: YnabTransactionId | None,
+    offer_id: str | None = None,
 ) -> DispatchDecision:
     """Decide how to route an inbound message. Pure (SPEC §5, §0.6).
 
@@ -109,6 +117,8 @@ def classify(
         allowlist: Lower-cased sender addresses permitted to act.
         txn_id: The transaction this thread maps to, or ``None`` if the message
             is not on a known transaction thread.
+        offer_id: The autonomy-offer workflow this thread maps to, or ``None``.
+            A transaction thread takes precedence (a message is on at most one).
 
     Returns:
         The routing decision; ``RouteToInterpret`` defers receipt-vs-command to
@@ -123,4 +133,6 @@ def classify(
         return Quarantine(reason="sender not allow-listed")
     if txn_id is not None:
         return RouteToTransaction(txn_id=txn_id)
+    if offer_id is not None:
+        return RouteToOffer(offer_id=offer_id)
     return RouteToInterpret()

@@ -31,7 +31,11 @@ from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.enums import RuleSource, TrustState
 from ynab_agent.domain.rule import Rule
 from ynab_agent.learn.handler import plan_rule_update
-from ynab_agent.learn.transitions import RuleChange, apply_learning
+from ynab_agent.learn.transitions import (
+    RuleChange,
+    RuleChangeKind,
+    apply_learning,
+)
 
 if TYPE_CHECKING:
     from ynab_agent.domain.effects import FeedRuleLearning
@@ -128,6 +132,78 @@ def eligible_for_bless(state: RegistryState) -> tuple[Rule, ...]:
         for rule in state.rules
         if rule.trust is TrustState.TRUSTED
         and rule.source is RuleSource.LEARNED
+    )
+
+
+def pending_offers(state: RegistryState) -> tuple[Rule, ...]:
+    """Eligible rules whose one-time autonomy offer has not been sent yet (3b).
+
+    The registry workflow drives off this: a rule that has just become eligible
+    and was never offered is volunteered to the owner exactly once. Once the
+    offer goes out, :func:`mark_offered` stamps ``offered_at`` and it drops off
+    this list, so a later confirmation of the same payee never re-asks.
+    """
+    return tuple(
+        rule for rule in eligible_for_bless(state) if rule.offered_at is None
+    )
+
+
+def mark_offered(
+    state: RegistryState, rule_id: RuleId, *, now: datetime.datetime
+) -> RegistryState:
+    """Record that the autonomy offer was sent for ``rule_id`` (SPEC §14.7 3b).
+
+    Idempotent: stamping a rule already marked (or one no longer present) leaves
+    the table unchanged. This is the one-time guard — combined with the offer
+    workflow's id-reuse rejection — that the proactive prompt is sent only once.
+    """
+    updated = tuple(
+        rule.model_copy(update={"offered_at": now})
+        if rule.id == rule_id and rule.offered_at is None
+        else rule
+        for rule in state.rules
+    )
+    if updated == state.rules:
+        return state
+    return state.model_copy(update={"rules": updated})
+
+
+def bless_by_id(
+    state: RegistryState, rule_id: RuleId, *, now: datetime.datetime
+) -> RegistryState:
+    """Bless an existing eligible rule by id — owner accepted the offer (3b).
+
+    Flips that specific learned rule to ``trusted``/``human_explicit`` (the
+    grant the gate requires). Unlike :func:`bless_rule`, it never creates a
+    rule: if the rule is gone or was corrected away from eligibility in the
+    meantime, this is a no-op, so accepting a stale offer can never resurrect a
+    superseded action or duplicate the payee.
+    """
+    target = next((r for r in state.rules if r.id == rule_id), None)
+    if (
+        target is None
+        or target.trust is not TrustState.TRUSTED
+        or target.source is not RuleSource.LEARNED
+    ):
+        return state
+    updated = target.model_copy(
+        update={
+            "source": RuleSource.HUMAN_EXPLICIT,
+            "last_confirmed_at": now,
+        }
+    )
+    new_rules = tuple(
+        updated if rule.id == rule_id else rule for rule in state.rules
+    )
+    entry = RegistryAuditEntry(
+        at=now,
+        payee=target.match.payee_pattern,
+        change=RuleChange(
+            kind=RuleChangeKind.BLESSED, rule_id=rule_id, trust=updated.trust
+        ),
+    )
+    return state.model_copy(
+        update={"rules": new_rules, "audit": _appended_audit(state, entry)}
     )
 
 

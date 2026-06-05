@@ -59,6 +59,7 @@ from ynab_agent.domain.events import (
     LifecycleEvent,
     NeedsHuman,
     NoChange,
+    OverrideDetected,
     PatienceExpired,
     Reapplied,
     SnapshotMaterialized,
@@ -439,6 +440,32 @@ def _from_open(txn: Open, event: LifecycleEvent) -> Transition:
                 return _ignored(txn, "not reconciled yet; staying OPEN")
             return _advanced(
                 Archived(core=txn.core, final=txn.decision),
+                CloseThread(),
+            )
+        case OverrideDetected(decision=human_decision):
+            # The owner recategorized in YNAB directly: a silent correction.
+            # Demote the driving rule back to Observe (CORRECT, carrying the
+            # prior agent decision so the *right* rule is demoted, §14.2) and
+            # tell them we noticed and backed off. Close the book if the txn is
+            # reconciled; otherwise adopt their value and wait (ARCHIVED needs a
+            # reconciled snapshot), so we never archive prematurely.
+            demote = FeedRuleLearning(
+                event=RuleLearningKind.CORRECT,
+                payee=txn.core.snapshot.payee,
+                decision=human_decision,
+                prior=txn.decision,
+            )
+            notice = SendThreadMessage(purpose=MessagePurpose.OVERRIDE_NOTICE)
+            if not txn.core.snapshot.reconciled:
+                return _advanced(
+                    Open(core=txn.core, decision=human_decision),
+                    demote,
+                    notice,
+                )
+            return _advanced(
+                Archived(core=txn.core, final=human_decision),
+                demote,
+                notice,
                 CloseThread(),
             )
         case _:

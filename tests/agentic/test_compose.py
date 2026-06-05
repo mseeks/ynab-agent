@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from ynab_agent.agentic.compose import ComposeRequest, render_body
+from ynab_agent.agentic.compose import (
+    ComposeRequest,
+    render_autonomy_offer,
+    render_body,
+    render_offer_accepted,
+    render_offer_declined,
+)
 from ynab_agent.domain.effects import MessagePurpose
 
 
@@ -68,3 +74,22 @@ def test_clarify_asks_the_question() -> None:
         _req(purpose=MessagePurpose.CLARIFY.value, question="Which trip?")
     )
     assert "Which trip?" in body
+
+
+def test_autonomy_offer_names_payee_category_and_asks_yes_no() -> None:
+    body = render_autonomy_offer("Spotify", "Subscriptions")
+    assert "Spotify" in body
+    assert "Subscriptions" in body
+    assert "YES" in body and "NO" in body
+
+
+def test_offer_accepted_confirms_auto_handling() -> None:
+    body = render_offer_accepted("Spotify", "Subscriptions")
+    assert "Spotify" in body
+    assert "Subscriptions" in body
+
+
+def test_offer_declined_says_it_keeps_proposing() -> None:
+    body = render_offer_declined("Spotify")
+    assert "Spotify" in body
+    assert "propos" in body.lower()

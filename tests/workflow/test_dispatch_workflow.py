@@ -40,12 +40,17 @@ def _msg(
 def _activities(
     *,
     resolve: str | None,
+    resolve_offer: str | None,
     classify_kind: InboundKind,
     calls: list[tuple[str, str]],
 ) -> list[Callable[..., object]]:
     @activity.defn(name="resolve_thread")
     async def resolve_thread(thread_id: str | None) -> str | None:
         return resolve
+
+    @activity.defn(name="resolve_offer_thread")
+    async def resolve_offer_thread(thread_id: str | None) -> str | None:
+        return resolve_offer
 
     @activity.defn(name="classify_inbound")
     async def classify_inbound(message: InboundMessage) -> InboundKind:
@@ -54,6 +59,10 @@ def _activities(
     @activity.defn(name="signal_transaction")
     async def signal_transaction(txn_id: str, message: InboundMessage) -> None:
         calls.append(("signal", txn_id))
+
+    @activity.defn(name="signal_offer")
+    async def signal_offer(offer_id: str, message: InboundMessage) -> None:
+        calls.append(("offer", offer_id))
 
     @activity.defn(name="route_receipt")
     async def route_receipt(message: InboundMessage) -> None:
@@ -65,8 +74,10 @@ def _activities(
 
     return [
         resolve_thread,
+        resolve_offer_thread,
         classify_inbound,
         signal_transaction,
+        signal_offer,
         route_receipt,
         handle_command,
     ]
@@ -77,11 +88,15 @@ async def _run(
     wf_id: str,
     message: InboundMessage,
     resolve: str | None = None,
+    resolve_offer: str | None = None,
     classify_kind: InboundKind = InboundKind.NOISE,
 ) -> tuple[DispatchResult, list[tuple[str, str]]]:
     calls: list[tuple[str, str]] = []
     acts = _activities(
-        resolve=resolve, classify_kind=classify_kind, calls=calls
+        resolve=resolve,
+        resolve_offer=resolve_offer,
+        classify_kind=classify_kind,
+        calls=calls,
     )
     async with (
         await WorkflowEnvironment.start_time_skipping(
@@ -109,6 +124,19 @@ async def test_reply_on_thread_signals_transaction() -> None:
     )
     assert result.action == "transaction"
     assert ("signal", "t1") in calls
+
+
+async def test_reply_on_offer_thread_signals_offer() -> None:
+    # Not a transaction thread, but a live autonomy-offer thread → the reply is
+    # a bless-acceptance, routed to that offer workflow (SPEC §14.7 3b).
+    result, calls = await _run(
+        wf_id="d-offer",
+        message=_msg(thread="thr-offer"),
+        resolve=None,
+        resolve_offer="autonomy-offer-r1",
+    )
+    assert result.action == "offer"
+    assert ("offer", "autonomy-offer-r1") in calls
 
 
 async def test_forwarded_receipt_routes_to_join() -> None:

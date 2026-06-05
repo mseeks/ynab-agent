@@ -17,6 +17,7 @@ from ynab_agent.workflow import (
     alert_activities,
     dispatch_activities,
     monitor_activities,
+    offer_activities,
     poll_activities,
     receipt_activities,
 )
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 from ynab_agent.workflow.alert_ledger_workflow import AlertLedgerWorkflow
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
+from ynab_agent.workflow.offer_workflow import AutonomyOfferWorkflow
 from ynab_agent.workflow.poll_workflow import PollWorkflow
 from ynab_agent.workflow.receipt_workflow import ReceiptJoinWorkflow
 from ynab_agent.workflow.registry_workflow import RuleRegistryWorkflow
@@ -41,6 +43,7 @@ WORKFLOWS = [
     OverspendMonitorWorkflow,
     RuleRegistryWorkflow,
     AlertLedgerWorkflow,
+    AutonomyOfferWorkflow,
 ]
 
 ALL_ACTIVITIES: list[Callable[..., object]] = [
@@ -57,10 +60,17 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     poll_activities.fetch_unapproved,
     poll_activities.address_transaction,
     dispatch_activities.resolve_thread,
+    dispatch_activities.resolve_offer_thread,
     dispatch_activities.classify_inbound,
     dispatch_activities.signal_transaction,
+    dispatch_activities.signal_offer,
     dispatch_activities.route_receipt,
     dispatch_activities.handle_command,
+    offer_activities.start_autonomy_offer,
+    offer_activities.open_offer_thread,
+    offer_activities.interpret_offer_reply,
+    offer_activities.accept_offer,
+    offer_activities.decline_offer,
     receipt_activities.match_receipt,
     receipt_activities.signal_match,
     receipt_activities.ask_disambiguation,

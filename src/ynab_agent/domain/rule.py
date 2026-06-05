@@ -76,3 +76,8 @@ class Rule(Frozen):
     last_confirmed_at: datetime | None = None
     last_corrected_at: datetime | None = None
     source: RuleSource
+    # When the one-time "want me to auto-handle this?" offer was sent for this
+    # rule (SPEC §14.2/§14.7 3b). ``None`` means it has never been offered, so
+    # the registry may surface it; it is set when the offer goes out and reset
+    # by a correction (a corrected rule is a fresh hypothesis, re-offerable).
+    offered_at: datetime | None = None

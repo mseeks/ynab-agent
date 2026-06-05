@@ -7,6 +7,7 @@ from ynab_agent.dispatch.classify import (
     InboundMessage,
     Quarantine,
     RouteToInterpret,
+    RouteToOffer,
     RouteToTransaction,
     classify,
 )
@@ -64,6 +65,43 @@ def test_reply_on_known_thread_routes_to_transaction() -> None:
 def test_no_thread_routes_to_interpret() -> None:
     out = classify(_msg(), _ALLOW, txn_id=None)
     assert isinstance(out, RouteToInterpret)
+
+
+def test_offer_thread_routes_to_offer() -> None:
+    out = classify(_msg(thread="thr-offer"), _ALLOW, txn_id=None, offer_id="o1")
+    assert isinstance(out, RouteToOffer)
+    assert out.offer_id == "o1"
+
+
+def test_transaction_thread_wins_over_offer() -> None:
+    out = classify(
+        _msg(thread="thr1"),
+        _ALLOW,
+        txn_id=YnabTransactionId("t1"),
+        offer_id="o1",
+    )
+    assert isinstance(out, RouteToTransaction)
+
+
+def test_guards_win_before_offer_routing() -> None:
+    # An autoresponder / unsigned / non-allowlisted reply on an offer thread is
+    # still Ignored/Quarantined first — the inbound boundary precedes routing.
+    assert isinstance(
+        classify(_msg(auto=True), _ALLOW, txn_id=None, offer_id="o1"), Ignore
+    )
+    assert isinstance(
+        classify(_msg(verified=False), _ALLOW, txn_id=None, offer_id="o1"),
+        Quarantine,
+    )
+    assert isinstance(
+        classify(
+            _msg(sender="stranger@evil.com"),
+            _ALLOW,
+            txn_id=None,
+            offer_id="o1",
+        ),
+        Quarantine,
+    )
 
 
 def test_allowlist_is_case_insensitive() -> None:

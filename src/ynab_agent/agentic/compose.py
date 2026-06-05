@@ -65,6 +65,39 @@ def _proposal_body(request: ComposeRequest, facts: str) -> str:
     return "\n".join(lines)
 
 
+def render_autonomy_offer(payee: str, category: str) -> str:
+    """The one-time "want me to auto-handle this payee?" offer body (§14.7 3b).
+
+    A standalone yes/no message (its own thread), so a plain "yes"/"no" reply is
+    unambiguous. The owner can also reply with the explicit standing command.
+    """
+    return (
+        f"You've consistently filed {payee} under {category}, and I haven't "
+        "had to correct it.\n\n"
+        f"Want me to start auto-handling {payee} as {category} from now on? "
+        "I'll apply it automatically, flag each one for you, and you can undo "
+        "any of them with a one-word reply.\n\n"
+        "Reply YES to let me, or NO to keep approving each one yourself."
+    )
+
+
+def render_offer_accepted(payee: str, category: str) -> str:
+    """The confirmation sent when the owner accepts the offer (§14.7 3b)."""
+    return (
+        f"Great — I'll auto-handle {payee} as {category} from now on, and "
+        "flag each one so you can see (and undo) it. Reply any time to change "
+        "this."
+    )
+
+
+def render_offer_declined(payee: str) -> str:
+    """The brief note sent when the owner declines the offer (§14.7 3b)."""
+    return (
+        f"No problem — I'll keep proposing {payee} for you to approve, same "
+        "as before."
+    )
+
+
 def render_body(request: ComposeRequest) -> str:
     """Lay out the email body for one transaction message (SPEC §5).
 
@@ -79,6 +112,11 @@ def render_body(request: ComposeRequest) -> str:
     if request.purpose == MessagePurpose.CLARIFY.value:
         question = request.question or "Which category should this be?"
         return f"{facts}\n\n{question}"
+    if request.purpose == MessagePurpose.OVERRIDE_NOTICE.value:
+        return (
+            f"{facts}\n\nNoticed you recategorized this one yourself — I've "
+            "backed off auto-handling this payee and will go back to asking."
+        )
     # fyi / archive_notice / revise_summary / handoff / possibly_inconsistent /
     # diverged_readback — a brief, neutral note (question carries any detail).
     note = request.question or "A quick note on this transaction."

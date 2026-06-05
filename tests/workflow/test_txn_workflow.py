@@ -360,6 +360,56 @@ async def test_open_inbound_revises_then_archives() -> None:
         await handle.result()
 
 
+async def test_open_manual_edit_at_archive_demotes_and_archives() -> None:
+    # AUTO applies "dining"; the verify read matches (→ OPEN). At the archive
+    # boundary a re-read shows the owner recategorized to "gifts" in YNAB — a
+    # silent override that must feed a CORRECT demotion before closing (§14.2).
+    sink: list[FeedRuleLearning] = []
+    auto = _decision(DecidedBy.AGENT).model_copy(
+        update={"rule_id": RuleId("r1")}
+    )
+    matches = TargetState(
+        allocation=ResolvedCategory(category=CategoryId("dining")),
+        approved=True,
+    )
+    overridden = TargetState(
+        allocation=ResolvedCategory(category=CategoryId("gifts")),
+        approved=True,
+    )
+    acts = _activities(
+        snapshot=_snapshot(reconciled=True),
+        enrich_outcome=AutoApply(decision=auto),
+        read_back_seq=[matches, overridden],
+        learning_sink=sink,
+    )
+    async with (
+        await _start_env() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[TransactionWorkflow],
+            activities=acts,
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            TransactionWorkflow.run,
+            TransactionParams(ynab_id=YnabTransactionId("t1")),
+            id="txn-override",
+            task_queue=TASK_QUEUE,
+        )
+        await handle.result()
+
+    assert len(sink) == 1
+    feed = sink[0]
+    assert feed.event is RuleLearningKind.CORRECT
+    # The prior (the agent's auto decision) names the rule to demote.
+    assert feed.prior is not None
+    assert feed.prior.rule_id == "r1"
+    assert feed.decision is not None
+    assert isinstance(feed.decision.allocation, ResolvedCategory)
+    assert feed.decision.allocation.category == "gifts"
+
+
 async def test_diverged_verify_flags_awaiting_and_does_not_livelock() -> None:
     # First read-back diverges (forcing a flagged AWAITING_HUMAN); the second
     # (after the human reply re-commits) matches.

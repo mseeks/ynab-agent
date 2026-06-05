@@ -21,12 +21,14 @@ from ynab_agent.agentic.enrich import (
     EnrichmentSuggestion,
     decide_enrichment,
     propose,
+    review_auto_apply,
     to_proposal,
 )
 from ynab_agent.agentic.model import build_model
 from ynab_agent.domain.allocations import ProposedCategory
 from ynab_agent.domain.enums import (
     Confidence,
+    ReviewVerdict,
     RuleSource,
     SourceKind,
     TrustState,
@@ -104,6 +106,30 @@ def test_build_model_constructs_an_ollama_model() -> None:
     assert isinstance(build_model(model_name="gemma4:e4b"), Model)
 
 
+def test_review_auto_apply_proceeds_when_blessed_is_plausible() -> None:
+    top = EnrichmentSuggestion(
+        category_id="dining", confidence=Confidence.HIGH, rationale="x"
+    )
+    assert review_auto_apply("dining", top) is ReviewVerdict.PROCEED
+    alt = EnrichmentSuggestion(
+        category_id="groceries",
+        confidence=Confidence.HIGH,
+        rationale="x",
+        alternatives=("dining",),
+    )
+    assert review_auto_apply("dining", alt) is ReviewVerdict.PROCEED
+
+
+def test_review_auto_apply_escalates_when_blessed_is_implausible() -> None:
+    other = EnrichmentSuggestion(
+        category_id="groceries",
+        confidence=Confidence.HIGH,
+        rationale="x",
+        alternatives=("software",),
+    )
+    assert review_auto_apply("dining", other) is ReviewVerdict.ESCALATE_TO_HUMAN
+
+
 _NOW = datetime.datetime(2026, 5, 31, 12, 0, tzinfo=datetime.UTC)
 
 
@@ -129,17 +155,63 @@ def _blessed_rule() -> Rule:
     )
 
 
-async def test_decide_enrichment_auto_applies_a_blessed_rule() -> None:
-    # A single blessed rule gates AUTO — the model is never consulted (§14).
+def _judge(category_id: str, alternatives: tuple[str, ...] = ()) -> TestModel:
+    """A TestModel whose suggestion stands in for the review's judgment."""
+    return TestModel(
+        custom_output_args={
+            "category_id": category_id,
+            "confidence": "high",
+            "rationale": "independent read",
+            "alternatives": list(alternatives),
+        }
+    )
+
+
+async def test_decide_enrichment_auto_applies_when_the_review_agrees() -> None:
+    # The independent review picks the same category the blessed rule would →
+    # the auto-apply proceeds (SPEC §0.6 Layer 2).
     outcome = await decide_enrichment(
         _snapshot(),
         _REQUEST.candidates,
         [_blessed_rule()],
         AutoActionCounters(),
         now=_NOW,
+        model=_judge("dining"),
     )
     assert isinstance(outcome, AutoApply)
     assert outcome.decision.rule_id == "r1"
+
+
+async def test_decide_enrichment_review_proceeds_if_blessed_is_an_alt() -> None:
+    # The review's top pick differs but it still considers the blessed category
+    # plausible (an alternative) → proceed.
+    outcome = await decide_enrichment(
+        _snapshot(),
+        _REQUEST.candidates,
+        [_blessed_rule()],
+        AutoActionCounters(),
+        now=_NOW,
+        model=_judge("groceries", alternatives=("dining",)),
+    )
+    assert isinstance(outcome, AutoApply)
+
+
+async def test_decide_enrichment_review_escalates_on_disagreement() -> None:
+    # The independent review does not find the blessed category plausible →
+    # the one-way ratchet holds the auto-apply back to ASK.
+    outcome = await decide_enrichment(
+        _snapshot(),
+        _REQUEST.candidates,
+        [_blessed_rule()],
+        AutoActionCounters(),
+        now=_NOW,
+        model=_judge("groceries"),
+    )
+    assert isinstance(outcome, AskHuman)
+    assert isinstance(outcome.proposal.allocation, ProposedCategory)
+    # Leads with the model's independent pick; offers the usual auto category.
+    assert outcome.proposal.allocation.category == "groceries"
+    assert CategoryId("dining") in outcome.proposal.alternatives
 
 
 async def test_decide_enrichment_asks_when_no_trusted_rule() -> None:
