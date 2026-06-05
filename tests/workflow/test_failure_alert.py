@@ -22,13 +22,21 @@ from temporalio.worker import Worker
 
 import ynab_agent.notify.client as notify_client
 import ynab_agent.workflow.temporal_client as temporal_client
+from ynab_agent.dispatch.classify import InboundMessage
 from ynab_agent.domain.enums import ClearedState
-from ynab_agent.domain.ids import AccountId, CategoryId, YnabTransactionId
+from ynab_agent.domain.ids import (
+    AccountId,
+    CategoryId,
+    MessageId,
+    YnabTransactionId,
+)
 from ynab_agent.domain.money import Money
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.notify.client import Notification, NotifyClient
 from ynab_agent.workflow import alert_activities
 from ynab_agent.workflow.alert_ledger_workflow import AlertLedgerWorkflow
+from ynab_agent.workflow.dispatch_types import DispatchParams
+from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.runtime import DATA_CONVERTER
 from ynab_agent.workflow.txn_workflow import TransactionWorkflow
 from ynab_agent.workflow.types import TransactionParams
@@ -113,3 +121,55 @@ async def test_terminal_enrich_failure_pages_once(
     assert "enrich" in pushed.title
     assert "Blue Bottle" in pushed.body
     assert "ValueError" in pushed.body
+
+
+def _failing_dispatch_activities() -> list[Callable[..., object]]:
+    @activity.defn(name="resolve_thread")
+    async def resolve_thread(thread: str | None) -> str | None:
+        msg = "boom resolving the thread"
+        raise ValueError(msg)
+
+    return [resolve_thread, alert_activities.alert_failure]
+
+
+async def test_dispatch_terminal_failure_pages_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _RecordingBackend()
+    monkeypatch.setattr(notify_client, "_CACHED", NotifyClient(backend))
+    monkeypatch.setenv("TEMPORAL_TASK_QUEUE", _TASK_QUEUE)
+
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=_TASK_QUEUE,
+            workflows=[DispatchWorkflow, AlertLedgerWorkflow],
+            activities=_failing_dispatch_activities(),
+        ),
+    ):
+        monkeypatch.setattr(temporal_client, "_CLIENT", env.client)
+        message = InboundMessage(
+            message_id=MessageId("m1"),
+            from_address="matthew@example.com",
+            subject="[YNAB] $4.50",
+            body="ok",
+        )
+        handle = await env.client.start_workflow(
+            DispatchWorkflow.run,
+            DispatchParams(
+                message=message, allowlist=frozenset({"matthew@example.com"})
+            ),
+            id="dispatch-fail-1",
+            task_queue=_TASK_QUEUE,
+        )
+        with pytest.raises(WorkflowFailureError):
+            await handle.result()
+
+    # One push, naming the failing activity and the sender.
+    assert len(backend.sent) == 1
+    pushed = backend.sent[0]
+    assert "resolve_thread" in pushed.title
+    assert "matthew@example.com" in pushed.body
