@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import assert_never
 
 from temporalio import workflow
+from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from ynab_agent.dispatch.classify import (
@@ -24,11 +25,15 @@ with workflow.unsafe.imports_passed_through():
         classify,
     )
     from ynab_agent.domain.ids import YnabTransactionId
-    from ynab_agent.workflow import dispatch_activities
+    from ynab_agent.workflow import alert_activities, dispatch_activities
+    from ynab_agent.workflow.alerting import build_failure_alert
     from ynab_agent.workflow.constants import (
         ACTIVITY_BUDGET,
         ACTIVITY_RETRY,
         ACTIVITY_TIMEOUT,
+        ALERT_BUDGET,
+        ALERT_RETRY,
+        ALERT_TIMEOUT,
     )
     from ynab_agent.workflow.dispatch_types import (
         DispatchParams,
@@ -42,6 +47,34 @@ class DispatchWorkflow:
 
     @workflow.run
     async def run(self, params: DispatchParams) -> DispatchResult:
+        """Classify + route, paging once on a terminal failure (SPEC §5, §13).
+
+        Wraps the dispatch in the same terminal-failure hook W2 uses: a
+        non-retryable bug or an elapsed retry budget pages the owner once
+        (deduped on the message id) before the workflow fails — so a dropped
+        inbound reply or command is never silent.
+        """
+        try:
+            return await self._run(params)
+        except ActivityError as exc:
+            message = params.message
+            await workflow.execute_activity(
+                alert_activities.alert_failure,
+                build_failure_alert(
+                    key=str(message.message_id),
+                    context=(
+                        f"inbound from {message.from_address}: "
+                        f"{message.subject}"
+                    ),
+                    exc=exc,
+                ),
+                start_to_close_timeout=ALERT_TIMEOUT,
+                schedule_to_close_timeout=ALERT_BUDGET,
+                retry_policy=ALERT_RETRY,
+            )
+            raise
+
+    async def _run(self, params: DispatchParams) -> DispatchResult:
         """Classify the message and route it (SPEC §5)."""
         message = params.message
         thread = (
