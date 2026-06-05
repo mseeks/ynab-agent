@@ -85,13 +85,15 @@ class _Client:
         handles: dict[str, _Handle],
         *,
         raise_on_list: bool = False,
+        fail_on: str | None = None,
     ) -> None:
         self._routes = routes
         self._handles = handles
         self._raise = raise_on_list
+        self._fail_on = fail_on
 
     def list_workflows(self, query: str) -> AsyncIterator[_Exec]:
-        if self._raise:
+        if self._raise or (self._fail_on and self._fail_on in query):
             msg = "visibility down"
             raise RuntimeError(msg)
         execs: list[_Exec] = []
@@ -170,3 +172,17 @@ def test_fetch_degrades_to_an_error_when_visibility_is_down() -> None:
     assert error is not None
     assert "RuntimeError" in error
     assert readout.poll_live is False
+
+
+def test_one_failing_query_reddens_only_its_panel() -> None:
+    # The dispatch query fails; every other panel still fills in, and the error
+    # names just the failing one (per-section degradation).
+    client = _client()
+    client._fail_on = "DispatchWorkflow"
+    readout, error = asyncio.run(temporal_source.fetch(client))  # type: ignore[arg-type]
+    assert error is not None
+    assert "dispatch" in error
+    assert "poll" not in error and "lifecycle" not in error
+    assert readout.poll_live is True  # unaffected
+    assert readout.in_flight == 2  # unaffected
+    assert readout.dispatch.total == 0  # the degraded panel

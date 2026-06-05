@@ -75,21 +75,30 @@ async def _take(
 
 
 async def _poll(client: Client) -> tuple[str, bool, datetime | None]:
-    """The most recent poll tick: (status, live, last_start)."""
+    """The most recent poll tick: (status, live, last_start).
+
+    Standard (SQL) Temporal visibility rejects an ``ORDER BY`` clause, so we
+    take a bounded page and pick the latest start client-side rather than
+    sorting in the query.
+    """
+    latest: WorkflowExecution | None = None
     async for execution in _take(
-        client.list_workflows(
-            "WorkflowType = 'PollWorkflow' ORDER BY StartTime DESC"
-        ),
-        cap=1,
+        client.list_workflows("WorkflowType = 'PollWorkflow'"), cap=100
     ):
-        status = _status(execution)
-        live = execution.status in (
-            WorkflowExecutionStatus.RUNNING,
-            WorkflowExecutionStatus.COMPLETED,
-            WorkflowExecutionStatus.CONTINUED_AS_NEW,
-        )
-        return status, live, execution.start_time
-    return "none", False, None
+        start = execution.start_time
+        if latest is None or (
+            start is not None
+            and (latest.start_time is None or start > latest.start_time)
+        ):
+            latest = execution
+    if latest is None:
+        return "none", False, None
+    live = latest.status in (
+        WorkflowExecutionStatus.RUNNING,
+        WorkflowExecutionStatus.COMPLETED,
+        WorkflowExecutionStatus.CONTINUED_AS_NEW,
+    )
+    return _status(latest), live, latest.start_time
 
 
 async def _lifecycle(
@@ -272,7 +281,12 @@ async def _terminal(client: Client) -> tuple[int, int, tuple[Failure, ...]]:
 
 
 async def fetch(client: Client) -> tuple[TemporalReadout, str | None]:
-    """Read the agent's Temporal state; degrades to an error string."""
+    """Read the agent's Temporal state; each panel degrades independently.
+
+    Every sub-read is guarded on its own, so one unsupported visibility query
+    (or a transient failure) reddens only its panel and names itself in the
+    error — the rest of the page still fills in.
+    """
     poll_status = "none"
     poll_live = False
     poll_last: datetime | None = None
@@ -285,54 +299,48 @@ async def fetch(client: Client) -> tuple[TemporalReadout, str | None]:
     dispatch = DispatchTally()
     archived = terminated = 0
     failures: tuple[Failure, ...] = ()
+    errors: list[str] = []
 
     try:
         poll_status, poll_live, poll_last = await _poll(client)
+    except Exception as exc:
+        errors.append(f"poll: {type(exc).__name__}")
+    try:
         states, in_flight, awaiting = await _lifecycle(client)
-        # The registry may not exist until the first learning signal — a normal
-        # state, not an error, so its absence is simply suppressed.
-        with contextlib.suppress(Exception):
-            rules, observe, eligible, blessed = await _registry(client)
+    except Exception as exc:
+        errors.append(f"lifecycle: {type(exc).__name__}")
+    # The registry may not exist until the first learning signal — a normal
+    # state, not an error, so its absence is simply suppressed.
+    with contextlib.suppress(Exception):
+        rules, observe, eligible, blessed = await _registry(client)
+    try:
         offers = await _offers(client)
+    except Exception as exc:
+        errors.append(f"offers: {type(exc).__name__}")
+    try:
         dispatch = await _dispatch(client)
+    except Exception as exc:
+        errors.append(f"dispatch: {type(exc).__name__}")
+    try:
         archived, terminated, failures = await _terminal(client)
-    except Exception as exc:  # degrade to an error, never crash the page
-        readout = TemporalReadout(
-            poll_status=poll_status,
-            poll_live=poll_live,
-            poll_last_start=poll_last,
-            lifecycle_states=states,
-            in_flight=in_flight,
-            rules=rules,
-            observe=observe,
-            eligible=eligible,
-            blessed=blessed,
-            offers=offers,
-            awaiting=awaiting,
-            dispatch=dispatch,
-            archived=archived,
-            terminated=terminated,
-            failures=failures,
-        )
-        return readout, f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        errors.append(f"terminal: {type(exc).__name__}")
 
-    return (
-        TemporalReadout(
-            poll_status=poll_status,
-            poll_live=poll_live,
-            poll_last_start=poll_last,
-            lifecycle_states=states,
-            in_flight=in_flight,
-            archived=archived,
-            terminated=terminated,
-            rules=rules,
-            observe=observe,
-            eligible=eligible,
-            blessed=blessed,
-            offers=offers,
-            awaiting=awaiting,
-            dispatch=dispatch,
-            failures=failures,
-        ),
-        None,
+    readout = TemporalReadout(
+        poll_status=poll_status,
+        poll_live=poll_live,
+        poll_last_start=poll_last,
+        lifecycle_states=states,
+        in_flight=in_flight,
+        archived=archived,
+        terminated=terminated,
+        rules=rules,
+        observe=observe,
+        eligible=eligible,
+        blessed=blessed,
+        offers=offers,
+        awaiting=awaiting,
+        dispatch=dispatch,
+        failures=failures,
     )
+    return readout, "; ".join(errors) if errors else None
