@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from temporalio import workflow
 from temporalio.common import SearchAttributeKey
+from temporalio.exceptions import ActivityError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -87,8 +88,16 @@ with workflow.unsafe.imports_passed_through():
         born,
     )
     from ynab_agent.policy.converge import classify_verify, target_of
-    from ynab_agent.workflow import activities
-    from ynab_agent.workflow.constants import ACTIVITY_RETRY, ACTIVITY_TIMEOUT
+    from ynab_agent.workflow import activities, alert_activities
+    from ynab_agent.workflow.alerting import build_failure_alert
+    from ynab_agent.workflow.constants import (
+        ACTIVITY_BUDGET,
+        ACTIVITY_RETRY,
+        ACTIVITY_TIMEOUT,
+        ALERT_BUDGET,
+        ALERT_RETRY,
+        ALERT_TIMEOUT,
+    )
     from ynab_agent.workflow.types import AnswerOutcome, TransactionParams
 
 # History-length ceiling before a resting workflow continues-as-new. High enough
@@ -156,16 +165,43 @@ class TransactionWorkflow:
         )
         self._sync_thread_id()
 
-        while not isinstance(self._txn, Archived):
-            await self._step()
-            if (
-                isinstance(self._txn, _RESTING)
-                and not self._inbound  # drain pending signals first (SPEC §0.5)
-                and workflow.info().get_current_history_length()
-                > _CONTINUE_AS_NEW_AFTER
-            ):
-                # continue_as_new raises to restart; nothing runs after it.
-                workflow.continue_as_new(self._resume_params())
+        try:
+            while not isinstance(self._txn, Archived):
+                await self._step()
+                if (
+                    isinstance(self._txn, _RESTING)
+                    and not self._inbound  # drain pending signals (SPEC §0.5)
+                    and workflow.info().get_current_history_length()
+                    > _CONTINUE_AS_NEW_AFTER
+                ):
+                    # continue_as_new raises to restart; nothing runs after it.
+                    # (ContinueAsNewError is not an ActivityError, so it escapes
+                    # the failure hook below untouched.)
+                    workflow.continue_as_new(self._resume_params())
+        except ActivityError as exc:
+            # A terminal activity failure: a non-retryable bug (the constants
+            # denylist) or the schedule_to_close budget elapsing. Page the owner
+            # once — deduped, best-effort — then re-raise so the transaction
+            # still fails and stays visible in Temporal (SPEC §13).
+            await workflow.execute_activity(
+                alert_activities.alert_failure,
+                build_failure_alert(
+                    key=self._ynab_id,
+                    context=self._alert_context(),
+                    exc=exc,
+                ),
+                start_to_close_timeout=ALERT_TIMEOUT,
+                schedule_to_close_timeout=ALERT_BUDGET,
+                retry_policy=ALERT_RETRY,
+            )
+            raise
+
+    def _alert_context(self) -> str:
+        """A human locator for a failure alert: payee + txn id when known."""
+        st = self._txn
+        if isinstance(st, Discovered):
+            return f"txn {self._ynab_id}"
+        return f"{st.core.snapshot.payee} (txn {self._ynab_id})"
 
     def _resume_params(self) -> TransactionParams:
         return TransactionParams(
@@ -220,12 +256,14 @@ class TransactionWorkflow:
                 args=[self._ynab_id, effect.decision],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
+                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             read = await workflow.execute_activity(
                 activities.read_back,
                 self._ynab_id,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
+                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             return WriteVerified(
                 outcome=classify_verify(read, target_of(effect.decision))
@@ -236,6 +274,7 @@ class TransactionWorkflow:
                 args=[self._ynab_id, self._proposal()],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
+                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             self._set_thread_id(tid)
             # Index this workflow by its thread for reply routing (§5a).
@@ -253,6 +292,7 @@ class TransactionWorkflow:
                 ],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
+                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
         elif isinstance(effect, FeedRuleLearning):
             await workflow.execute_activity(
@@ -260,6 +300,7 @@ class TransactionWorkflow:
                 effect,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
+                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
         elif isinstance(effect, CloseThread):
             if self._thread_id is not None:
@@ -268,6 +309,7 @@ class TransactionWorkflow:
                     self._thread_id,
                     start_to_close_timeout=ACTIVITY_TIMEOUT,
                     retry_policy=ACTIVITY_RETRY,
+                    schedule_to_close_timeout=ACTIVITY_BUDGET,
                 )
         elif isinstance(effect, SetTimer):
             self._deadlines[effect.timer] = effect.deadline
@@ -309,6 +351,7 @@ class TransactionWorkflow:
             self._ynab_id,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
+            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         if snapshot is not None:
             await self._dispatch(
@@ -342,6 +385,7 @@ class TransactionWorkflow:
             st.core.snapshot,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
+            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         await self._dispatch(Enriched(outcome=outcome))
 
@@ -384,6 +428,7 @@ class TransactionWorkflow:
             args=[signal, snapshot, self._proposal()],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
+            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         if isinstance(interpretation, AnswerOutcome):
             await self._dispatch(
@@ -438,6 +483,7 @@ class TransactionWorkflow:
             args=[st.core.snapshot, st.instruction],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
+            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         await self._dispatch(Converged(outcome=outcome))
 

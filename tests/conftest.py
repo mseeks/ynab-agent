@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 import ynab_agent.mail.client as mail_client
+import ynab_agent.notify.client as notify_client
 import ynab_agent.telemetry as telemetry
 import ynab_agent.workflow.temporal_client as temporal_client
 import ynab_agent.ynab.client as ynab_client
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 def _reset() -> None:
     ynab_client._CACHED = None
     mail_client._CACHED = None
+    notify_client._CACHED = None
     temporal_client._CLIENT = None
     telemetry._tracing_configured = False
     # Clear OTel's set-once global tracer provider so a test can install one.
