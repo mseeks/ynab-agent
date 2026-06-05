@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import signal
 
@@ -96,11 +97,35 @@ async def run_worker(
     for sig in (signal.SIGTERM, signal.SIGINT):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop.set)
+    # The in-process ops dashboard (SPEC §15): reuses this client, reached over
+    # kubectl port-forward. A start failure must never stop the worker.
+    dashboard = await _start_dashboard(client)
     try:
         async with worker:
             await stop.wait()
     finally:
+        if dashboard is not None:
+            dashboard.close()
+            with contextlib.suppress(Exception):
+                await dashboard.wait_closed()
         shutdown_tracing()
+
+
+async def _start_dashboard(client: Client) -> asyncio.Server | None:
+    """Start the dashboard if enabled; a failure is logged, never fatal."""
+    from ynab_agent.settings import DashboardSettings
+
+    if not DashboardSettings().enabled:
+        return None
+    try:
+        from ynab_agent.dashboard.server import start as start_dashboard
+
+        return await start_dashboard(client)
+    except Exception:
+        logging.getLogger("ynab_agent.worker").exception(
+            "dashboard failed to start; running worker without it"
+        )
+        return None
 
 
 def main() -> None:
