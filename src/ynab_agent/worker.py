@@ -43,11 +43,16 @@ from ynab_agent.workflow.runtime import (
 DEFAULT_HOST = "localhost:7233"
 DEFAULT_NAMESPACE = "default"
 DEFAULT_TASK_QUEUE = "ynab-agent"
-# Process one activity at a time: a burst of transactions must not fan many
-# model calls at the single local Gemma at once (Ollama serializes them anyway,
-# so concurrency only makes the late ones queue past their timeout). Serial
-# keeps each generation's wait minimal; the household's volume never needs more.
-_MAX_CONCURRENT_ACTIVITIES = 1
+# A small activity pool. Model calls effectively serialize at the single local
+# Gemma regardless (Ollama runs one generation at a time), but the fast I/O
+# activities (open_thread, the commit, the mail sends) have no reason to queue
+# behind a 20-min generation. At concurrency 1 a sub-second send could wait
+# minutes for the one slot — head-of-line blocking that, once activities had a
+# wall-clock budget, surfaced as a spurious SCHEDULE_TO_START page (#6 fix).
+# A few slots let the fast work start immediately while model work still piles
+# against the Ollama lock; keep it small so a burst can't fan many concurrent
+# generations at the model.
+_MAX_CONCURRENT_ACTIVITIES = 4
 
 
 async def run_worker(

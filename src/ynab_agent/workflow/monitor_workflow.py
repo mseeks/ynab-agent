@@ -25,11 +25,7 @@ with workflow.unsafe.imports_passed_through():
         should_alert,
     )
     from ynab_agent.workflow import monitor_activities
-    from ynab_agent.workflow.constants import (
-        ACTIVITY_BUDGET,
-        ACTIVITY_RETRY,
-        ACTIVITY_TIMEOUT,
-    )
+    from ynab_agent.workflow.constants import ACTIVITY_RETRY, ACTIVITY_TIMEOUT
     from ynab_agent.workflow.monitor_types import MonitorParams, MonitorResult
 
 
@@ -45,7 +41,6 @@ class OverspendMonitorWorkflow:
             monitor_activities.fetch_category_spends,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
-            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
 
         alerted: list[str] = []
@@ -58,7 +53,6 @@ class OverspendMonitorWorkflow:
                 str(spend.category),
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             if not should_alert(assessment, prior):
                 continue
@@ -67,7 +61,6 @@ class OverspendMonitorWorkflow:
                 assessment,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             await workflow.execute_activity(
                 monitor_activities.save_alert,
@@ -80,7 +73,6 @@ class OverspendMonitorWorkflow:
                 ],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             alerted.append(spend.name)
 
