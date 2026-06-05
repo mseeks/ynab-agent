@@ -91,7 +91,6 @@ with workflow.unsafe.imports_passed_through():
     from ynab_agent.workflow import activities, alert_activities
     from ynab_agent.workflow.alerting import build_failure_alert
     from ynab_agent.workflow.constants import (
-        ACTIVITY_BUDGET,
         ACTIVITY_RETRY,
         ACTIVITY_TIMEOUT,
         ALERT_BUDGET,
@@ -256,14 +255,12 @@ class TransactionWorkflow:
                 args=[self._ynab_id, effect.decision],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             read = await workflow.execute_activity(
                 activities.read_back,
                 self._ynab_id,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             return WriteVerified(
                 outcome=classify_verify(read, target_of(effect.decision))
@@ -274,7 +271,6 @@ class TransactionWorkflow:
                 args=[self._ynab_id, self._proposal()],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             self._set_thread_id(tid)
             # Index this workflow by its thread for reply routing (§5a).
@@ -292,7 +288,6 @@ class TransactionWorkflow:
                 ],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
         elif isinstance(effect, FeedRuleLearning):
             await workflow.execute_activity(
@@ -300,7 +295,6 @@ class TransactionWorkflow:
                 effect,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
         elif isinstance(effect, CloseThread):
             if self._thread_id is not None:
@@ -309,7 +303,6 @@ class TransactionWorkflow:
                     self._thread_id,
                     start_to_close_timeout=ACTIVITY_TIMEOUT,
                     retry_policy=ACTIVITY_RETRY,
-                    schedule_to_close_timeout=ACTIVITY_BUDGET,
                 )
         elif isinstance(effect, SetTimer):
             self._deadlines[effect.timer] = effect.deadline
@@ -351,7 +344,6 @@ class TransactionWorkflow:
             self._ynab_id,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
-            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         if snapshot is not None:
             await self._dispatch(
@@ -385,7 +377,6 @@ class TransactionWorkflow:
             st.core.snapshot,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
-            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         await self._dispatch(Enriched(outcome=outcome))
 
@@ -428,7 +419,6 @@ class TransactionWorkflow:
             args=[signal, snapshot, self._proposal()],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
-            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         if isinstance(interpretation, AnswerOutcome):
             await self._dispatch(
@@ -483,7 +473,6 @@ class TransactionWorkflow:
             args=[st.core.snapshot, st.instruction],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
-            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         await self._dispatch(Converged(outcome=outcome))
 

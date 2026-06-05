@@ -173,3 +173,52 @@ async def test_dispatch_terminal_failure_pages_once(
     pushed = backend.sent[0]
     assert "resolve_thread" in pushed.title
     assert "matthew@example.com" in pushed.body
+
+
+def _retryable_failing_activities() -> list[Callable[..., object]]:
+    @activity.defn(name="fetch_snapshot")
+    async def fetch_snapshot(ynab_id: str) -> YnabSnapshot:
+        return _snapshot()
+
+    @activity.defn(name="enrich")
+    async def enrich(snapshot: YnabSnapshot) -> object:
+        # RuntimeError is NOT on the denylist -> retryable. Without a bounded
+        # maximum_attempts this would retry forever and the test would hang;
+        # the bound makes it terminate after the cap and page.
+        msg = "transient model wobble"
+        raise RuntimeError(msg)
+
+    return [fetch_snapshot, enrich, alert_activities.alert_failure]
+
+
+async def test_retryable_failure_exhausts_attempts_and_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _RecordingBackend()
+    monkeypatch.setattr(notify_client, "_CACHED", NotifyClient(backend))
+    monkeypatch.setenv("TEMPORAL_TASK_QUEUE", _TASK_QUEUE)
+
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=_TASK_QUEUE,
+            workflows=[TransactionWorkflow, AlertLedgerWorkflow],
+            activities=_retryable_failing_activities(),
+        ),
+    ):
+        monkeypatch.setattr(temporal_client, "_CLIENT", env.client)
+        handle = await env.client.start_workflow(
+            TransactionWorkflow.run,
+            TransactionParams(ynab_id=YnabTransactionId("t1")),
+            id="txn-retry-exhaust",
+            task_queue=_TASK_QUEUE,
+        )
+        # Terminates (does not retry forever) and surfaces the failure.
+        with pytest.raises(WorkflowFailureError):
+            await handle.result()
+
+    assert len(backend.sent) == 1
+    assert "enrich" in backend.sent[0].title

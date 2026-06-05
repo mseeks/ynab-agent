@@ -26,11 +26,7 @@ with workflow.unsafe.imports_passed_through():
         resulting_status,
     )
     from ynab_agent.workflow import receipt_activities
-    from ynab_agent.workflow.constants import (
-        ACTIVITY_BUDGET,
-        ACTIVITY_RETRY,
-        ACTIVITY_TIMEOUT,
-    )
+    from ynab_agent.workflow.constants import ACTIVITY_RETRY, ACTIVITY_TIMEOUT
     from ynab_agent.workflow.receipt_types import (
         ReceiptJoinParams,
         ReceiptJoinResult,
@@ -50,7 +46,6 @@ class ReceiptJoinWorkflow:
             receipt,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
-            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         action = plan_join(receipt, outcome, now=workflow.now())
         await self._execute(action)
@@ -62,7 +57,6 @@ class ReceiptJoinWorkflow:
                 args=[str(receipt.id), new_status],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
-                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
         return ReceiptJoinResult(
             action=action.kind, status=new_status or receipt.status
@@ -77,7 +71,6 @@ class ReceiptJoinWorkflow:
                     args=[str(txn_id), str(receipt_id)],
                     start_to_close_timeout=ACTIVITY_TIMEOUT,
                     retry_policy=ACTIVITY_RETRY,
-                    schedule_to_close_timeout=ACTIVITY_BUDGET,
                 )
                 return
             case AskDisambiguation(receipt_id=receipt_id, candidates=cands):
@@ -86,7 +79,6 @@ class ReceiptJoinWorkflow:
                     args=[str(receipt_id), [str(c) for c in cands]],
                     start_to_close_timeout=ACTIVITY_TIMEOUT,
                     retry_policy=ACTIVITY_RETRY,
-                    schedule_to_close_timeout=ACTIVITY_BUDGET,
                 )
                 return
             case AskNoMatch(receipt_id=receipt_id):
@@ -95,7 +87,6 @@ class ReceiptJoinWorkflow:
                     str(receipt_id),
                     start_to_close_timeout=ACTIVITY_TIMEOUT,
                     retry_policy=ACTIVITY_RETRY,
-                    schedule_to_close_timeout=ACTIVITY_BUDGET,
                 )
                 return
             case Park() | DoNothing():

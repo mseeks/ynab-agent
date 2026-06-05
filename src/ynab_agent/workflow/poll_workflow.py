@@ -6,9 +6,10 @@ outstanding work), plans which to address via the pure
 and continues-as-new. There is no cursor: the outstanding set is YNAB's
 ``type=unapproved`` view, re-read each tick and derived from YNAB rather than
 stored (SPEC §0.5). A transaction approved (by the owner or the agent's own
-triage) simply leaves the set; a new import enters it. ``REJECT_DUPLICATE`` on
-the per-transaction workflow id makes re-addressing an already-handled one a
-no-op.
+triage) simply leaves the set; a new import enters it.
+``ALLOW_DUPLICATE_FAILED_ONLY`` on the per-transaction workflow id makes
+re-addressing an already-running or completed one a no-op, while letting a
+*failed* W2 re-fire — so a transient failure self-heals on a later tick.
 
 A one-shot run (``continuous=False``, the default) performs a single tick and
 returns its :class:`PollResult` — what tests and a manual kick use. Production
