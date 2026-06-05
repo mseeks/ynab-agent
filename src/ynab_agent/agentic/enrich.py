@@ -21,7 +21,7 @@ from pydantic_ai import Agent
 from ynab_agent.agentic.model import run_structured
 from ynab_agent.domain.allocations import ProposedCategory
 from ynab_agent.domain.base import Frozen
-from ynab_agent.domain.enums import Confidence, SourceKind
+from ynab_agent.domain.enums import Confidence, ReviewVerdict, SourceKind
 from ynab_agent.domain.events import AskHuman, AutoApply
 from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.proposal import Proposal, ProposalSource
@@ -145,6 +145,69 @@ def to_proposal(suggestion: EnrichmentSuggestion) -> Proposal:
     )
 
 
+def _blessed_category_id(rule: Rule) -> str | None:
+    """The single category a rule auto-applies, or ``None`` for a split.
+
+    The safety review compares a single independent category against the rule's;
+    a split action has no single category to judge, so the review is skipped for
+    it (learned-eligible rules are always single-category, so this is rare).
+    """
+    allocation = rule.action.allocation
+    if isinstance(allocation, ProposedCategory):
+        return str(allocation.category)
+    return None
+
+
+def review_auto_apply(
+    blessed_category_id: str, suggestion: EnrichmentSuggestion
+) -> ReviewVerdict:
+    """The agent-powered safety review's one-way ratchet (SPEC §0.6 Layer 2).
+
+    An independent, *clean-context* model categorization (run with no knowledge
+    of the rule's choice, to stay unbiased) judges the impending auto-apply: it
+    ``PROCEED``s only if it considers the blessed category plausible — the
+    category it chose or listed as an alternative — and otherwise
+    ``ESCALATE_TO_HUMAN``. It can only hold an auto-apply back, never grant one,
+    so the deterministic gate still authorizes (principle 6).
+    """
+    plausible = {suggestion.category_id, *suggestion.alternatives}
+    if blessed_category_id in plausible:
+        return ReviewVerdict.PROCEED
+    return ReviewVerdict.ESCALATE_TO_HUMAN
+
+
+def _escalation_proposal(
+    suggestion: EnrichmentSuggestion, blessed_category_id: str
+) -> Proposal:
+    """The proposal emailed when the review holds an auto-apply back.
+
+    Leads with the model's independent pick and offers the usual auto category
+    as an alternative, so the owner sees both views and the disagreement that
+    triggered the question.
+    """
+    base = to_proposal(suggestion)
+    blessed = CategoryId(blessed_category_id)
+    # to_proposal always builds a single-category allocation; narrow for mypy.
+    allocation = base.allocation
+    top = (
+        allocation.category
+        if isinstance(allocation, ProposedCategory)
+        else None
+    )
+    alternatives = base.alternatives
+    if blessed != top and blessed not in alternatives:
+        alternatives = (blessed, *alternatives)
+    return base.model_copy(
+        update={
+            "alternatives": alternatives,
+            "rationale": (
+                "I'd usually auto-file this payee, but this charge looked "
+                "different from the usual — confirming before I apply it."
+            ),
+        }
+    )
+
+
 async def decide_enrichment(
     snapshot: YnabSnapshot,
     candidates: tuple[CandidateCategory, ...],
@@ -154,13 +217,15 @@ async def decide_enrichment(
     now: datetime.datetime,
     model: Model | None = None,
 ) -> EnrichmentOutcome:
-    """Compose the enrich step: gate first, model only to ask (SPEC §4.1, §4.2).
+    """Compose the enrich step: gate, then a safety review (SPEC §4.1, §0.6).
 
     The deterministic gate decides autonomy from the rules alone — a single
-    trusted rule auto-applies *its* action (the model never authorizes a write,
-    principle 6), so when it does we skip the model entirely. Only when a human
-    must be asked does the agent run, to produce the best-guess proposal the
-    email shows.
+    blessed rule may auto-apply *its* action (the model never authorizes a
+    write, principle 6). Before an auto-apply lands, an independent
+    *clean-context* model review judges it (:func:`review_auto_apply`); a
+    disagreement holds it back to ASK (a one-way ratchet — it can only veto). A
+    gated ASK runs the same model to produce the best-guess proposal the email
+    shows.
 
     Args:
         snapshot: The transaction being enriched.
@@ -171,14 +236,35 @@ async def decide_enrichment(
         model: A model override for tests; defaults to Ollama/Gemma.
 
     Returns:
-        ``AutoApply`` when a trusted rule gates it, else ``AskHuman``.
+        ``AutoApply`` when a blessed rule gates it *and* the review proceeds,
+        else ``AskHuman``.
     """
     rules = tuple(rules)
     gate = evaluate_gate(snapshot, rules, counters)
     if gate.verdict is GateVerdict.AUTO and gate.rule_id is not None:
         rule = next((r for r in rules if r.id == gate.rule_id), None)
         if rule is not None:
-            return AutoApply(decision=build_auto_decision(rule, snapshot, now))
+            decision = build_auto_decision(rule, snapshot, now)
+            blessed_category_id = _blessed_category_id(rule)
+            if blessed_category_id is None:
+                return AutoApply(decision=decision)
+            # Clean context: the independent judge never sees the rule's choice.
+            suggestion = await propose(
+                EnrichmentRequest(
+                    payee=snapshot.payee,
+                    amount_display=str(snapshot.amount),
+                    candidates=candidates,
+                ),
+                model=model,
+            )
+            if (
+                review_auto_apply(blessed_category_id, suggestion)
+                is ReviewVerdict.PROCEED
+            ):
+                return AutoApply(decision=decision)
+            return AskHuman(
+                proposal=_escalation_proposal(suggestion, blessed_category_id)
+            )
 
     suggestion = await propose(
         EnrichmentRequest(

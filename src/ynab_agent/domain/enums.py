@@ -131,6 +131,20 @@ class ReviewVerdict(StrEnum):
     ESCALATE_TO_HUMAN = "escalate_to_human"
 
 
+class OfferVerdict(StrEnum):
+    """How the owner answered a proactive autonomy offer (SPEC §14.7 3b).
+
+    The model reads a free-form reply into one of these: ``ACCEPT`` blesses the
+    rule, ``DECLINE`` keeps proposing, and ``UNCLEAR`` (the safe default on any
+    doubt) neither blesses nor closes — the offer keeps waiting for a clear
+    answer, since granting autonomy must never happen on ambiguity.
+    """
+
+    ACCEPT = "accept"
+    DECLINE = "decline"
+    UNCLEAR = "unclear"
+
+
 class RevisingOrigin(StrEnum):
     """Where a REVISING run was entered from (SPEC §3, no-change exit rule).
 

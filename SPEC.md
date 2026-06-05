@@ -785,7 +785,9 @@ Auto-actions must be *seeable* and *reversible*:
 ### 14.6 Resolved open decisions
 
 - **§11.1** person-tag channel → structured token (flags reserved for auto-action visibility, §14.5).
-- **§11.2** K stays default 3, but `confirmed→trusted` now means *eligible*, not auto (§14.2).
+- **§11.2** K is kept deliberately high (default **5**, was 3) so eligibility is
+  earned only after many same-way confirmations; `confirmed→trusted` now means
+  *eligible*, not auto (§14.2).
 - **§11.12** bake-in → the per-action-loud stage *is* the bake-in: real writes, full visibility, easy
   undo, before any quiet/silent stage.
 - **Store** (was implicit) → the registry workflow; no external DB (§14.1).
@@ -805,10 +807,32 @@ Each landed additive and green (the autonomy path is live, but inert until a rul
 5. **Visibility** ✅ — an agent write carries the review flag (`to_patch`, §14.5); the per-action FYI
    already lives in the state machine (`MessagePurpose.FYI` on `AUTO_APPLIED`).
 
-Remaining (its own green increment):
+3b. **Proactive eligibility offer** ✅ — when a learned rule reaches `eligible` (`pending_offers`), the
+   **registry** (the singleton that owns rule lifecycle) volunteers the one-time "want me to auto-handle
+   X?" prompt by starting a per-rule `AutonomyOfferWorkflow` (id `autonomy-offer-{rule_id}`,
+   `REJECT_DUPLICATE` — the one-time guard, plus an `offered_at` marker on the rule). The offer is its
+   own email thread, stamped with an `OfferThreadId` search attribute so W3 routes the reply back to it
+   — disambiguating a *bless-acceptance* from a *category reply* by thread identity (not a bolt-on the
+   W2 spine has to learn about). A free-form reply is read by a model (`agentic.offer`) into
+   accept/decline/unclear; accept signals the registry's `bless_existing` (bless by id — never resurrects
+   a stale/corrected rule), decline keeps proposing, unclear keeps waiting, and silence past the
+   patience window simply ends the offer (a later "yes" can still bless via the command path, 3a).
 
-3b. **Proactive eligibility offer** — when a learned rule reaches `eligible` (`registry.eligible_for_
-   bless`), volunteer the one-time "want me to auto-handle X?" prompt. Deferred deliberately: doing it
-   right needs a new effect threaded through the W2 spine (an idempotent send) and reply routing that
-   distinguishes a bless-acceptance from a category reply — not a bolt-on. Until it lands, the owner
-   blesses via the command path (3a).
+### 14.8 Guarding & revoking autonomy (the backward path)
+
+Earned autonomy must also degrade gracefully. Three mechanisms, plus the high K above as the front gate:
+
+- **Layer-2 safety review (§0.6) ✅** — before an auto-apply lands, an *independent, clean-context*
+  model categorization (blind to the rule's choice, to stay unbiased) judges it (`enrich.review_auto_
+  apply`, wiring the `ReviewVerdict` ratchet). If it does not consider the blessed category plausible it
+  holds the auto-apply back to ASK — a one-way ratchet that can only veto, never grant (principle 6 still
+  holds: the deterministic gate authorizes). Doubt on a new transaction thus pauses autonomy for that
+  txn; if the human then corrects, the rule demotes.
+- **Silent manual-edit detection ✅** — at the OPEN→archive boundary the spine re-reads YNAB; if the
+  owner recategorized an agent-applied txn directly (not by reply), it feeds a `CORRECT` (demoting the
+  driving rule back to Observe, `offered_at` cleared) and notes it, then closes on the owner's choice.
+- **Explicit correction ✅** — a reply correcting an auto-action already demotes via `_correct`
+  (source → learned, trust → suggested), dropping the payee back to Observe (§14.2).
+
+Out of scope here (their own later increments): a *deterministic* amount-anomaly heuristic, and the full
+`FallbackModel`/Claude routing for the review (it currently runs on the same local model as enrichment).

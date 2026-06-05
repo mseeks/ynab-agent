@@ -32,6 +32,7 @@ class MessagePurpose(StrEnum):
     POSSIBLY_INCONSISTENT = "possibly_inconsistent"
     DIVERGED_READBACK = "diverged_readback"
     ARCHIVE_NOTICE = "archive_notice"
+    OVERRIDE_NOTICE = "override_notice"
 
 
 class TimerKind(StrEnum):

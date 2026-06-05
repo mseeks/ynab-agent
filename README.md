@@ -34,11 +34,13 @@ inbound email ─► W3 dispatch ─► { W2 lifecycle, W4 receipt join }
 | **W5** rule learning | confirm/correct → rules + trust (the memory that earns autonomy) |
 | **W6 / W7** budget guards | overspend monitor (notify) + balancer planner (cover) |
 
-The **agentic middle** is five Pydantic AI agents over a local Ollama running
-**Gemma 4** (the SPEC §0.5 path): `enrich` (propose a category), `interpret` (read
-a reply's intent), `match` (join a receipt), `classify` (triage inbound),
-`converge` (interpret a revision). Each produces domain-typed structured output
-and lives in the `agentic` package, never imported into a Temporal sandbox.
+The **agentic middle** is a set of Pydantic AI agents over a local Ollama running
+**Gemma 4** (the SPEC §0.5 path): `enrich` (propose a category — and, on an
+auto-apply, an independent clean-context *safety review* that can only veto),
+`interpret` (read a reply's intent), `match` (join a receipt), `classify` (triage
+inbound), `converge` (interpret a revision), and `offer` (read a yes/no to a
+proactive autonomy offer). Each produces domain-typed structured output and lives
+in the `agentic` package, never imported into a Temporal sandbox.
 
 ## Layout
 
@@ -62,11 +64,18 @@ SPEC.md        the design spec
 
 The full system is built and tested inside-out. Every workflow (W1–W7), the
 policy layer, rule learning, and the audit log are pure and exhaustively tested;
-all five model agents are real (offline-tested via `TestModel`, plus opt-in live
+the model agents are real (offline-tested via `TestModel`, plus opt-in live
 Gemma smokes); **AgentMail sending is live**; the **YNAB REST client** is built
 and unit-tested with live calls gated on `YNAB_API_KEY`. The activity ports are
 progressively wired to the real clients (the YNAB reads are connected); the rest
 run mock implementations in the tests.
+
+The **autonomy lifecycle is complete** (SPEC §14.7 3b / §14.8): a learned rule
+*earns* eligibility (a deliberately high `K`), the agent *proactively offers* to
+auto-handle the payee (a one-time email; a yes blesses it), a clean-context model
+*safety review* vetoes any auto-apply it finds doubtful, and autonomy is *revoked*
+— the rule demoted back to Observe — on an explicit correction or a silent
+manual edit in YNAB.
 
 ## Running
 

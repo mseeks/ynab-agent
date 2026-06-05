@@ -169,6 +169,19 @@ class ArchiveWindowReached(Frozen):
     kind: Literal["archive_window"] = "archive_window"
 
 
+class OverrideDetected(Frozen):
+    """A re-read at archive time found YNAB recategorized out-of-band (§14.2).
+
+    The owner edited the agent's applied category directly in YNAB rather than
+    by replying — a silent correction. ``decision`` carries the human's current
+    YNAB state (read back), so the spine demotes the driving rule back to
+    Observe and closes the book on the owner's choice.
+    """
+
+    kind: Literal["override_detected"] = "override_detected"
+    decision: Decision
+
+
 LifecycleEvent = Annotated[
     SnapshotMaterialized
     | SnapshotUnavailable
@@ -181,6 +194,7 @@ LifecycleEvent = Annotated[
     | PatienceExpired
     | WriteVerified
     | Converged
-    | ArchiveWindowReached,
+    | ArchiveWindowReached
+    | OverrideDetected,
     Field(discriminator="kind"),
 ]

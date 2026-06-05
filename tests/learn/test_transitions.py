@@ -41,9 +41,9 @@ def _only(rules: tuple[Rule, ...]) -> Rule:
 def test_trust_for_hits_ladder() -> None:
     assert trust_for_hits(0, K_DEFAULT) is TrustState.SUGGESTED
     assert trust_for_hits(1, K_DEFAULT) is TrustState.CONFIRMED
-    assert trust_for_hits(2, K_DEFAULT) is TrustState.CONFIRMED
-    assert trust_for_hits(3, K_DEFAULT) is TrustState.TRUSTED
-    assert trust_for_hits(9, K_DEFAULT) is TrustState.TRUSTED
+    assert trust_for_hits(K_DEFAULT - 1, K_DEFAULT) is TrustState.CONFIRMED
+    assert trust_for_hits(K_DEFAULT, K_DEFAULT) is TrustState.TRUSTED
+    assert trust_for_hits(K_DEFAULT + 4, K_DEFAULT) is TrustState.TRUSTED
 
 
 # ── Confirm ──────────────────────────────────────────────────────────────────
@@ -68,12 +68,13 @@ def test_k_consistent_confirms_reach_trusted() -> None:
 
 
 def test_confirm_by_rule_id_strengthens_that_rule() -> None:
+    # One hit short of K, so this confirmation tips it over to trusted.
     rule = Rule(
         id=RuleId("r1"),
         match=_MATCH,
         action=_DINING,
         trust=TrustState.CONFIRMED,
-        hits=2,
+        hits=K_DEFAULT - 1,
         source=RuleSource.LEARNED,
     )
     out = apply_learning(
@@ -84,7 +85,7 @@ def test_confirm_by_rule_id_strengthens_that_rule() -> None:
     )
     updated = _only(out.rules)
     assert out.change.kind is RuleChangeKind.STRENGTHENED
-    assert updated.hits == 3
+    assert updated.hits == K_DEFAULT
     assert updated.trust is TrustState.TRUSTED
 
 

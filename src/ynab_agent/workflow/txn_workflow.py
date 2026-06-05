@@ -54,6 +54,7 @@ with workflow.unsafe.imports_passed_through():
         SetTimer,
         TimerKind,
     )
+    from ynab_agent.domain.enums import DecidedBy
     from ynab_agent.domain.events import (
         AnswerReceived,
         ArchiveWindowReached,
@@ -64,12 +65,14 @@ with workflow.unsafe.imports_passed_through():
         HoldResolved,
         InboundReceived,
         LifecycleEvent,
+        OverrideDetected,
         PatienceExpired,
         SnapshotMaterialized,
         SnapshotUnavailable,
         WriteVerified,
     )
     from ynab_agent.domain.ids import ThreadId, YnabTransactionId
+    from ynab_agent.domain.proposal import Decision
     from ynab_agent.domain.signals import InboundSignal
     from ynab_agent.domain.state_machine import advance
     from ynab_agent.domain.transaction import (
@@ -225,7 +228,7 @@ class TransactionWorkflow:
         elif isinstance(st, AwaitingHuman):
             await self._on_awaiting(st)
         elif isinstance(st, Open):
-            await self._on_open()
+            await self._on_open(st)
         elif isinstance(st, Lapsed):
             await self._on_lapsed()
         elif isinstance(st, Revising):
@@ -429,8 +432,58 @@ class TransactionWorkflow:
                 ClarifyRequested(question=interpretation.question)
             )
 
-    async def _on_open(self) -> None:
-        await self._wait_then_revise_or_archive()
+    async def _on_open(self, st: Open) -> None:
+        deadline = self._deadlines.get(TimerKind.ARCHIVE)
+        got_inbound = (
+            await self._wait_until(deadline, self._has_inbound)
+            if deadline is not None
+            else await self._wait_forever(self._has_inbound)
+        )
+        if got_inbound:
+            await self._dispatch(
+                InboundReceived(signal=self._inbound.popleft())
+            )
+            return
+        # The archive window elapsed. Before closing the book, re-read YNAB to
+        # catch a silent manual recategorization — an out-of-band correction
+        # that must demote the driving rule (SPEC §14.2).
+        event = await self._archive_or_override(st)
+        before = type(self._txn)
+        await self._dispatch(event)
+        if type(self._txn) is before:
+            # Archive blocked (not reconciled) and no override: drop the stale
+            # timer and wait for an inbound rather than busy-looping (SPEC §3).
+            self._deadlines.pop(TimerKind.ARCHIVE, None)
+            await workflow.wait_condition(self._has_inbound)
+            await self._dispatch(
+                InboundReceived(signal=self._inbound.popleft())
+            )
+
+    async def _archive_or_override(self, st: Open) -> LifecycleEvent:
+        """At archive time, detect a manual YNAB edit (SPEC §14.2).
+
+        Re-reads the current end-state and, if its category no longer matches
+        the agent's applied decision, returns an ``OverrideDetected`` carrying
+        the human's choice (the spine then demotes the rule); otherwise the
+        ordinary ``ArchiveWindowReached``. A memo-only change is not an override
+        — only the allocation is compared.
+        """
+        read = await workflow.execute_activity(
+            activities.read_back,
+            self._ynab_id,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=ACTIVITY_RETRY,
+        )
+        if read is not None and read.allocation != st.decision.allocation:
+            human = Decision(
+                allocation=read.allocation,
+                memo=read.memo,
+                approved=read.approved,
+                decided_by=DecidedBy.HUMAN,
+                decided_at=workflow.now(),
+            )
+            return OverrideDetected(decision=human)
+        return ArchiveWindowReached()
 
     async def _on_lapsed(self) -> None:
         await self._wait_then_revise_or_archive()

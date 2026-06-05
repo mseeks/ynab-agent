@@ -21,6 +21,7 @@ with workflow.unsafe.imports_passed_through():
         InboundMessage,
         Quarantine,
         RouteToInterpret,
+        RouteToOffer,
         RouteToTransaction,
         classify,
     )
@@ -88,7 +89,19 @@ class DispatchWorkflow:
         txn_id = (
             YnabTransactionId(txn_id_str) if txn_id_str is not None else None
         )
-        decision = classify(message, params.allowlist, txn_id=txn_id)
+        # Only when the thread is not a transaction's do we ask whether it is a
+        # live autonomy offer (a reply there is a bless-acceptance, §14.7 3b).
+        offer_id: str | None = None
+        if txn_id is None:
+            offer_id = await workflow.execute_activity(
+                dispatch_activities.resolve_offer_thread,
+                thread,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
+                retry_policy=ACTIVITY_RETRY,
+            )
+        decision = classify(
+            message, params.allowlist, txn_id=txn_id, offer_id=offer_id
+        )
 
         match decision:
             case RouteToTransaction(txn_id=tid):
@@ -99,6 +112,14 @@ class DispatchWorkflow:
                     retry_policy=ACTIVITY_RETRY,
                 )
                 return DispatchResult(action="transaction")
+            case RouteToOffer(offer_id=oid):
+                await workflow.execute_activity(
+                    dispatch_activities.signal_offer,
+                    args=[oid, message],
+                    start_to_close_timeout=ACTIVITY_TIMEOUT,
+                    retry_policy=ACTIVITY_RETRY,
+                )
+                return DispatchResult(action="offer")
             case RouteToInterpret():
                 return await self._interpret(message)
             case Quarantine(reason=reason):
