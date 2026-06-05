@@ -25,7 +25,11 @@ with workflow.unsafe.imports_passed_through():
     )
     from ynab_agent.domain.ids import YnabTransactionId
     from ynab_agent.workflow import dispatch_activities
-    from ynab_agent.workflow.constants import ACTIVITY_RETRY, ACTIVITY_TIMEOUT
+    from ynab_agent.workflow.constants import (
+        ACTIVITY_BUDGET,
+        ACTIVITY_RETRY,
+        ACTIVITY_TIMEOUT,
+    )
     from ynab_agent.workflow.dispatch_types import (
         DispatchParams,
         DispatchResult,
@@ -48,6 +52,7 @@ class DispatchWorkflow:
             thread,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
+            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         txn_id = (
             YnabTransactionId(txn_id_str) if txn_id_str is not None else None
@@ -61,6 +66,7 @@ class DispatchWorkflow:
                     args=[tid, message],
                     start_to_close_timeout=ACTIVITY_TIMEOUT,
                     retry_policy=ACTIVITY_RETRY,
+                    schedule_to_close_timeout=ACTIVITY_BUDGET,
                 )
                 return DispatchResult(action="transaction")
             case RouteToInterpret():
@@ -77,6 +83,7 @@ class DispatchWorkflow:
             message,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
+            schedule_to_close_timeout=ACTIVITY_BUDGET,
         )
         if kind is InboundKind.RECEIPT:
             await workflow.execute_activity(
@@ -84,6 +91,7 @@ class DispatchWorkflow:
                 message,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
+                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             return DispatchResult(action="receipt")
         if kind is InboundKind.COMMAND:
@@ -92,6 +100,7 @@ class DispatchWorkflow:
                 message,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
+                schedule_to_close_timeout=ACTIVITY_BUDGET,
             )
             return DispatchResult(action="command")
         return DispatchResult(action="ignore", detail="classified as noise")

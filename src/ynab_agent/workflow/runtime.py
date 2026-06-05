@@ -14,6 +14,7 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 
 from ynab_agent.workflow import (
     activities,
+    alert_activities,
     dispatch_activities,
     monitor_activities,
     poll_activities,
@@ -22,6 +23,7 @@ from ynab_agent.workflow import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+from ynab_agent.workflow.alert_ledger_workflow import AlertLedgerWorkflow
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
 from ynab_agent.workflow.poll_workflow import PollWorkflow
@@ -38,6 +40,7 @@ WORKFLOWS = [
     ReceiptJoinWorkflow,
     OverspendMonitorWorkflow,
     RuleRegistryWorkflow,
+    AlertLedgerWorkflow,
 ]
 
 ALL_ACTIVITIES: list[Callable[..., object]] = [
@@ -67,4 +70,5 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     monitor_activities.load_prior_alert,
     monitor_activities.send_overspend_alert,
     monitor_activities.save_alert,
+    alert_activities.alert_failure,
 ]
