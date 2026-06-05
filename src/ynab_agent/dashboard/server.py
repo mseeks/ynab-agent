@@ -55,6 +55,13 @@ async def build_html(client: Client) -> str:
         agentmail_source.fetch(),
         github_source.fetch(),
     )
+    # A dependent second hop: the awaiting ids are known only after Temporal
+    # answers, so resolve them to YNAB facts now (best-effort; an empty map just
+    # leaves the queue showing short ids — see ynab_source.resolve_queue).
+    readout, _ = temporal
+    queue_facts = await ynab_source.resolve_queue(
+        tuple(item.ident for item in readout.awaiting)
+    )
     model = read_model.assemble(
         now=now,
         repo=_repo(),
@@ -63,6 +70,7 @@ async def build_html(client: Client) -> str:
         ynab=ynab,
         agentmail=agentmail,
         github=github,
+        queue_facts=queue_facts,
     )
     return render.page(model)
 
