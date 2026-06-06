@@ -601,10 +601,12 @@ increments).
   and the per-move floor ceiling (`budget.balance.validate_option` / `check_moves`); the model
   invents no money and breaches no ceiling. If the model yields nothing feasible, the greedy
   `plan_coverage` is the fallback. Binding amounts are recomputed in exact `Money`.
-- **Natural-language reply.** The options are posted on the *same* W6 alert thread (one conversation).
-  The owner replies in plain English ("option 2 but only $50", "take it from dining instead", "no
-  thanks"); a model reads it into apply / decline / clarify. Reply routing reuses the offer pattern:
-  the workflow stamps a `BalanceThreadId` search attribute and W3 signals it.
+- **Natural-language reply.** The options go out on the offer's *own* thread, addressed to the
+  owners (not as a reply on the W6 alert thread — replying to the agent's own alert addresses the
+  reply back to the agent's inbox, so the owner never sees it; the autonomy offer opens its own
+  thread for the same reason). The owner replies in plain English ("option 2 but only $50", "take it
+  from dining instead", "no thanks"); a model reads it into apply / decline / clarify. Reply routing
+  reuses the offer pattern: the workflow stamps a `BalanceThreadId` search attribute and W3 signals it.
 - **Apply.** The workflow computes each category's *absolute* target `budgeted` from a baseline
   snapshot (so a write retry never double-applies), writes via the YNAB month-category PATCH,
   read-back verifies, and records each move to the audit trail. A move *from* Ready-to-Assign only

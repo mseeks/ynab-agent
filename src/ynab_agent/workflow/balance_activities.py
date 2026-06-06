@@ -268,8 +268,36 @@ async def log_budget_moves(moves: list[BudgetMove], period: str) -> None:
 
 
 @activity.defn
+async def open_balance_thread(
+    params: BalanceParams, body: str, seq_label: str
+) -> str:
+    """Open the offer's own thread to the owners; return its id (SPEC §8).
+
+    Sent with ``open_thread`` (a new message *to the owners*), not a reply on
+    the W6 alert thread: replying to the agent's own alert addresses the reply
+    back to the agent's inbox, so the owner never receives it. Idempotent on
+    ``seq_label`` so a retry reuses the thread rather than sending twice.
+    """
+    import asyncio
+
+    from ynab_agent.mail.client import MailClient
+    from ynab_agent.settings import Settings
+
+    settings = Settings()
+    mail = MailClient.from_env()
+    return await asyncio.to_thread(
+        mail.open_thread,
+        inbox_id=settings.inbox,
+        to=list(settings.owners),
+        subject=f"{params.assessment.name}: cover the overspend?",
+        body=body,
+        txn_label=seq_label,
+    )
+
+
+@activity.defn
 async def send_balance_email(thread_id: str, body: str, seq_label: str) -> None:
-    """Reply on the overspend thread (idempotent on ``seq_label``; SPEC §8)."""
+    """Reply on the offer thread (idempotent on ``seq_label``; SPEC §8)."""
     import asyncio
 
     from ynab_agent.mail.client import MailClient

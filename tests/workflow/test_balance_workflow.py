@@ -153,6 +153,13 @@ def _activities(
     async def log_budget_moves(moves: list[BudgetMove], period: str) -> None:
         rec.logged += 1
 
+    @activity.defn(name="open_balance_thread")
+    async def open_balance_thread(
+        params: BalanceParams, body: str, seq_label: str
+    ) -> str:
+        rec.sends.append(seq_label)
+        return "thr-balance-offer"
+
     @activity.defn(name="send_balance_email")
     async def send_balance_email(
         thread_id: str, body: str, seq_label: str
@@ -166,6 +173,7 @@ def _activities(
     return [
         propose_balance_options,
         interpret_balance_reply,
+        open_balance_thread,
         read_budget_state,
         set_category_budgeted,
         log_budget_moves,

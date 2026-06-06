@@ -95,6 +95,7 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     balance_activities.read_budget_state,
     balance_activities.set_category_budgeted,
     balance_activities.log_budget_moves,
+    balance_activities.open_balance_thread,
     balance_activities.send_balance_email,
     alert_activities.alert_failure,
 ]
