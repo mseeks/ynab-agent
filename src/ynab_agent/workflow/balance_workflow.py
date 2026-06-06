@@ -127,16 +127,18 @@ class BudgetBalanceWorkflow:
             await self._open(
                 params,
                 render_balance_could_not_cover(assessment.name),
-                f"ybalance-nocover-{label}",
+                f"yb-nocover-{label}",
             )
             return BalanceResult(outcome="could-not-cover")
 
         # Open the offer's own thread (to the owners) and index this workflow by
-        # it, so the owner's reply routes back here (W3 → BalanceThreadId).
+        # it, so the owner's reply routes back here (W3 → BalanceThreadId). The
+        # ``yb-cover-`` is a distinct label namespace, so opening never collides
+        # with a prior self-replied message's label.
         thread_id = await self._open(
             params,
             render_balance_options(assessment.name, tuple(options)),
-            f"ybalance-offer-{label}",
+            f"yb-cover-{label}",
         )
         workflow.upsert_search_attributes(
             [_BALANCE_THREAD_ID.value_set(thread_id)]

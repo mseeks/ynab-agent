@@ -285,7 +285,7 @@ async def test_clarify_then_apply() -> None:
 async def test_no_feasible_options_sends_could_not_cover() -> None:
     result, rec = await _run(options=[], outcomes=[], replies=0)
     assert result.outcome == "could-not-cover"
-    assert any(s.startswith("ybalance-nocover") for s in rec.sends)
+    assert any(s.startswith("yb-nocover") for s in rec.sends)
     assert rec.sets == []
 
 
@@ -306,4 +306,4 @@ async def test_no_reply_times_out() -> None:
     # Wait — replies=0 with options posts the offer then the patience window
     # elapses (time-skipped) with no answer.
     assert result.outcome == "timed-out"
-    assert any(s.startswith("ybalance-offer") for s in rec.sends)
+    assert any(s.startswith("yb-cover") for s in rec.sends)
