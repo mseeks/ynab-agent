@@ -22,7 +22,7 @@ inbound email ─► W3 dispatch ─► { W2 lifecycle, W4 receipt join }
                         │                          ▲
                         ▼                          │
                   W5 rule learning ───────────► the gate (earned autonomy)
-   W6 overspend monitor ─► (W7 balancer planner)
+   W6 overspend monitor ─► W7 budget balancer (propose → confirm by NL → apply)
 ```
 
 | Workflow | Role |
@@ -32,15 +32,17 @@ inbound email ─► W3 dispatch ─► { W2 lifecycle, W4 receipt join }
 | **W3** inbound dispatcher | a signed AgentMail webhook → reply / receipt / command / quarantine |
 | **W4** receipt join | match a forwarded receipt to a transaction (act once, ask once) |
 | **W5** rule learning | confirm/correct → rules + trust (the memory that earns autonomy) |
-| **W6 / W7** budget guards | overspend monitor (notify) + balancer planner (cover) |
+| **W6 / W7** budget guards | overspend monitor (notify) + budget balancer (model proposes coverage options, a natural-language reply applies them) |
 
 The **agentic middle** is a set of Pydantic AI agents over a local Ollama running
 **Gemma 4** (the SPEC §0.5 path): `enrich` (propose a category — and, on an
 auto-apply, an independent clean-context *safety review* that can only veto),
 `interpret` (read a reply's intent), `match` (join a receipt), `classify` (triage
-inbound), `converge` (interpret a revision), and `offer` (read a yes/no to a
-proactive autonomy offer). Each produces domain-typed structured output and lives
-in the `agentic` package, never imported into a Temporal sandbox.
+inbound), `converge` (interpret a revision), `offer` (read a yes/no to a
+proactive autonomy offer), and `balance` (propose budget-coverage options and
+read a coverage reply — given a calculator tool so its arithmetic is exact). Each
+produces domain-typed structured output and lives in the `agentic` package, never
+imported into a Temporal sandbox.
 
 ## Layout
 

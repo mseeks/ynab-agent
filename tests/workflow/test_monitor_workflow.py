@@ -44,6 +44,7 @@ def _activities(
     spends: list[CategorySpend],
     prior: PriorAlert | None,
     sent: list[str],
+    offered: list[str],
 ) -> list[Callable[..., object]]:
     @activity.defn(name="fetch_category_spends")
     async def fetch_category_spends() -> list[CategorySpend]:
@@ -54,18 +55,26 @@ def _activities(
         return prior
 
     @activity.defn(name="send_overspend_alert")
-    async def send_overspend_alert(assessment: OverspendAssessment) -> None:
+    async def send_overspend_alert(assessment: OverspendAssessment) -> str:
         sent.append(assessment.name)
+        return f"thr-{assessment.category}"
 
     @activity.defn(name="save_alert")
     async def save_alert(category_id: str, alert: PriorAlert) -> None:
         return None
+
+    @activity.defn(name="start_balance_offer")
+    async def start_balance_offer(
+        assessment: OverspendAssessment, thread_id: str
+    ) -> None:
+        offered.append(thread_id)
 
     return [
         fetch_category_spends,
         load_prior_alert,
         send_overspend_alert,
         save_alert,
+        start_balance_offer,
     ]
 
 
@@ -74,9 +83,10 @@ async def _run(
     wf_id: str,
     spends: list[CategorySpend],
     prior: PriorAlert | None = None,
-) -> tuple[MonitorResult, list[str]]:
+) -> tuple[MonitorResult, list[str], list[str]]:
     sent: list[str] = []
-    acts = _activities(spends=spends, prior=prior, sent=sent)
+    offered: list[str] = []
+    acts = _activities(spends=spends, prior=prior, sent=sent, offered=offered)
     async with (
         await WorkflowEnvironment.start_time_skipping(
             data_converter=DATA_CONVERTER
@@ -94,27 +104,30 @@ async def _run(
             id=wf_id,
             task_queue=TASK_QUEUE,
         )
-    return result, sent
+    return result, sent, offered
 
 
 async def test_overspending_category_is_alerted() -> None:
     # $250 of $400 at mid-month → projects ~$500, trending over.
-    result, sent = await _run(
+    result, sent, offered = await _run(
         wf_id="mon-alert",
         spends=[_spend("Dining", budgeted="400", activity="-250")],
     )
     assert result.alerts == 1
     assert result.alerted == ("Dining",)
     assert sent == ["Dining"]
+    # The alert hands its thread to a balancing offer (W6→W7, §8).
+    assert offered == ["thr-Dining"]
 
 
 async def test_on_track_category_is_silent() -> None:
-    result, sent = await _run(
+    result, sent, offered = await _run(
         wf_id="mon-ok",
         spends=[_spend("Gas", budgeted="400", activity="-100")],
     )
     assert result.alerts == 0
     assert sent == []
+    assert offered == []
 
 
 async def test_duplicate_alert_is_suppressed() -> None:
@@ -124,6 +137,9 @@ async def test_duplicate_alert_is_suppressed() -> None:
         verdict=OverspendVerdict.TRENDING_OVER,
         projected=Money.from_currency("500"),
     )
-    result, sent = await _run(wf_id="mon-dedupe", spends=spends, prior=prior)
+    result, sent, offered = await _run(
+        wf_id="mon-dedupe", spends=spends, prior=prior
+    )
     assert result.alerts == 0
     assert sent == []
+    assert offered == []

@@ -22,6 +22,7 @@ from ynab_agent.policy.floor import (
     AutoActionCounters,
     FloorPolicy,
     FloorVerdict,
+    check_budget_move_floor,
     check_floor,
 )
 from ynab_agent.policy.gate import (
@@ -43,6 +44,7 @@ __all__ = [
     "GateVerdict",
     "TargetState",
     "build_auto_decision",
+    "check_budget_move_floor",
     "check_floor",
     "classify_verify",
     "content_hash",

@@ -583,6 +583,31 @@ Triggered by W6 overspend, end-of-month, or buffer thresholds. These are interna
 W6 and W7 earn autonomy via the same trust ramp + guardrails as categorization: one safety mechanism
 across the agent.
 
+### v1 (built): model-driven, propose-then-confirm by natural language
+
+The shipped W7 keeps the deterministic spine but moves the *balancing judgment* into the agentic
+middle, since covering a shortfall well weighs many variables (which sources, how to split, what to
+leave alone). It is triggered by **W6 overspend only** (end-of-month and buffer triggers are later
+increments).
+
+- **High-context proposal.** A model sees the whole budget picture (the needy category, the
+  shortfall, every source's available funds, and Ready-to-Assign) and proposes **several distinct
+  coverage options, each with a plain-English rationale**. The model has a **calculator tool**
+  (`add`/`subtract`/`multiply`/`sum_amounts`) so its arithmetic is exact, not eyeballed.
+- **Deterministic guard.** Every proposed (and every replied) option is validated against real funds
+  and the per-move floor ceiling (`budget.balance.validate_option` / `check_moves`); the model
+  invents no money and breaches no ceiling. If the model yields nothing feasible, the greedy
+  `plan_coverage` is the fallback. Binding amounts are recomputed in exact `Money`.
+- **Natural-language reply.** The options are posted on the *same* W6 alert thread (one conversation).
+  The owner replies in plain English ("option 2 but only $50", "take it from dining instead", "no
+  thanks"); a model reads it into apply / decline / clarify. Reply routing reuses the offer pattern:
+  the workflow stamps a `BalanceThreadId` search attribute and W3 signals it.
+- **Apply.** The workflow computes each category's *absolute* target `budgeted` from a baseline
+  snapshot (so a write retry never double-applies), writes via the YNAB month-category PATCH,
+  read-back verifies, and records each move to the audit trail. A move *from* Ready-to-Assign only
+  raises the destination (YNAB lowers RTA itself). v1 enforces the per-move ceiling; the daily
+  aggregate cap awaits a move-counter ledger.
+
 ---
 
 ## 9. Rule learning (W5)

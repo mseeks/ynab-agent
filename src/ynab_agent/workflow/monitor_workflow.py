@@ -24,7 +24,7 @@ with workflow.unsafe.imports_passed_through():
         assess,
         should_alert,
     )
-    from ynab_agent.workflow import monitor_activities
+    from ynab_agent.workflow import balance_activities, monitor_activities
     from ynab_agent.workflow.constants import ACTIVITY_RETRY, ACTIVITY_TIMEOUT
     from ynab_agent.workflow.monitor_types import MonitorParams, MonitorResult
 
@@ -56,7 +56,7 @@ class OverspendMonitorWorkflow:
             )
             if not should_alert(assessment, prior):
                 continue
-            await workflow.execute_activity(
+            thread_id = await workflow.execute_activity(
                 monitor_activities.send_overspend_alert,
                 assessment,
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
@@ -71,6 +71,15 @@ class OverspendMonitorWorkflow:
                         projected=assessment.projected,
                     ),
                 ],
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
+                retry_policy=ACTIVITY_RETRY,
+            )
+            # Offer a balancing move on the same alert thread (W6→W7, §8). A
+            # fire-and-forget start: REJECT_DUPLICATE keeps it one offer per
+            # category per period, and the monitor never waits on coverage.
+            await workflow.execute_activity(
+                balance_activities.start_balance_offer,
+                args=[assessment, thread_id],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )

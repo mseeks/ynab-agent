@@ -87,14 +87,15 @@ async def load_prior_alert(category_id: str) -> PriorAlert | None:
 
 
 @activity.defn
-async def send_overspend_alert(assessment: OverspendAssessment) -> None:
-    """Email the overspend alert on its own thread (SPEC §7, notify-only).
+async def send_overspend_alert(assessment: OverspendAssessment) -> str:
+    """Email the overspend alert and return its thread id (SPEC §7, §8).
 
     The body is deterministic (no model): the figures and verdict are already
     decided. ``open_thread`` is idempotent on the thread label, so a retry
     re-finds the thread rather than re-sending; the label folds in the verdict
     and projected so a *worsening* re-alert (the one ``should_alert`` admits
-    mid-period) opens a fresh thread.
+    mid-period) opens a fresh thread. The returned thread id is what W7 replies
+    on to offer a balancing move (the W6→W7 tie).
     """
     import asyncio
 
@@ -109,7 +110,7 @@ async def send_overspend_alert(assessment: OverspendAssessment) -> None:
     now = datetime.datetime.now(datetime.UTC)
     settings = Settings()
     mail = MailClient.from_env()
-    await asyncio.to_thread(
+    return await asyncio.to_thread(
         mail.open_thread,
         inbox_id=settings.inbox,
         to=list(settings.owners),

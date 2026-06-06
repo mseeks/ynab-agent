@@ -8,12 +8,14 @@ from ynab_agent.audit.entry import AuditLog
 from ynab_agent.audit.record import (
     allocation_summary,
     explain,
+    record_budget_move,
     record_decision,
     record_gate,
     record_learning,
     record_send,
     record_transition,
 )
+from ynab_agent.budget.balance import BudgetMove
 from ynab_agent.domain.allocations import (
     ResolvedCategory,
     ResolvedSplit,
@@ -90,6 +92,36 @@ def test_record_learning_carries_change_and_trust() -> None:
     assert event.change == "strengthened"
     assert event.rule_id == "r1"
     assert event.trust is TrustState.TRUSTED
+
+
+def test_record_budget_move_carries_amount_and_categories() -> None:
+    event = record_budget_move(
+        BudgetMove(
+            source=CategoryId("buffer"),
+            destination=CategoryId("dining"),
+            amount=Money.from_currency("120"),
+        ),
+        month="current",
+    )
+    assert event.source == "buffer"
+    assert event.destination == "dining"
+    assert event.amount_milliunits == 120000
+    assert event.month == "current"
+
+
+def test_explain_renders_a_budget_move() -> None:
+    log = AuditLog().append(
+        record_budget_move(
+            BudgetMove(
+                source=CategoryId("buffer"),
+                destination=CategoryId("dining"),
+                amount=Money.from_currency("120"),
+            ),
+            month="current",
+        ),
+        at=_NOW,
+    )
+    assert "budget move: $120.00 buffer -> dining (current)" in explain(log)
 
 
 def test_explain_renders_a_readable_trail() -> None:

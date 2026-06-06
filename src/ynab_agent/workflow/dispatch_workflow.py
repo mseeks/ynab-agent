@@ -20,6 +20,7 @@ with workflow.unsafe.imports_passed_through():
         InboundKind,
         InboundMessage,
         Quarantine,
+        RouteToBalance,
         RouteToInterpret,
         RouteToOffer,
         RouteToTransaction,
@@ -90,7 +91,9 @@ class DispatchWorkflow:
             YnabTransactionId(txn_id_str) if txn_id_str is not None else None
         )
         # Only when the thread is not a transaction's do we ask whether it is a
-        # live autonomy offer (a reply there is a bless-acceptance, §14.7 3b).
+        # live autonomy offer (a reply there is a bless-acceptance, §14.7 3b),
+        # then a live balance offer (a coverage decision, §8). A thread belongs
+        # to at most one, so each lookup runs only if the prior missed.
         offer_id: str | None = None
         if txn_id is None:
             offer_id = await workflow.execute_activity(
@@ -99,8 +102,20 @@ class DispatchWorkflow:
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
+        balance_id: str | None = None
+        if txn_id is None and offer_id is None:
+            balance_id = await workflow.execute_activity(
+                dispatch_activities.resolve_balance_thread,
+                thread,
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
+                retry_policy=ACTIVITY_RETRY,
+            )
         decision = classify(
-            message, params.allowlist, txn_id=txn_id, offer_id=offer_id
+            message,
+            params.allowlist,
+            txn_id=txn_id,
+            offer_id=offer_id,
+            balance_id=balance_id,
         )
 
         match decision:
@@ -120,6 +135,14 @@ class DispatchWorkflow:
                     retry_policy=ACTIVITY_RETRY,
                 )
                 return DispatchResult(action="offer")
+            case RouteToBalance(balance_id=bid):
+                await workflow.execute_activity(
+                    dispatch_activities.signal_balance,
+                    args=[bid, message],
+                    start_to_close_timeout=ACTIVITY_TIMEOUT,
+                    retry_policy=ACTIVITY_RETRY,
+                )
+                return DispatchResult(action="balance")
             case RouteToInterpret():
                 return await self._interpret(message)
             case Quarantine(reason=reason):

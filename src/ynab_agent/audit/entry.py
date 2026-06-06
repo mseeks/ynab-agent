@@ -73,8 +73,23 @@ class Learned(Frozen):
     trust: TrustState
 
 
+class BudgetMoveApplied(Frozen):
+    """A budget reallocation was applied: ``budgeted`` moved between categories.
+
+    The W7 balancer's record (SPEC §8): the amount (a positive magnitude) moved
+    from ``source`` to ``destination`` in ``month``. Categories are plain
+    strings so a historical entry never breaks when ids are refactored.
+    """
+
+    kind: Literal["budget_move_applied"] = "budget_move_applied"
+    source: str
+    destination: str
+    amount_milliunits: int
+    month: str
+
+
 AuditEvent = Annotated[
-    StateChanged | Gated | Decided | MessageSent | Learned,
+    StateChanged | Gated | Decided | MessageSent | Learned | BudgetMoveApplied,
     Field(discriminator="kind"),
 ]
 

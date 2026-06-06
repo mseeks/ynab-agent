@@ -41,6 +41,7 @@ def _activities(
     *,
     resolve: str | None,
     resolve_offer: str | None,
+    resolve_balance: str | None,
     classify_kind: InboundKind,
     calls: list[tuple[str, str]],
 ) -> list[Callable[..., object]]:
@@ -51,6 +52,10 @@ def _activities(
     @activity.defn(name="resolve_offer_thread")
     async def resolve_offer_thread(thread_id: str | None) -> str | None:
         return resolve_offer
+
+    @activity.defn(name="resolve_balance_thread")
+    async def resolve_balance_thread(thread_id: str | None) -> str | None:
+        return resolve_balance
 
     @activity.defn(name="classify_inbound")
     async def classify_inbound(message: InboundMessage) -> InboundKind:
@@ -64,6 +69,10 @@ def _activities(
     async def signal_offer(offer_id: str, message: InboundMessage) -> None:
         calls.append(("offer", offer_id))
 
+    @activity.defn(name="signal_balance")
+    async def signal_balance(balance_id: str, message: InboundMessage) -> None:
+        calls.append(("balance", balance_id))
+
     @activity.defn(name="route_receipt")
     async def route_receipt(message: InboundMessage) -> None:
         calls.append(("receipt", message.message_id))
@@ -75,9 +84,11 @@ def _activities(
     return [
         resolve_thread,
         resolve_offer_thread,
+        resolve_balance_thread,
         classify_inbound,
         signal_transaction,
         signal_offer,
+        signal_balance,
         route_receipt,
         handle_command,
     ]
@@ -89,12 +100,14 @@ async def _run(
     message: InboundMessage,
     resolve: str | None = None,
     resolve_offer: str | None = None,
+    resolve_balance: str | None = None,
     classify_kind: InboundKind = InboundKind.NOISE,
 ) -> tuple[DispatchResult, list[tuple[str, str]]]:
     calls: list[tuple[str, str]] = []
     acts = _activities(
         resolve=resolve,
         resolve_offer=resolve_offer,
+        resolve_balance=resolve_balance,
         classify_kind=classify_kind,
         calls=calls,
     )
@@ -137,6 +150,20 @@ async def test_reply_on_offer_thread_signals_offer() -> None:
     )
     assert result.action == "offer"
     assert ("offer", "autonomy-offer-r1") in calls
+
+
+async def test_reply_on_balance_thread_signals_balance() -> None:
+    # Not a transaction or offer thread, but a live balance offer → the reply is
+    # a coverage decision, routed to that balance workflow (SPEC §8).
+    result, calls = await _run(
+        wf_id="d-balance",
+        message=_msg(thread="thr-overspend"),
+        resolve=None,
+        resolve_offer=None,
+        resolve_balance="balance-offer-dining-2026-06",
+    )
+    assert result.action == "balance"
+    assert ("balance", "balance-offer-dining-2026-06") in calls
 
 
 async def test_forwarded_receipt_routes_to_join() -> None:

@@ -80,6 +80,44 @@ async def signal_offer(offer_id: str, message: InboundMessage) -> None:
 
 
 @activity.defn
+async def resolve_balance_thread(thread_id: str | None) -> str | None:
+    """Resolve an AgentMail thread to a *running* balance workflow id (§8).
+
+    The balance workflow stamps the overspend thread into ``BalanceThreadId``,
+    so a reply there maps back to it the same way ``resolve_offer_thread`` maps
+    an offer. Filtered to ``Running`` so a reply after the offer has closed is
+    not routed (it falls through to the command path). ``None`` when no live
+    balance offer owns the thread.
+    """
+    if thread_id is None:
+        return None
+    from ynab_agent.workflow.balance_types import BALANCE_THREAD_ID
+
+    temporal = await client()
+    safe = thread_id.replace('"', '\\"')
+    query = f'{BALANCE_THREAD_ID} = "{safe}" AND ExecutionStatus = "Running"'
+    async for execution in temporal.list_workflows(query=query):
+        return execution.id
+    return None
+
+
+@activity.defn
+async def signal_balance(balance_id: str, message: InboundMessage) -> None:
+    """Deliver a reply to its balance workflow (SPEC §8).
+
+    A plain signal: the workflow must be live to receive it —
+    ``resolve_balance_thread`` already filtered to running executions. A missing
+    handle is a benign no-op.
+    """
+    from temporalio.service import RPCError
+
+    temporal = await client()
+    handle = temporal.get_workflow_handle(balance_id)
+    with contextlib.suppress(RPCError):
+        await handle.signal("submit_response", message)
+
+
+@activity.defn
 async def classify_inbound(message: InboundMessage) -> InboundKind:
     """Agentically classify a non-thread message: receipt, command, or noise.
 

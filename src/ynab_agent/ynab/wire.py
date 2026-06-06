@@ -46,3 +46,14 @@ class WireCategory(_Wire):
     balance: int
     deleted: bool = False
     hidden: bool = False
+
+
+class WireMonth(_Wire):
+    """A YNAB budget month (the ``to_be_budgeted`` we read for W7, SPEC §8).
+
+    ``to_be_budgeted`` is the month's Ready-to-Assign in milliunits — the first
+    source the balancer pulls from.
+    """
+
+    month: str
+    to_be_budgeted: int

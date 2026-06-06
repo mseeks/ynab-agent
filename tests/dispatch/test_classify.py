@@ -6,6 +6,7 @@ from ynab_agent.dispatch.classify import (
     Ignore,
     InboundMessage,
     Quarantine,
+    RouteToBalance,
     RouteToInterpret,
     RouteToOffer,
     RouteToTransaction,
@@ -81,6 +82,22 @@ def test_transaction_thread_wins_over_offer() -> None:
         offer_id="o1",
     )
     assert isinstance(out, RouteToTransaction)
+
+
+def test_balance_thread_routes_to_balance() -> None:
+    out = classify(
+        _msg(thread="thr-overspend"), _ALLOW, txn_id=None, balance_id="b1"
+    )
+    assert isinstance(out, RouteToBalance)
+    assert out.balance_id == "b1"
+
+
+def test_offer_wins_over_balance() -> None:
+    # A thread is on at most one workflow; precedence is txn → offer → balance.
+    out = classify(
+        _msg(thread="thr"), _ALLOW, txn_id=None, offer_id="o1", balance_id="b1"
+    )
+    assert isinstance(out, RouteToOffer)
 
 
 def test_guards_win_before_offer_routing() -> None:

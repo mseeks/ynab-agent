@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, assert_never
 
 from ynab_agent.audit.entry import (
     AuditEvent,
+    BudgetMoveApplied,
     Decided,
     Gated,
     Learned,
@@ -22,9 +23,11 @@ from ynab_agent.audit.entry import (
     StateChanged,
 )
 from ynab_agent.domain.allocations import ResolvedCategory
+from ynab_agent.domain.money import Money
 
 if TYPE_CHECKING:
     from ynab_agent.audit.entry import AuditLog
+    from ynab_agent.budget.balance import BudgetMove
     from ynab_agent.domain.allocations import ResolvedAllocation
     from ynab_agent.domain.enums import TxnState
     from ynab_agent.domain.proposal import Decision
@@ -79,6 +82,16 @@ def record_learning(change: RuleChange) -> Learned:
     )
 
 
+def record_budget_move(move: BudgetMove, month: str) -> BudgetMoveApplied:
+    """A reallocation that was applied: amount moved source -> destination."""
+    return BudgetMoveApplied(
+        source=str(move.source),
+        destination=str(move.destination),
+        amount_milliunits=move.amount.milliunits,
+        month=month,
+    )
+
+
 def _render_event(event: AuditEvent) -> str:
     match event:
         case StateChanged(to_state=to, trigger=trig, from_state=frm):
@@ -96,6 +109,11 @@ def _render_event(event: AuditEvent) -> str:
             return f"sent message #{seq}: {purpose}"
         case Learned(change=change, rule_id=rule_id, trust=trust):
             return f"learned: {change} rule {rule_id} -> {trust}"
+        case BudgetMoveApplied(
+            source=src, destination=dst, amount_milliunits=amt, month=month
+        ):
+            moved = Money.from_milliunits(amt)
+            return f"budget move: {moved} {src} -> {dst} ({month})"
     assert_never(event)
 
 

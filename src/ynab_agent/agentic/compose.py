@@ -19,8 +19,14 @@ The layout, for a proposal:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.effects import MessagePurpose
+
+if TYPE_CHECKING:
+    from ynab_agent.budget.balance import BalanceOption
+    from ynab_agent.domain.money import Money
 
 _REPLY_HINT = (
     "Just reply in your own words — confirm it, suggest a different "
@@ -95,6 +101,62 @@ def render_offer_declined(payee: str) -> str:
     return (
         f"No problem — I'll keep proposing {payee} for you to approve, same "
         "as before."
+    )
+
+
+def render_balance_options(
+    needy_name: str, options: tuple[BalanceOption, ...]
+) -> str:
+    """The balance offer: ways to cover an overspend, each explained (§8).
+
+    Numbered so the owner can reply "option 2", but a free-text answer ("take it
+    from dining instead", "only $50") is read just as well. Each option leads
+    with the model's rationale, the plain-English description of the moves.
+    """
+    lines = [
+        f"{needy_name} is over budget. Here are some ways I can cover it by "
+        "moving money between categories (nothing leaves your accounts):",
+        "",
+    ]
+    for index, option in enumerate(options, start=1):
+        lines.append(f"{index}. {option.label} — {option.rationale}")
+    lines += [
+        "",
+        "Reply with the option you'd like (or your own tweak — e.g. "
+        '"option 2 but only $50", or "no thanks").',
+    ]
+    return "\n".join(lines)
+
+
+def render_balance_applied(needy_name: str, total: Money) -> str:
+    """The confirmation after a coverage plan is applied (SPEC §8)."""
+    return (
+        f"Done — moved {total} into {needy_name} to cover the overspend. "
+        "Reply any time to adjust it."
+    )
+
+
+def render_balance_declined(needy_name: str) -> str:
+    """The brief note when the owner declines to cover (SPEC §8)."""
+    return (
+        f"No problem — I'll leave {needy_name} as is. Reply any time if you "
+        "change your mind."
+    )
+
+
+def render_balance_could_not_cover(needy_name: str) -> str:
+    """The note when no safe coverage exists from current funds (SPEC §8)."""
+    return (
+        f"{needy_name} is over budget, but I couldn't find a safe way to cover "
+        "it from your current funds. You may want to move money in manually."
+    )
+
+
+def render_balance_failed(needy_name: str, reason: str) -> str:
+    """The note when an approved plan can't be applied (SPEC §8)."""
+    return (
+        f"I couldn't cover {needy_name}: {reason}. Nothing was changed — reply "
+        "and we can try another way."
     )
 
 

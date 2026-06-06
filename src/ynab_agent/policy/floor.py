@@ -35,6 +35,14 @@ class FloorPolicy(Frozen):
     )
     per_run_cap: int = Field(default=8, ge=0)
     per_day_cap: int = Field(default=20, ge=0)
+    # Budget reallocations (W7, SPEC §8) ride the same floor. A move is larger
+    # than a typical txn write (it covers a whole category's shortfall), so it
+    # gets its own, higher ceiling; the daily cap bounds how many the agent
+    # applies in a day even when each is confirmed.
+    per_move_ceiling: Money = Field(
+        default_factory=lambda: Money.from_currency(500)
+    )
+    moves_per_day_cap: int = Field(default=10, ge=0)
 
 
 CAUTIOUS_FLOOR = FloorPolicy()
@@ -76,5 +84,34 @@ def check_floor(
         counters.this_run >= policy.per_run_cap
         or counters.today >= policy.per_day_cap
     ):
+        return FloorVerdict.TRIP_BREAKER
+    return FloorVerdict.ALLOW
+
+
+def check_budget_move_floor(
+    amount: Money,
+    counters: AutoActionCounters,
+    policy: FloorPolicy = CAUTIOUS_FLOOR,
+) -> FloorVerdict:
+    """Rule on whether a single budget reallocation move is permitted (SPEC §8).
+
+    The same uninvadeable floor as categorization, sized for reallocations. A
+    move whose magnitude exceeds the per-move ceiling drops to a human *even
+    when the owner confirmed it* — the floor never trusts a number it would
+    refuse to write on its own. The daily cap then trips the breaker.
+
+    Args:
+        amount: The move's magnitude (a positive reallocation amount).
+        counters: Moves already applied today (``today``); ``this_run`` is
+            unused here — a balancer pass applies at most a handful of moves.
+        policy: The configured limits.
+
+    Returns:
+        ``FORCE_HUMAN`` for an over-ceiling move; ``TRIP_BREAKER`` when the
+        daily cap is reached; else ``ALLOW``.
+    """
+    if abs(amount) > policy.per_move_ceiling:
+        return FloorVerdict.FORCE_HUMAN
+    if counters.today >= policy.moves_per_day_cap:
         return FloorVerdict.TRIP_BREAKER
     return FloorVerdict.ALLOW

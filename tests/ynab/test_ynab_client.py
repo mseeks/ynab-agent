@@ -29,7 +29,7 @@ from ynab_agent.ynab.client import (
     to_snapshot,
     to_target,
 )
-from ynab_agent.ynab.wire import WireCategory, WireTransaction
+from ynab_agent.ynab.wire import WireCategory, WireMonth, WireTransaction
 
 _NOW = datetime.datetime(2026, 5, 31, 12, 0, tzinfo=datetime.UTC)
 
@@ -150,13 +150,18 @@ class _FakeBackend:
         delta: tuple[tuple[WireTransaction, ...], int] = ((), 0),
         unapproved: tuple[WireTransaction, ...] = (),
         get_returns_none: bool = False,
+        to_be_budgeted: int = 0,
+        month_categories: dict[str, WireCategory] | None = None,
     ) -> None:
         self._txn = txn
         self._delta = delta
         self._unapproved = unapproved
         self._get_returns_none = get_returns_none
+        self._to_be_budgeted = to_be_budgeted
+        self._month_categories = month_categories or {}
         self.patched: list[tuple[str, dict[str, object]]] = []
         self.delta_calls: list[tuple[str, int | None]] = []
+        self.budget_sets: list[tuple[str, str, int]] = []
 
     def get_transaction(self, txn_id: str) -> WireTransaction | None:
         return None if self._get_returns_none else self._txn
@@ -175,6 +180,19 @@ class _FakeBackend:
 
     def list_unapproved(self) -> tuple[WireTransaction, ...]:
         return self._unapproved
+
+    def get_month(self, month: str) -> WireMonth:
+        return WireMonth(month=month, to_be_budgeted=self._to_be_budgeted)
+
+    def get_month_category(
+        self, month: str, category_id: str
+    ) -> WireCategory | None:
+        return self._month_categories.get(category_id)
+
+    def set_category_budgeted(
+        self, month: str, category_id: str, budgeted_milliunits: int
+    ) -> None:
+        self.budget_sets.append((month, category_id, budgeted_milliunits))
 
 
 def test_client_snapshot_maps_through_the_backend() -> None:
@@ -253,6 +271,33 @@ def test_client_unapproved_maps_snapshots_and_drops_deleted() -> None:
 def test_client_unapproved_is_empty_when_none() -> None:
     backend = _FakeBackend(_wire_txn(), unapproved=())
     assert YnabClient(backend).unapproved() == ()
+
+
+def test_client_ready_to_assign_reads_to_be_budgeted() -> None:
+    backend = _FakeBackend(_wire_txn(), to_be_budgeted=125000)
+    assert YnabClient(backend).ready_to_assign() == Money.from_currency("125")
+
+
+def test_client_set_budgeted_writes_an_absolute_value() -> None:
+    backend = _FakeBackend(_wire_txn())
+    YnabClient(backend).set_budgeted("dining", Money.from_currency("520"))
+    # An absolute milliunit write to the current month, idempotent on retry.
+    assert backend.budget_sets == [("current", "dining", 520000)]
+
+
+def test_client_read_budgeted_round_trips() -> None:
+    cat = WireCategory(
+        id="dining", name="Dining", budgeted=520000, activity=0, balance=520000
+    )
+    backend = _FakeBackend(_wire_txn(), month_categories={"dining": cat})
+    assert YnabClient(backend).read_budgeted("dining") == Money.from_currency(
+        "520"
+    )
+
+
+def test_client_read_budgeted_is_none_when_unread() -> None:
+    backend = _FakeBackend(_wire_txn(), month_categories={})
+    assert YnabClient(backend).read_budgeted("dining") is None
 
 
 @pytest.mark.skipif(

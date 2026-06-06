@@ -28,7 +28,7 @@ from ynab_agent.domain.ids import (
 from ynab_agent.domain.money import Money
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.policy.converge import TargetState
-from ynab_agent.ynab.wire import WireCategory, WireTransaction
+from ynab_agent.ynab.wire import WireCategory, WireMonth, WireTransaction
 
 if TYPE_CHECKING:
     import httpx
@@ -39,6 +39,10 @@ _API_KEY_ENV = "YNAB_API_KEY"
 _BUDGET_ENV = "YNAB_BUDGET_ID"
 _DEFAULT_BUDGET = "last-used"
 _BASE_URL = "https://api.ynab.com/v1"
+# The month identifier the balancer operates on (SPEC §8): YNAB's "current"
+# shorthand for the live budget month, matching the W6 monitor's current-month
+# figures. ``/months/{month}/...`` also accepts ``YYYY-MM-01`` for later use.
+CURRENT_MONTH = "current"
 # How far back the snapshot fallback list scans when the single GET 404s (an
 # unapproved txn). The agent only reads recent transactions, so a year is ample.
 _FALLBACK_LOOKBACK_DAYS = 365
@@ -151,6 +155,22 @@ class YnabBackend(Protocol):
         """The budget's ``type=unapproved`` transactions."""
         ...
 
+    def get_month(self, month: str) -> WireMonth:
+        """The budget month, for its ``to_be_budgeted`` (Ready-to-Assign)."""
+        ...
+
+    def get_month_category(
+        self, month: str, category_id: str
+    ) -> WireCategory | None:
+        """One category's figures for ``month``, or ``None`` if the GET 404s."""
+        ...
+
+    def set_category_budgeted(
+        self, month: str, category_id: str, budgeted_milliunits: int
+    ) -> None:
+        """Set a month category's ``budgeted`` to a milliunit value."""
+        ...
+
 
 # The process-wide cached client built by ``from_env`` (see its docstring).
 # ``tests/conftest.py`` resets this between tests.
@@ -252,6 +272,38 @@ class YnabClient:
         snapshot = self.snapshot(txn_id)
         return to_target(snapshot) if snapshot is not None else None
 
+    def ready_to_assign(self, month: str = CURRENT_MONTH) -> Money:
+        """The month's Ready-to-Assign — the first balancer source (SPEC §8)."""
+        return Money.from_milliunits(
+            self._backend.get_month(month).to_be_budgeted
+        )
+
+    def set_budgeted(
+        self, category_id: str, target: Money, month: str = CURRENT_MONTH
+    ) -> None:
+        """Set a category's month ``budgeted`` to ``target`` (SPEC §8).
+
+        An *absolute* write: the workflow computes each category's new budgeted
+        from a snapshot and sets it directly, so an activity retry is idempotent
+        (re-setting the same value is a no-op) — unlike a relative add.
+        """
+        self._backend.set_category_budgeted(
+            month, category_id, target.milliunits
+        )
+
+    def read_budgeted(
+        self, category_id: str, month: str = CURRENT_MONTH
+    ) -> Money | None:
+        """Re-read a category's month ``budgeted`` for verification (SPEC §8).
+
+        ``None`` when the category can't be read, so the spine treats it as
+        could-not-confirm rather than false divergence (cf. :meth:`read_back`).
+        """
+        wire = self._backend.get_month_category(month, category_id)
+        return (
+            Money.from_milliunits(wire.budgeted) if wire is not None else None
+        )
+
 
 class _HttpxBackend:
     """Adapts the YNAB REST API to the :class:`YnabBackend` protocol."""
@@ -311,3 +363,32 @@ class _HttpxBackend:
             for category in group["categories"]
             if not category.get("deleted") and not category.get("hidden")
         )
+
+    def get_month(self, month: str) -> WireMonth:
+        path = f"/budgets/{self._budget}/months/{month}"
+        response = self._client.get(path)
+        response.raise_for_status()
+        return WireMonth.model_validate(response.json()["data"]["month"])
+
+    def get_month_category(
+        self, month: str, category_id: str
+    ) -> WireCategory | None:
+        path = (
+            f"/budgets/{self._budget}/months/{month}/categories/{category_id}"
+        )
+        response = self._client.get(path)
+        if response.status_code == _HTTP_NOT_FOUND:
+            return None
+        response.raise_for_status()
+        return WireCategory.model_validate(response.json()["data"]["category"])
+
+    def set_category_budgeted(
+        self, month: str, category_id: str, budgeted_milliunits: int
+    ) -> None:
+        path = (
+            f"/budgets/{self._budget}/months/{month}/categories/{category_id}"
+        )
+        response = self._client.patch(
+            path, json={"category": {"budgeted": budgeted_milliunits}}
+        )
+        response.raise_for_status()
