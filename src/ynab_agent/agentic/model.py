@@ -24,12 +24,12 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
     from pydantic_ai.settings import ModelSettings
 
-# Gemma 4 26b: a practical balance of inference quality and latency across every
-# task. The larger 31b dense weight gave the deepest inference but was too slow
-# once the balancer started making tool-call round-trips, so the app uses 26b.
-# Env-overridable, so a dev box can point `YNAB_AGENT_MODEL` at another variant
-# (`gemma4:e4b`, `gemma4:31b`).
-_DEFAULT_MODEL = "gemma4:26b"
+# Gemma 4 12b: a practical balance of inference quality and latency across every
+# task on a single local GPU. The larger 31b/26b dense weights gave deeper
+# inference but made the balancer's reasoning generations too slow, so the app
+# uses 12b. Needs Ollama >= 0.30. Env-overridable, so a dev box can point
+# `YNAB_AGENT_MODEL` at another variant (`gemma4:e4b`, `gemma4:31b`).
+_DEFAULT_MODEL = "gemma4:12b"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434/v1"
 
 # Run Gemma 4 with its reasoning turned ON — we want the deepest inference on
@@ -62,7 +62,7 @@ def build_model(
 
     Args:
         model_name: Override the model; defaults to ``$YNAB_AGENT_MODEL`` or
-            ``gemma4:26b``.
+            ``gemma4:12b``.
         base_url: Override the endpoint; defaults to ``$YNAB_AGENT_OLLAMA_URL``
             or the local Ollama ``/v1``.
 
