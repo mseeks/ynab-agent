@@ -28,6 +28,9 @@ from ynab_agent.workflow.alert_ledger_workflow import AlertLedgerWorkflow
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
 from ynab_agent.workflow.offer_workflow import AutonomyOfferWorkflow
+from ynab_agent.workflow.overspend_ledger_workflow import (
+    OverspendLedgerWorkflow,
+)
 from ynab_agent.workflow.poll_workflow import PollWorkflow
 from ynab_agent.workflow.receipt_workflow import ReceiptJoinWorkflow
 from ynab_agent.workflow.registry_workflow import RuleRegistryWorkflow
@@ -44,6 +47,7 @@ WORKFLOWS = [
     RuleRegistryWorkflow,
     AlertLedgerWorkflow,
     AutonomyOfferWorkflow,
+    OverspendLedgerWorkflow,
 ]
 
 ALL_ACTIVITIES: list[Callable[..., object]] = [
