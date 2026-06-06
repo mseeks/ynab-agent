@@ -1,9 +1,7 @@
 """Tests for the budget-balancer agent: propose, reply, and mappings (§8).
 
 Offline tests drive a ``TestModel`` (no network, deterministic). The default
-``TestModel`` smoke tests prove the agent/output-schema wiring round-trips *with
-the calculator tools registered* — TestModel calls each tool once before
-producing output, so a broken tool signature would surface here.
+``TestModel`` smoke tests prove the agent/output-schema wiring round-trips.
 """
 
 from __future__ import annotations
@@ -20,12 +18,8 @@ from ynab_agent.agentic.balance import (
     OfferedOption,
     ProposedOption,
     SourceFunds,
-    add,
     interpret_balance_reply,
-    multiply,
     propose_balance,
-    subtract,
-    sum_amounts,
     to_balance_outcome,
     to_options,
 )
@@ -64,16 +58,6 @@ _REPLY = BalanceReplyRequest(
     ),
     sources=_CONTEXT.sources,
 )
-
-
-# --- The calculator tool functions. -------------------------------------------
-
-
-def test_calculator_tools_compute() -> None:
-    assert add(70.0, 50.0) == 120.0
-    assert subtract(120.0, 50.0) == 70.0
-    assert multiply(120.0, 0.5) == 60.0
-    assert sum_amounts([70.0, 50.0, 20.0]) == 140.0
 
 
 # --- to_options: model proposal -> domain options. ----------------------------
@@ -160,10 +144,9 @@ async def test_propose_balance_returns_structured_options() -> None:
     assert options[0].total == Money.from_currency("120")
 
 
-async def test_propose_balance_wiring_smoke_with_calculator_tools() -> None:
-    # No custom output: TestModel calls each registered calculator tool once
-    # before autofilling a valid proposal, so this proves the tools + output
-    # schema all wire together offline.
+async def test_propose_balance_wiring_smoke() -> None:
+    # No custom output: TestModel autofills a valid proposal, proving the
+    # agent + output schema wire together offline.
     proposal = await propose_balance(_CONTEXT, model=TestModel())
     assert isinstance(proposal, BalanceProposal)
 
@@ -192,6 +175,6 @@ async def test_interpret_reply_reads_a_decline() -> None:
     )
 
 
-async def test_interpret_reply_wiring_smoke_with_calculator_tools() -> None:
+async def test_interpret_reply_wiring_smoke() -> None:
     reading = await interpret_balance_reply(_REPLY, model=TestModel())
     assert isinstance(reading, BalanceReading)

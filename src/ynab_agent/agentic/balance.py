@@ -1,9 +1,6 @@
 """The budget-balancer agent: propose and read coverage moves (SPEC §8).
 
-The agentic half of W7. Two model calls, both high-context and both given a
-**calculator tool** — models are unreliable at arithmetic, so they call
-``add``/``subtract``/``multiply``/``sum_amounts`` while reasoning instead of
-doing mental math:
+The agentic half of W7. Two high-context model calls:
 
 - :func:`propose_balance` sees the whole budget picture (the needy category, the
   shortfall, every source category's available funds, and Ready-to-Assign) and
@@ -13,11 +10,17 @@ doing mental math:
   2 but only $50", "take it from dining instead", "no thanks") into a concrete
   plan, a decline, or a clarifying question.
 
-The calculator is a *reasoning aid only*: the binding amounts are recomputed in
-exact :class:`~ynab_agent.domain.money.Money` by the ``to_*`` seams, and the
-deterministic guard (``budget.balance.validate_option`` /
-``policy.floor.check_budget_move_floor``) has the final say before a write. The
-model never authorizes a move on its own (SPEC §0.5 principle 6).
+The model does its own arithmetic. An earlier cut gave it a calculator tool, but
+Gemma's tool-calling over Ollama did not converge with structured output (it
+looped on tool calls), so the tool was removed; the model now reasons over the
+numbers directly. Correctness never rode on the model anyway: the binding
+amounts are recomputed in exact :class:`~ynab_agent.domain.money.Money` by the
+``to_*`` seams, and the deterministic guard (``validate_option`` /
+``check_moves`` / ``check_budget_move_floor``) has the final say
+before a write — an option whose numbers don't add up is dropped to the safe
+greedy fallback. The model never authorizes a move on its own (SPEC §0.5
+principle 6). A model-picks-sources, code-computes-amounts design is the natural
+next step if proposal arithmetic proves unreliable.
 
 The model is injected per run so tests drive a ``TestModel`` offline; production
 uses :func:`~ynab_agent.agentic.model.build_model` (Ollama/Gemma).
@@ -45,43 +48,7 @@ from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.money import Money
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from pydantic_ai.models import Model
-
-
-# --- The calculator tool the agents call so their arithmetic is exact. --------
-# Plain functions over dollar amounts; pydantic AI registers each as a tool
-# (name from the function, description from the docstring). They are pure and do
-# no I/O, so they run in-process inside the activity, never a workflow sandbox.
-
-
-def add(a: float, b: float) -> float:
-    """Add two dollar amounts and return the sum."""
-    return a + b
-
-
-def subtract(a: float, b: float) -> float:
-    """Subtract b from a (a - b): a shortfall, or funds left after a pull."""
-    return a - b
-
-
-def multiply(a: float, b: float) -> float:
-    """Multiply a by b: a fraction of an amount (0.5 for half, 0.3 for 30%)."""
-    return a * b
-
-
-def sum_amounts(amounts: list[float]) -> float:
-    """Add up a list of dollar amounts (e.g. the total several sources give)."""
-    return float(sum(amounts))
-
-
-_CALCULATOR_TOOLS: list[Callable[..., float]] = [
-    add,
-    subtract,
-    multiply,
-    sum_amounts,
-]
 
 
 # --- Shared move shape: pull ``amount`` from a source, dest implied. ----------
@@ -156,14 +123,12 @@ shortfall (different sources or a different split). For each option give:
 Hard rules: every option's moves must add up to AT LEAST the shortfall; never
 pull more from a source than it has available; only use the listed source ids.
 
-You are bad at mental arithmetic, so use the calculator tools (`sum_amounts`,
-`add`, `subtract`, `multiply`) for every sum, difference, and fraction — do not
-eyeball the numbers."""
+Do the arithmetic carefully and double-check every sum: an option whose moves
+don't add up to the shortfall, or that overdraws a source, will be discarded."""
 
 _PROPOSE_AGENT: Agent[None, BalanceProposal] = Agent(
     output_type=BalanceProposal,
     system_prompt=_PROPOSE_SYSTEM_PROMPT,
-    tools=_CALCULATOR_TOOLS,
 )
 
 
@@ -272,13 +237,11 @@ Decide what the reply means and set `verdict`:
     set a short `question` to send back.
 
 Moving money is consequential, so when in doubt choose `unclear`, never `apply`.
-You are bad at mental arithmetic, so use the calculator tools (`sum_amounts`,
-`add`, `subtract`, `multiply`) for every amount you compute — never eyeball."""
+Do any arithmetic ("only $50", "half") carefully and double-check it."""
 
 _REPLY_AGENT: Agent[None, BalanceReading] = Agent(
     output_type=BalanceReading,
     system_prompt=_REPLY_SYSTEM_PROMPT,
-    tools=_CALCULATOR_TOOLS,
 )
 
 

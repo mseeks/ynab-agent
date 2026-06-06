@@ -592,8 +592,11 @@ increments).
 
 - **High-context proposal.** A model sees the whole budget picture (the needy category, the
   shortfall, every source's available funds, and Ready-to-Assign) and proposes **several distinct
-  coverage options, each with a plain-English rationale**. The model has a **calculator tool**
-  (`add`/`subtract`/`multiply`/`sum_amounts`) so its arithmetic is exact, not eyeballed.
+  coverage options, each with a plain-English rationale**. The model does its own arithmetic: an
+  earlier cut gave it a calculator tool, but Gemma's tool-calling over Ollama didn't converge with
+  structured output (it looped on tool calls), so the tool was removed. Correctness doesn't depend
+  on the model anyway (see the guard). A model-picks-sources, code-computes-amounts design is the
+  natural next step if proposal arithmetic proves unreliable.
 - **Deterministic guard.** Every proposed (and every replied) option is validated against real funds
   and the per-move floor ceiling (`budget.balance.validate_option` / `check_moves`); the model
   invents no money and breaches no ceiling. If the model yields nothing feasible, the greedy

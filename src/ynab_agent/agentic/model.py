@@ -24,11 +24,12 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
     from pydantic_ai.settings import ModelSettings
 
-# Gemma 4 at its largest weight: we trade latency for the deepest inference on
-# every task — categorization should feel like a genuinely intelligent agent,
-# and the household's volume never needs throughput. Env-overridable, so a dev
-# box can point `YNAB_AGENT_MODEL` at a smaller variant (`gemma4:e4b`).
-_DEFAULT_MODEL = "gemma4:31b"
+# Gemma 4 26b: a practical balance of inference quality and latency across every
+# task. The larger 31b dense weight gave the deepest inference but was too slow
+# once the balancer started making tool-call round-trips, so the app uses 26b.
+# Env-overridable, so a dev box can point `YNAB_AGENT_MODEL` at another variant
+# (`gemma4:e4b`, `gemma4:31b`).
+_DEFAULT_MODEL = "gemma4:26b"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434/v1"
 
 # Run Gemma 4 with its reasoning turned ON — we want the deepest inference on
@@ -38,7 +39,7 @@ _DEFAULT_OLLAMA_URL = "http://localhost:11434/v1"
 # production path forces NATIVE structured output (`NativeOutput`, a json_schema
 # `response_format`), and under that constraint Gemma still emits schema-valid
 # JSON into `content` while its chain-of-thought lands in `reasoning`. Verified
-# on gemma4:31b / Ollama 0.24.0: thinking + schema → valid content, every time.
+# on the Gemma 4 family / Ollama 0.24.0: thinking + schema → valid content.
 # So `reasoning_effort: "none"` would needlessly suppress the model's best
 # asset; we ask for "high" instead. Two companion settings keep it robust:
 # `max_tokens` is large so a long chain-of-thought never starves the trailing
@@ -61,7 +62,7 @@ def build_model(
 
     Args:
         model_name: Override the model; defaults to ``$YNAB_AGENT_MODEL`` or
-            ``gemma4:31b`` (the largest Gemma 4 weight).
+            ``gemma4:26b``.
         base_url: Override the endpoint; defaults to ``$YNAB_AGENT_OLLAMA_URL``
             or the local Ollama ``/v1``.
 
@@ -102,7 +103,7 @@ async def run_structured[OutputT](
     that constraint a schema-valid object lands in ``content`` on the first pass
     even as the chain-of-thought fills ``reasoning``. So production gets both:
     the model's deepest reasoning AND reliable structured output (verified on
-    gemma4:31b / Ollama 0.24.0). The offline ``TestModel`` tests never touch
+    Gemma 4 / Ollama 0.24.0). The offline ``TestModel`` tests never touch
     this — they ride the default tool output, which is all ``TestModel``
     supports.
 

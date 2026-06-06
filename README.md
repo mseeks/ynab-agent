@@ -40,9 +40,9 @@ auto-apply, an independent clean-context *safety review* that can only veto),
 `interpret` (read a reply's intent), `match` (join a receipt), `classify` (triage
 inbound), `converge` (interpret a revision), `offer` (read a yes/no to a
 proactive autonomy offer), and `balance` (propose budget-coverage options and
-read a coverage reply — given a calculator tool so its arithmetic is exact). Each
-produces domain-typed structured output and lives in the `agentic` package, never
-imported into a Temporal sandbox.
+read a coverage reply in natural language). Each produces domain-typed structured
+output and lives in the `agentic` package, never imported into a Temporal
+sandbox.
 
 ## Layout
 
