@@ -79,6 +79,13 @@ def test_agentmail_kind_from_labels() -> None:
     assert agentmail_source._kind(("ynab-agent",)) == "thread"
 
 
+def test_agentmail_ref_from_labels() -> None:
+    # The id the queue joins on rides in the agent's own idempotency label.
+    assert agentmail_source._ref(("yatxn-t1",)) == "t1"
+    assert agentmail_source._ref(("ynab-agent", "yaoffer-r9")) == "r9"
+    assert agentmail_source._ref(("ynab-agent",)) is None
+
+
 def test_agentmail_off_when_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,3 +164,93 @@ def test_ynab_off_when_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     budget, error = asyncio.run(ynab_source.fetch())
     assert error == "off"
     assert budget.available is False
+
+
+def _snap(
+    tid: str,
+    payee: str,
+    amount: str,
+    *,
+    approved: bool,
+    category: str | None,
+) -> object:
+    from ynab_agent.domain.ids import AccountId, CategoryId, YnabTransactionId
+    from ynab_agent.domain.money import Money
+    from ynab_agent.domain.transaction import YnabSnapshot
+
+    return YnabSnapshot(
+        ynab_id=YnabTransactionId(tid),
+        account=AccountId("a1"),
+        payee=payee,
+        amount=Money.from_currency(amount),
+        txn_date=datetime.date(2026, 6, 1),
+        category_id=CategoryId(category) if category else None,
+        approved=approved,
+    )
+
+
+class _FakeResolveYnab:
+    """Unapproved ``t1`` (still waiting) + approved ``t2`` (settled in-app)."""
+
+    def category_spends(self) -> tuple[object, ...]:
+        from ynab_agent.budget.overspend import CategorySpend
+        from ynab_agent.domain.ids import CategoryId
+        from ynab_agent.domain.money import Money
+
+        return (
+            CategorySpend(
+                category=CategoryId("c-shop"),
+                name="Shopping",
+                budgeted=Money.from_currency("0"),
+                activity=Money.from_currency("0"),
+                balance=Money.from_currency("0"),
+            ),
+        )
+
+    def unapproved(self) -> tuple[object, ...]:
+        return (
+            _snap("t1", "Amazon", "-5.00", approved=False, category="c-shop"),
+        )
+
+    def snapshot(self, txn_id: str) -> object:
+        if txn_id == "t2":
+            return _snap(
+                "t2", "CP Energy", "-61.00", approved=True, category=None
+            )
+        return None
+
+
+def test_resolve_queue_humanizes_and_flags_approved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ynab_agent.ynab.client import YnabClient
+
+    monkeypatch.setattr(
+        YnabClient, "from_env", classmethod(lambda cls: _FakeResolveYnab())
+    )
+    facts = asyncio.run(ynab_source.resolve_queue(("t1", "t2", "t9")))
+    # t1 came from the unapproved index; its category id resolved to a name.
+    assert facts["t1"].payee == "Amazon"
+    assert facts["t1"].approved is False
+    assert facts["t1"].category == "Shopping"
+    # t2 a cheap single GET; flagged approved → the read-model rests it.
+    assert facts["t2"].approved is True
+    # t9 unresolved → omitted (the renderer falls back to a short id).
+    assert "t9" not in facts
+
+
+def test_resolve_queue_strips_a_date_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ynab_agent.ynab.client import YnabClient
+
+    monkeypatch.setattr(
+        YnabClient, "from_env", classmethod(lambda cls: _FakeResolveYnab())
+    )
+    facts = asyncio.run(ynab_source.resolve_queue(("t1_2026-06-02",)))
+    # Looked up by the bare id, keyed by the raw workflow id.
+    assert facts["t1_2026-06-02"].payee == "Amazon"
+
+
+def test_resolve_queue_empty_without_ids() -> None:
+    assert asyncio.run(ynab_source.resolve_queue(())) == {}

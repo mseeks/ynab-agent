@@ -4,6 +4,11 @@ A pure projection assembled by :mod:`ynab_agent.dashboard.read_model` from the
 source readers and rendered by :mod:`ynab_agent.dashboard.render`. Nothing here
 performs I/O; every field is a plain value so the page is fully testable without
 a cluster.
+
+The shape is organized around the *questions an operator actually asks* — "is it
+healthy?", "do I need to do anything?", "what has it done?" — not around the
+subsystems the data came from. :class:`Narrative` and :class:`Health` are the
+headline projections that answer the first two at a glance.
 """
 
 from __future__ import annotations
@@ -21,15 +26,40 @@ class SourceHealth(Frozen):
     detail: str
 
 
-# ── Is it alive? (heartbeat) ─────────────────────────────────────────────────
-class Heartbeat(Frozen):
-    """The poll loop's pulse plus the worker/webhook last-seen watermarks."""
+# ── State of things (the narrative) ──────────────────────────────────────────
+class Narrative(Frozen):
+    """The plain-English 'state of things' — deterministic, render-ready.
 
-    poll_status: str
-    poll_live: bool
+    A composed-from-the-numbers summary so a human comprehends the whole board
+    without decoding panels. ``tone`` drives its accent; ``paragraphs`` is one
+    or two friendly sentences. Built deterministically in
+    :func:`~ynab_agent.dashboard.read_model.narrate`; an optional LLM polish may
+    later rephrase the prose, always falling back to this text.
+    """
+
+    headline: str
+    paragraphs: tuple[str, ...] = ()
+    tone: str = "ok"  # "ok" | "warn" | "bad"
+
+
+# ── Is it healthy? (the masthead rollup) ─────────────────────────────────────
+class Health(Frozen):
+    """The single composite health verdict shown in the masthead.
+
+    ``tone``/``label`` are the one status dot + word; the rest are the few
+    figures the masthead surfaces beside it. ``needs_you`` is *operation*, not
+    *fault* — a healthy agent can still have items waiting on the owner.
+    """
+
+    tone: str = "ok"  # "ok" | "warn" | "bad"
+    label: str = "healthy"
+    poll_live: bool = False
+    poll_status: str = "none"  # the W1 poll's latest execution status
     poll_last_start: datetime | None = None
     worker_last_span: datetime | None = None
-    webhook_last_span: datetime | None = None
+    span_error_rate: float | None = None
+    needs_you: int = 0
+    real_failures: int = 0
 
 
 # ── Transaction lifecycle ────────────────────────────────────────────────────
@@ -81,14 +111,41 @@ class Autonomy(Frozen):
     offers: tuple[OfferRow, ...] = ()
 
 
-# ── Awaiting a human ─────────────────────────────────────────────────────────
+# ── The human's queue ────────────────────────────────────────────────────────
+class TxnFacts(Frozen):
+    """YNAB facts resolved for a queued transaction (the humanizing join).
+
+    Keyed by ``ynab_id`` outside this type; produced by the YNAB source so the
+    read-model can purely turn a bare workflow id into a readable row.
+    ``approved`` is the pivotal signal: an awaiting proposal whose transaction
+    is already ``approved`` in YNAB is one the owner settled *in-app* — it will
+    lapse on its own and does not need them.
+    """
+
+    payee: str
+    amount: str
+    approved: bool
+    category: str | None = None
+
+
 class QueueItem(Frozen):
-    """Something waiting on the owner: an open proposal or a pending offer."""
+    """Something waiting on the owner: an open proposal or a pending offer.
+
+    ``ident`` is the stable key (the YNAB txn id for a proposal, the rule id for
+    an offer); the optional humanizing fields are filled by the join when the
+    facts are reachable, and the renderer degrades to ``label`` (a short id)
+    when they are not.
+    """
 
     kind: str  # "proposal" | "offer"
     label: str
     ident: str
     since: datetime | None = None
+    payee: str | None = None
+    amount: str | None = None
+    category: str | None = None
+    approved: bool | None = None  # YNAB approved flag; None = unknown / offer
+    question: str | None = None  # the proposal's email subject, when matched
 
 
 # ── Budget (YNAB) ────────────────────────────────────────────────────────────
@@ -118,12 +175,18 @@ class Budget(Frozen):
 
 # ── Conversations (AgentMail) ────────────────────────────────────────────────
 class Conversation(Frozen):
-    """A recent AgentMail thread reduced to a one-line summary."""
+    """A recent AgentMail thread reduced to a one-line summary.
+
+    ``ref`` carries the transaction/rule id recovered from the agent's own
+    ``yatxn-``/``yaoffer-`` label, so the queue can borrow a thread's subject as
+    the most human description of the item it is waiting on.
+    """
 
     subject: str
     preview: str
     kind: str  # "proposal" | "offer" | "thread"
     updated_at: datetime | None = None
+    ref: str | None = None
 
 
 # ── Inbound (W3 dispatch) ────────────────────────────────────────────────────
@@ -163,12 +226,18 @@ class RunTelemetry(Frozen):
 
 # ── Failures ─────────────────────────────────────────────────────────────────
 class Failure(Frozen):
-    """A workflow that ended terminated/failed, with its recovered reason."""
+    """A workflow that ended terminated/failed, with its recovered reason.
+
+    ``intentional`` marks the operator's own go-live / re-test / reset
+    terminations, so the page can keep them out of the fault headline (they are
+    housekeeping, not breakage) while still listing them under disclosure.
+    """
 
     workflow_id: str
     kind: str
     reason: str | None = None
     when: datetime | None = None
+    intentional: bool = False
 
 
 # ── Deploy (GitHub) ──────────────────────────────────────────────────────────
@@ -191,15 +260,23 @@ class Deploy(Frozen):
 
 # ── The whole page ───────────────────────────────────────────────────────────
 class DashboardModel(Frozen):
-    """Everything one dashboard request renders."""
+    """Everything one dashboard request renders.
+
+    ``narrative`` and ``health`` lead (the at-a-glance answer); ``needs_you`` is
+    the only acted-upon queue, ``handled`` the already-settled proposals still
+    winding down. The remaining fields back the supporting zones and the
+    progressive-disclosure rails.
+    """
 
     generated_at: datetime
     repo: str
+    narrative: Narrative
+    health: Health
     sources: tuple[SourceHealth, ...]
-    heartbeat: Heartbeat
+    needs_you: tuple[QueueItem, ...]
+    handled: tuple[QueueItem, ...]
     lifecycle: Lifecycle
     autonomy: Autonomy
-    queue: tuple[QueueItem, ...]
     budget: Budget
     conversations: tuple[Conversation, ...]
     dispatch: DispatchTally

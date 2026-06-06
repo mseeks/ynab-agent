@@ -36,6 +36,36 @@ _MAX_PER_TYPE: Final = 500
 _MAX_STATE_QUERIES: Final = 200
 _REGISTRY_ID: Final = "ynab-rule-registry"
 
+# Operator-termination vocabulary: the human reasons attached to a deliberate
+# go-live / re-test / reset wipe. Used to keep housekeeping out of the fault
+# headline (the page still lists them under disclosure).
+_RESET_MARKERS: Final = (
+    "go-live",
+    "go live",
+    "reset",
+    "re-test",
+    "retest",
+    "cleanup",
+    "clean up",
+    "scaffold",
+    "teardown",
+    "redeploy",
+    "wipe",
+)
+
+
+def _intentional(kind: str, reason: str | None) -> bool:
+    """Whether a terminal workflow was the operator's own housekeeping.
+
+    Scoped to *terminated* runs carrying a human reason — a ``failed`` run is
+    real breakage, never housekeeping — so a coincidental word in an exception
+    message (e.g. "connection reset") is never miscounted as intentional.
+    """
+    if kind != "terminated" or not reason:
+        return False
+    low = reason.lower()
+    return any(marker in low for marker in _RESET_MARKERS)
+
 
 class TemporalReadout(Frozen):
     """The Temporal-derived pieces of the dashboard, ready to slot in."""
@@ -269,12 +299,15 @@ async def _terminal(client: Client) -> tuple[int, int, tuple[Failure, ...]]:
     ):
         terminated += 1
         if len(failures) < 25:
+            kind = _status(execution)
+            reason = await _reason(client, execution)
             failures.append(
                 Failure(
                     workflow_id=execution.id,
-                    kind=_status(execution),
-                    reason=await _reason(client, execution),
+                    kind=kind,
+                    reason=reason,
                     when=execution.close_time,
+                    intentional=_intentional(kind, reason),
                 )
             )
     return archived, terminated, tuple(failures)

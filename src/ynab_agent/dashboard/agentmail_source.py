@@ -27,6 +27,20 @@ def _kind(labels: tuple[str, ...]) -> str:
     return "thread"
 
 
+def _ref(labels: tuple[str, ...]) -> str | None:
+    """Recover the txn/rule id from the agent's idempotency label.
+
+    The W2 stamps ``yatxn-{ynab_id}`` and an offer ``yaoffer-{rule_id}`` — the
+    same ids the queue is keyed by — so the queue can borrow this thread's
+    subject as the most human description of what it waits on.
+    """
+    for label in labels:
+        for prefix in ("yatxn-", "yaoffer-"):
+            if label.startswith(prefix):
+                return label[len(prefix) :]
+    return None
+
+
 def _timestamp(item: Any) -> object:
     """The most recent timestamp on a thread item (SDK-shape tolerant)."""
     for attr in (
@@ -57,6 +71,7 @@ def _read(inbox: str, key: str) -> tuple[Conversation, ...]:
                 preview=str(getattr(item, "preview", "") or "")[:160],
                 kind=_kind(labels),
                 updated_at=_timestamp(item),  # type: ignore[arg-type]
+                ref=_ref(labels),
             )
         )
     return tuple(conversations)

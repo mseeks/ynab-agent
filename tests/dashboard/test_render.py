@@ -14,8 +14,10 @@ from ynab_agent.dashboard.model import (
     DashboardModel,
     Deploy,
     DispatchTally,
-    Heartbeat,
+    Failure,
+    Health,
     Lifecycle,
+    Narrative,
     PrRow,
     QueueItem,
     RuleRow,
@@ -31,24 +33,51 @@ def _full() -> DashboardModel:
     return DashboardModel(
         generated_at=_NOW,
         repo="mseeks/ynab-agent",
+        narrative=Narrative(
+            headline="1 thing waiting on you.",
+            paragraphs=("You're nearly caught up in YNAB (5 unapproved).",),
+            tone="ok",
+        ),
+        health=Health(
+            tone="ok",
+            label="healthy",
+            poll_live=True,
+            poll_status="running",
+            poll_last_start=datetime(2026, 6, 5, 11, 0, tzinfo=UTC),
+            worker_last_span=datetime(2026, 6, 5, 11, 59, tzinfo=UTC),
+            span_error_rate=0.008,
+            needs_you=1,
+            real_failures=1,
+        ),
         sources=(
             SourceHealth(name="temporal", ok=True, detail="3 in-flight"),
             SourceHealth(name="ynab", ok=False, detail="off"),
         ),
-        heartbeat=Heartbeat(
-            poll_status="completed",
-            poll_live=True,
-            poll_last_start=datetime(2026, 6, 5, 11, 0, tzinfo=UTC),
-            worker_last_span=datetime(2026, 6, 5, 11, 59, tzinfo=UTC),
+        needs_you=(
+            QueueItem(
+                kind="proposal",
+                label="Amazon $-5.00",
+                ident="t1",
+                payee="Amazon",
+                amount="$-5.00",
+                category="Shopping",
+                approved=False,
+                question="Amazon — $-5.00 · Shopping?",
+                since=datetime(2026, 6, 3, 12, 0, tzinfo=UTC),
+            ),
+        ),
+        handled=(
+            QueueItem(kind="proposal", label="t9", ident="t9", approved=True),
         ),
         lifecycle=Lifecycle(
             states=(
                 StateCount(state="enriching", count=2),
                 StateCount(state="awaiting_human", count=1),
+                StateCount(state="open", count=7),
             ),
-            in_flight=3,
-            archived=10,
-            terminated=1,
+            in_flight=10,
+            archived=0,
+            terminated=4,
         ),
         autonomy=Autonomy(
             observe=4,
@@ -65,7 +94,6 @@ def _full() -> DashboardModel:
                 ),
             ),
         ),
-        queue=(QueueItem(kind="proposal", label="t1", ident="t1"),),
         budget=Budget(
             available=True,
             unapproved=5,
@@ -85,7 +113,22 @@ def _full() -> DashboardModel:
                 ActivityStat(name="enrich", count=10, avg_ms=900, max_ms=4000),
             ),
         ),
-        failures=(),
+        failures=(
+            Failure(
+                workflow_id="abc",
+                kind="failed",
+                reason="Activity task timed out",
+                when=_NOW,
+                intentional=False,
+            ),
+            Failure(
+                workflow_id="ynab-poll",
+                kind="terminated",
+                reason="go-live reset",
+                when=_NOW,
+                intentional=True,
+            ),
+        ),
         deploy=Deploy(
             prs=(
                 PrRow(
@@ -100,20 +143,23 @@ def _full() -> DashboardModel:
     )
 
 
-def test_full_model_renders_every_panel() -> None:
+def test_full_model_renders_every_zone() -> None:
     html = render.page(_full())
     assert html.startswith("<!doctype html>")
     for marker in (
-        "Is it alive?",
-        "Transaction lifecycle",
-        "Autonomy ladder",
-        "Awaiting a human",
+        "ynab-agent",
+        "1 thing waiting on you.",  # the narrative headline
+        "Needs you",
+        "Amazon — $-5.00 · Shopping?",  # humanized queue row
+        "winding down",  # the handled footnote
+        "Is it working?",
+        "What it's done",
         "Budget",
-        "Conversations",
-        "Inbound",
+        "Autonomy ladder",
         "Run telemetry",
+        "Failures &amp; resets",
+        "go-live reset",  # the intentional reset, kept under disclosure
         "Deploy",
-        "Spotify",
         "Safety envelope",
     ):
         assert marker in html, marker
@@ -138,11 +184,13 @@ def test_empty_model_still_renders() -> None:
     model = DashboardModel(
         generated_at=_NOW,
         repo="mseeks/ynab-agent",
+        narrative=Narrative(headline="All caught up — nothing needs you."),
+        health=Health(tone="bad", label="down", poll_live=False),
         sources=(SourceHealth(name="temporal", ok=False, detail="down"),),
-        heartbeat=Heartbeat(poll_status="none", poll_live=False),
+        needs_you=(),
+        handled=(),
         lifecycle=Lifecycle(),
         autonomy=Autonomy(),
-        queue=(),
         budget=Budget(available=False),
         conversations=(),
         dispatch=DispatchTally(),
@@ -151,5 +199,19 @@ def test_empty_model_still_renders() -> None:
         deploy=Deploy(),
     )
     html = render.page(model)
-    assert "No transactions in flight" in html
-    assert "Unavailable" in html  # budget + telemetry both degrade cleanly
+    assert "All caught up" in html  # the empty-queue state
+    assert "No transactions in flight" in html  # the empty flow
+    assert "not configured" in html  # telemetry rail degrades cleanly
+
+
+def test_needs_you_split_and_empty_states_render() -> None:
+    full = _full()
+    html = render.page(full)
+    # The humanized question is the row title; the handled count is a footnote.
+    assert "Amazon — $-5.00 · Shopping?" in html
+    assert "1 more proposal" in html
+    # An emptied queue shows the caught-up state and renders no queue rows.
+    empty = full.model_copy(update={"needs_you": (), "handled": ()})
+    html2 = render.page(empty)
+    assert "all caught up" in html2.lower()
+    assert 'class="qrow"' not in html2

@@ -186,3 +186,20 @@ def test_one_failing_query_reddens_only_its_panel() -> None:
     assert readout.poll_live is True  # unaffected
     assert readout.in_flight == 2  # unaffected
     assert readout.dispatch.total == 0  # the degraded panel
+
+
+def test_intentional_classification() -> None:
+    # Operator housekeeping on a *terminated* run with a reset reason.
+    assert temporal_source._intentional("terminated", "go-live reset") is True
+    assert temporal_source._intentional("terminated", "re-test cleanup") is True
+    # A real, unexplained termination is not housekeeping.
+    assert temporal_source._intentional("terminated", None) is False
+    assert (
+        temporal_source._intentional("terminated", "Activity task timed out")
+        is False
+    )
+    # A *failed* run is breakage even if its message says "reset".
+    assert (
+        temporal_source._intentional("failed", "connection reset by peer")
+        is False
+    )
