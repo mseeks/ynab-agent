@@ -75,6 +75,6 @@ async def test_production_path_forces_native_structured_output(
     # can't silently suppress reasoning or drop the long-generation guards.
     assert calls[0]["model_settings"] == _OLLAMA_SETTINGS
     settings = calls[0]["model_settings"]
-    assert settings["extra_body"]["reasoning_effort"] == "high"
+    assert settings["extra_body"]["reasoning_effort"] == "medium"
     assert settings["max_tokens"] >= 4096
     assert settings["timeout"] >= 600

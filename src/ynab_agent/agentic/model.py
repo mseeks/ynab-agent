@@ -32,24 +32,25 @@ if TYPE_CHECKING:
 _DEFAULT_MODEL = "gemma4:12b"
 _DEFAULT_OLLAMA_URL = "http://localhost:11434/v1"
 
-# Run Gemma 4 with its reasoning turned ON — we want the deepest inference on
-# every categorization, latency be damned. The catch behind bug #15288 is that
-# while "thinking", Gemma routes its prose into the response's `reasoning` field
-# and leaves `content` empty — fatal for *unconstrained* output. But the
-# production path forces NATIVE structured output (`NativeOutput`, a json_schema
-# `response_format`), and under that constraint Gemma still emits schema-valid
-# JSON into `content` while its chain-of-thought lands in `reasoning`. Verified
-# on the Gemma 4 family / Ollama 0.24.0: thinking + schema → valid content.
-# So `reasoning_effort: "none"` would needlessly suppress the model's best
-# asset; we ask for "high" instead. Two companion settings keep it robust:
-# `max_tokens` is large so a long chain-of-thought never starves the trailing
-# JSON, and `timeout` is generous so a cold 19 GB model load plus a long
-# reasoned generation is never cut off (the activity timeout in `constants`
-# bounds the outer call). All sent via `extra_body`/settings on the `/v1` API.
+# Run Gemma 4 with reasoning ON: we want genuine inference on every
+# task, not a reflex. The catch behind bug #15288: while "thinking", Gemma
+# routes prose into the response's `reasoning` field and leaves `content`
+# empty — fatal for *unconstrained* output. The production path forces NATIVE
+# structured output (`NativeOutput`, a json_schema `response_format`), and under
+# that constraint Gemma still emits schema-valid JSON into `content` while its
+# chain-of-thought lands in `reasoning`. Verified on the Gemma 4 family / Ollama
+# 0.24.0+: thinking + schema → valid content. We ask for "medium", not "high":
+# on a single local GPU, high's long chain-of-thought made the heavier prompts
+# (the balancer's whole-budget proposal) take many minutes; medium keeps real
+# reasoning while cutting that tail. Two companion settings keep it robust:
+# `max_tokens` is large so a chain-of-thought never starves the trailing JSON,
+# and `timeout` is generous so a cold model load plus a reasoned generation is
+# never cut off (the activity timeout in `constants` bounds the outer call). All
+# sent via `extra_body`/settings on the `/v1` API.
 _REASONED_GENERATION_TIMEOUT_S = 1200.0
 _MAX_OUTPUT_TOKENS = 8192
 _OLLAMA_SETTINGS: ModelSettings = {
-    "extra_body": {"reasoning_effort": "high"},
+    "extra_body": {"reasoning_effort": "medium"},
     "max_tokens": _MAX_OUTPUT_TOKENS,
     "timeout": _REASONED_GENERATION_TIMEOUT_S,
 }
