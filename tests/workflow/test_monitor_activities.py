@@ -33,6 +33,10 @@ if TYPE_CHECKING:
     import pytest
 
 _TASK_QUEUE = "overspend-activities-test"
+# The period is supplied by the caller (the workflow in production); save and
+# load must agree on it for the ledger round-trip, as the workflow's single
+# per-pass value guarantees.
+_PERIOD = "2026-06"
 
 # The ledger is a long-lived singleton — in production it is already running
 # (started on the first-ever alert) when a later daily pass loads from it. The
@@ -68,8 +72,8 @@ async def test_save_then_load_round_trips_real_prior_alert(
             id=OVERSPEND_LEDGER_WORKFLOW_ID,
             task_queue=_TASK_QUEUE,
         )
-        await monitor_activities.save_alert("dining", alert)
-        loaded = await monitor_activities.load_prior_alert("dining")
+        await monitor_activities.save_alert("dining", alert, _PERIOD)
+        loaded = await monitor_activities.load_prior_alert("dining", _PERIOD)
 
     assert loaded == alert
     assert isinstance(loaded, PriorAlert)
@@ -100,10 +104,13 @@ async def test_load_prior_alert_is_none_for_unalerted_category(
             id=OVERSPEND_LEDGER_WORKFLOW_ID,
             task_queue=_TASK_QUEUE,
         )
-        await monitor_activities.save_alert("dining", alert)
+        await monitor_activities.save_alert("dining", alert, _PERIOD)
         # The alerted category reads back; an unalerted one is independent.
-        assert await monitor_activities.load_prior_alert("dining") is not None
-        assert await monitor_activities.load_prior_alert("gas") is None
+        assert (
+            await monitor_activities.load_prior_alert("dining", _PERIOD)
+            is not None
+        )
+        assert await monitor_activities.load_prior_alert("gas", _PERIOD) is None
 
 
 async def test_load_prior_alert_none_when_ledger_absent(
@@ -122,4 +129,6 @@ async def test_load_prior_alert_none_when_ledger_absent(
         ),
     ):
         monkeypatch.setattr(temporal_client, "_CLIENT", env.client)
-        assert await monitor_activities.load_prior_alert("dining") is None
+        assert (
+            await monitor_activities.load_prior_alert("dining", _PERIOD) is None
+        )

@@ -45,28 +45,38 @@ def _activities(
     prior: PriorAlert | None,
     sent: list[str],
     offered: list[str],
+    periods: list[str],
 ) -> list[Callable[..., object]]:
     @activity.defn(name="fetch_category_spends")
     async def fetch_category_spends() -> list[CategorySpend]:
         return spends
 
     @activity.defn(name="load_prior_alert")
-    async def load_prior_alert(category_id: str) -> PriorAlert | None:
+    async def load_prior_alert(
+        category_id: str, period: str
+    ) -> PriorAlert | None:
+        periods.append(period)
         return prior
 
     @activity.defn(name="send_overspend_alert")
-    async def send_overspend_alert(assessment: OverspendAssessment) -> str:
+    async def send_overspend_alert(
+        assessment: OverspendAssessment, period: str
+    ) -> str:
+        periods.append(period)
         sent.append(assessment.name)
         return f"thr-{assessment.category}"
 
     @activity.defn(name="save_alert")
-    async def save_alert(category_id: str, alert: PriorAlert) -> None:
-        return None
+    async def save_alert(
+        category_id: str, alert: PriorAlert, period: str
+    ) -> None:
+        periods.append(period)
 
     @activity.defn(name="start_balance_offer")
     async def start_balance_offer(
-        assessment: OverspendAssessment, thread_id: str
+        assessment: OverspendAssessment, thread_id: str, period: str
     ) -> None:
+        periods.append(period)
         offered.append(thread_id)
 
     return [
@@ -83,10 +93,17 @@ async def _run(
     wf_id: str,
     spends: list[CategorySpend],
     prior: PriorAlert | None = None,
-) -> tuple[MonitorResult, list[str], list[str]]:
+) -> tuple[MonitorResult, list[str], list[str], list[str]]:
     sent: list[str] = []
     offered: list[str] = []
-    acts = _activities(spends=spends, prior=prior, sent=sent, offered=offered)
+    periods: list[str] = []
+    acts = _activities(
+        spends=spends,
+        prior=prior,
+        sent=sent,
+        offered=offered,
+        periods=periods,
+    )
     async with (
         await WorkflowEnvironment.start_time_skipping(
             data_converter=DATA_CONVERTER
@@ -104,12 +121,12 @@ async def _run(
             id=wf_id,
             task_queue=TASK_QUEUE,
         )
-    return result, sent, offered
+    return result, sent, offered, periods
 
 
 async def test_overspending_category_is_alerted() -> None:
     # $250 of $400 at mid-month → projects ~$500, trending over.
-    result, sent, offered = await _run(
+    result, sent, offered, periods = await _run(
         wf_id="mon-alert",
         spends=[_spend("Dining", budgeted="400", activity="-250")],
     )
@@ -118,10 +135,17 @@ async def test_overspending_category_is_alerted() -> None:
     assert sent == ["Dining"]
     # The alert hands its thread to a balancing offer (W6→W7, §8).
     assert offered == ["thr-Dining"]
+    # One period, computed once in the workflow, reaches every activity in the
+    # pass (load + send + save + offer) — no per-activity wall-clock drift.
+    import re
+
+    assert len(periods) == 4
+    assert len(set(periods)) == 1
+    assert re.fullmatch(r"\d{4}-\d{2}", periods[0])
 
 
 async def test_on_track_category_is_silent() -> None:
-    result, sent, offered = await _run(
+    result, sent, offered, _ = await _run(
         wf_id="mon-ok",
         spends=[_spend("Gas", budgeted="400", activity="-100")],
     )
@@ -137,7 +161,7 @@ async def test_duplicate_alert_is_suppressed() -> None:
         verdict=OverspendVerdict.TRENDING_OVER,
         projected=Money.from_currency("500"),
     )
-    result, sent, offered = await _run(
+    result, sent, offered, _ = await _run(
         wf_id="mon-dedupe", spends=spends, prior=prior
     )
     assert result.alerts == 0

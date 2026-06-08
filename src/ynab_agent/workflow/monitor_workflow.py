@@ -36,7 +36,16 @@ class OverspendMonitorWorkflow:
     @workflow.run
     async def run(self, params: MonitorParams) -> MonitorResult:
         """Assess every category and alert on what is off track (SPEC §7)."""
-        clock = params.clock or self._current_clock()
+        # Read the deterministic clock once and derive the period from it, then
+        # pass that period into every activity in the pass — so the thread, the
+        # dedupe key, and the W7 offer id can't drift across a month boundary
+        # (SPEC §0.5: clocks via ``workflow.now()``, decided in the workflow).
+        now = workflow.now()
+        period = now.strftime("%Y-%m")
+        clock = params.clock or MonthClock(
+            day_of_month=now.day,
+            days_in_month=calendar.monthrange(now.year, now.month)[1],
+        )
         spends = await workflow.execute_activity(
             monitor_activities.fetch_category_spends,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
@@ -50,7 +59,7 @@ class OverspendMonitorWorkflow:
                 continue
             prior = await workflow.execute_activity(
                 monitor_activities.load_prior_alert,
-                str(spend.category),
+                args=[str(spend.category), period],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
@@ -58,7 +67,7 @@ class OverspendMonitorWorkflow:
                 continue
             thread_id = await workflow.execute_activity(
                 monitor_activities.send_overspend_alert,
-                assessment,
+                args=[assessment, period],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
@@ -70,6 +79,7 @@ class OverspendMonitorWorkflow:
                         verdict=assessment.verdict,
                         projected=assessment.projected,
                     ),
+                    period,
                 ],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
@@ -79,7 +89,7 @@ class OverspendMonitorWorkflow:
             # category per period, and the monitor never waits on coverage.
             await workflow.execute_activity(
                 balance_activities.start_balance_offer,
-                args=[assessment, thread_id],
+                args=[assessment, thread_id, period],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
@@ -90,9 +100,3 @@ class OverspendMonitorWorkflow:
             alerts=len(alerted),
             alerted=tuple(alerted),
         )
-
-    def _current_clock(self) -> MonthClock:
-        """Derive the month position from the replay-safe workflow clock."""
-        now = workflow.now()
-        days_in_month = calendar.monthrange(now.year, now.month)[1]
-        return MonthClock(day_of_month=now.day, days_in_month=days_in_month)

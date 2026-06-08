@@ -9,8 +9,10 @@ The per-period dedupe store is the durable
 :class:`~ynab_agent.workflow.overspend_ledger_workflow.OverspendLedgerWorkflow`:
 ``load_prior_alert`` queries it and ``save_alert`` signals it, exactly as the
 W2 activities talk to the rule registry and the failure-alert ledger. The
-``period`` and "days left" are read from real time here in the activity and
-passed *into* the pure query/fold, so the workflow stays clock-free.
+``period`` (``"YYYY-MM"``) is computed once from the workflow's deterministic
+clock and passed *into* every activity in a pass, so they can never disagree on
+it across a month boundary (the thread, the dedupe key, and the W7 offer id all
+derive from it). "Days left" is cosmetic and still read at send time.
 """
 
 from __future__ import annotations
@@ -25,11 +27,6 @@ from ynab_agent.budget.overspend import (
     OverspendAssessment,
     PriorAlert,
 )
-
-
-def _period_of(now: datetime.datetime) -> str:
-    """The budget period as ``"YYYY-MM"`` — the dedupe's reset boundary."""
-    return now.strftime("%Y-%m")
 
 
 def _days_left_in_month(now: datetime.datetime) -> int:
@@ -53,12 +50,14 @@ async def fetch_category_spends() -> list[CategorySpend]:
 
 
 @activity.defn
-async def load_prior_alert(category_id: str) -> PriorAlert | None:
+async def load_prior_alert(category_id: str, period: str) -> PriorAlert | None:
     """Load the last alert raised for a category this period, for dedupe.
 
-    Queries the durable ledger (the period derived from real time). Returns
-    ``None`` when the ledger has not been started yet (nothing has ever
-    alerted) — so the first flag of a period always alerts (SPEC §7).
+    Queries the durable ledger for ``period`` (supplied by the workflow from its
+    deterministic clock, so it matches the period every other activity in the
+    pass uses). Returns ``None`` when the ledger has not been started yet
+    (nothing has ever alerted) — so the first flag of a period always alerts
+    (SPEC §7).
 
     The client-side query decodes a pydantic model to a plain ``dict``, so the
     result is hydrated back into a :class:`PriorAlert` here — ``should_alert``
@@ -74,12 +73,11 @@ async def load_prior_alert(category_id: str) -> PriorAlert | None:
     )
     from ynab_agent.workflow.temporal_client import client
 
-    now = datetime.datetime.now(datetime.UTC)
     temporal = await client()
     handle = temporal.get_workflow_handle(OVERSPEND_LEDGER_WORKFLOW_ID)
     try:
         raw = await handle.query(
-            "prior", PriorRequest(category=category_id, period=_period_of(now))
+            "prior", PriorRequest(category=category_id, period=period)
         )
     except RPCError:
         return None
@@ -87,17 +85,21 @@ async def load_prior_alert(category_id: str) -> PriorAlert | None:
 
 
 @activity.defn
-async def send_overspend_alert(assessment: OverspendAssessment) -> str:
+async def send_overspend_alert(
+    assessment: OverspendAssessment, period: str
+) -> str:
     """Email the overspend alert and return its thread id (SPEC §7, §8).
 
     The body is deterministic (no model): the figures and verdict are already
-    decided. ``alert_on_thread`` keeps one thread per overspend: the first
-    alert opens it, a *worsening* re-alert (the one ``should_alert`` admits
-    mid-period) replies an update on that same thread, and a retry of either
-    re-sends nothing (idempotent on the update label). The id it returns is
-    stable for the period: what W7 replies on to offer a balancing move, and
-    where a worsening re-alert lands too, so the conversation never forks (the
-    W6→W7 tie).
+    decided. ``period`` is supplied by the workflow (from its deterministic
+    clock), so the thread and dedupe labels match the rest of the pass.
+    ``alert_on_thread`` keeps one thread per overspend: the first alert opens
+    it, a *worsening* re-alert (the one ``should_alert`` admits mid-period)
+    replies an update on that same thread, and a retry of either re-sends
+    nothing (idempotent on the update label). The id it returns is stable for
+    the period: what W7 replies on to offer a balancing move, and where a
+    worsening re-alert lands too, so the conversation never forks (the W6→W7
+    tie).
     """
     import asyncio
 
@@ -111,7 +113,6 @@ async def send_overspend_alert(assessment: OverspendAssessment) -> str:
     from ynab_agent.settings import Settings
 
     now = datetime.datetime.now(datetime.UTC)
-    period = _period_of(now)
     settings = Settings()
     mail = MailClient.from_env()
     return await asyncio.to_thread(
@@ -126,12 +127,13 @@ async def send_overspend_alert(assessment: OverspendAssessment) -> str:
 
 
 @activity.defn
-async def save_alert(category_id: str, alert: PriorAlert) -> None:
+async def save_alert(category_id: str, alert: PriorAlert, period: str) -> None:
     """Record this period's alert so the next pass can dedupe against it.
 
     Signal-with-start on the singleton ledger: the first alert creates it, every
     later one just delivers the signal (SPEC §7) — the same shape as
-    ``feed_rule_learning`` and the failure-alert ledger.
+    ``feed_rule_learning`` and the failure-alert ledger. ``period`` is supplied
+    by the workflow so the record matches what ``load_prior_alert`` queried.
     """
     from temporalio.common import WorkflowIDConflictPolicy
 
@@ -142,7 +144,6 @@ async def save_alert(category_id: str, alert: PriorAlert) -> None:
     )
     from ynab_agent.workflow.temporal_client import client, task_queue
 
-    now = datetime.datetime.now(datetime.UTC)
     temporal = await client()
     await temporal.start_workflow(
         "OverspendLedgerWorkflow",
@@ -152,8 +153,6 @@ async def save_alert(category_id: str, alert: PriorAlert) -> None:
         id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
         start_signal="record",
         start_signal_args=[
-            RecordRequest(
-                category=category_id, period=_period_of(now), alert=alert
-            )
+            RecordRequest(category=category_id, period=period, alert=alert)
         ],
     )
