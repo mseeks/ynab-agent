@@ -208,6 +208,52 @@ class MailClient:
         )
         return True
 
+    def alert_on_thread(
+        self,
+        *,
+        inbox_id: str,
+        to: list[str],
+        subject: str,
+        body: str,
+        thread_label: str,
+        update_label: str,
+    ) -> str:
+        """Open the alert thread, or reply a worsening update on it (SPEC §7).
+
+        One thread per overspend, keyed by the stable ``thread_label``. The
+        first alert opens it (``body`` as the opening message), tagged with both
+        the thread label and this ``update_label``. A later re-alert replies the
+        update on that same thread (so the overspend stays one conversation and
+        the W7 offer routes back unbroken), deduped on ``update_label`` so a
+        retry never double-posts. It is addressed to ``to`` because the thread's
+        latest message is the agent's own, so AgentMail needs the recipients
+        spelled out (the same reason the balancer does; SPEC §8).
+        """
+        existing = self._backend.find_thread(inbox_id, thread_label)
+        if existing is None:
+            sent = self._backend.send_new(
+                inbox_id,
+                to,
+                subject,
+                body,
+                labels=[_AGENT_LABEL, thread_label, update_label],
+            )
+            return sent.thread_id
+        if self._backend.find_thread(inbox_id, update_label) is None:
+            # ``existing`` came from a labelled message, so the thread is
+            # non-empty and ``target`` is its latest message; the None guard
+            # only satisfies the type (an empty thread cannot reach here).
+            target = self._backend.latest_message_id(inbox_id, existing)
+            if target is not None:
+                self._backend.send_reply(
+                    inbox_id,
+                    target,
+                    body,
+                    labels=[_AGENT_LABEL, update_label],
+                    to=to,
+                )
+        return existing
+
     def close(self, *, inbox_id: str, thread_id: str) -> None:
         """Mark the transaction's thread closed."""
         self._backend.archive(inbox_id, thread_id)

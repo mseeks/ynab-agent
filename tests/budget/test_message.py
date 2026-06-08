@@ -6,6 +6,7 @@ from ynab_agent.budget.message import (
     overspend_body,
     overspend_subject,
     overspend_thread_label,
+    overspend_update_label,
 )
 from ynab_agent.budget.overspend import OverspendAssessment, OverspendVerdict
 from ynab_agent.domain.ids import CategoryId
@@ -59,20 +60,42 @@ def test_body_days_left_pluralization_and_clamp() -> None:
     assert "0 days left" in overspend_body(_assessment(), -1)
 
 
-def test_label_is_stable_for_identical_alert() -> None:
-    a = _assessment()
-    assert overspend_thread_label(a, "2026-06") == overspend_thread_label(
-        a, "2026-06"
-    )
-
-
-def test_label_changes_on_worsening_and_escalation() -> None:
+def test_thread_label_is_one_per_category_period() -> None:
+    # Stable across verdict and projected, so every alert and re-alert shares
+    # the one thread, independent of how bad it got this period.
     base = overspend_thread_label(_assessment(projected="500"), "2026-06")
     worse = overspend_thread_label(_assessment(projected="560"), "2026-06")
     escalated = overspend_thread_label(
         _assessment(OverspendVerdict.ALREADY_OVER), "2026-06"
     )
-    next_period = overspend_thread_label(_assessment(), "2026-07")
+    assert base == worse == escalated
+    # ...but a new period is a new conversation.
+    assert base != overspend_thread_label(_assessment(), "2026-07")
+
+
+def test_update_label_is_stable_for_identical_alert() -> None:
+    a = _assessment()
+    assert overspend_update_label(a, "2026-06") == overspend_update_label(
+        a, "2026-06"
+    )
+
+
+def test_update_label_changes_on_worsening_escalation_and_period() -> None:
+    base = overspend_update_label(_assessment(projected="500"), "2026-06")
+    worse = overspend_update_label(_assessment(projected="560"), "2026-06")
+    escalated = overspend_update_label(
+        _assessment(OverspendVerdict.ALREADY_OVER), "2026-06"
+    )
+    next_period = overspend_update_label(_assessment(), "2026-07")
     assert base != worse
     assert base != escalated
     assert base != next_period
+
+
+def test_thread_and_update_labels_are_distinct() -> None:
+    # Both ride on the same opening message; distinct namespaces keep the
+    # per-alert send dedup independent of the thread lookup.
+    a = _assessment()
+    assert overspend_thread_label(a, "2026-06") != overspend_update_label(
+        a, "2026-06"
+    )

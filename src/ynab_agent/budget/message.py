@@ -1,15 +1,17 @@
-"""The overspend alert's wording and dedup label — pure, no model (SPEC §7).
+"""The overspend alert's wording and dedup labels — pure, no model (SPEC §7).
 
 The W6 alert is deterministic: the figures and the verdict are already decided
 by the pure projection (:mod:`ynab_agent.budget.overspend`), so the email is
 plain templating, not a model call. Kept apart from the activity glue so the
-subject, body, and label are unit-testable without Temporal or AgentMail.
+subject, body, and labels are unit-testable without Temporal or AgentMail.
 
-The thread label is the send-idempotency key (:meth:`MailClient.open_thread`):
-it folds in the verdict and projected month-end so a *retry* of the same alert
-reuses the thread (no duplicate), while a *worsening* re-alert — the one case
-``should_alert`` lets through within a period — carries a different label and
-so opens a fresh alert thread.
+Two labels, two jobs (:meth:`MailClient.alert_on_thread`). The *thread* label is
+stable for a category-period, so every alert and re-alert lands on one email
+thread (with the W7 offer on it): the overspend is one conversation. The
+*update* label folds in the verdict and projected month-end, so it is the
+per-alert send-dedup key. A *retry* of the same alert collapses (no duplicate);
+a *worsening* re-alert (the one ``should_alert`` lets through mid-period)
+carries a new update label and posts a fresh update on that thread.
 """
 
 from __future__ import annotations
@@ -57,13 +59,25 @@ def overspend_body(assessment: OverspendAssessment, days_left: int) -> str:
 
 
 def overspend_thread_label(assessment: OverspendAssessment, period: str) -> str:
-    """The per-alert idempotency label (send dedup; SPEC §7).
+    """The category's alert-thread key for the period (SPEC §7).
 
-    Keyed on category + period + the verdict and projected it alerted at, so a
-    retry collapses onto the same thread while a materially-worse re-alert (the
-    only kind ``should_alert`` admits mid-period) gets a new one.
+    Stable across the period — independent of verdict and projected — so every
+    alert and re-alert for a category lands on the *same* email thread (and the
+    W7 balancer's offer on it): one conversation per overspend. The per-alert
+    send dedup lives in :func:`overspend_update_label`, not here.
+    """
+    return f"yaspend-{assessment.category}-{period}"
+
+
+def overspend_update_label(assessment: OverspendAssessment, period: str) -> str:
+    """The per-alert send-dedup label (SPEC §7).
+
+    Keyed on the verdict and projected the alert fired at, so a retry of the
+    same alert collapses (no duplicate) while a materially-worse re-alert (the
+    only kind ``should_alert`` admits mid-period) carries a new label and so
+    posts a fresh update on the thread.
     """
     return (
-        f"yaspend-{assessment.category}-{period}"
+        f"yaspend-update-{assessment.category}-{period}"
         f"-{assessment.verdict.value}-{assessment.projected.milliunits}"
     )
