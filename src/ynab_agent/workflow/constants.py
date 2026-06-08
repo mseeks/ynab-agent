@@ -34,13 +34,22 @@ ACTIVITY_TIMEOUT = timedelta(seconds=1800)
 # (~once every 2 min) rather than ballooning toward ever-longer sleeps.
 _MAX_RETRY_INTERVAL = timedelta(seconds=120)
 
-# Deterministic failures a retry cannot fix: a malformed model output, a bad
-# payload, a programming error. Temporal records the raised exception's type
-# name, so we match by name — no need to import the activity-layer types into
-# the sandbox. A denylist (Temporal retries by default), kept reasonably
-# complete for the common bug classes; ``maximum_attempts`` below is the
-# backstop for any type we forget. (``AttributeError`` was the one missing here
-# that let a registry-deserialization bug retry 500+ times in production — #4.)
+# Deterministic failures a retry cannot fix: a bad payload or a programming
+# error. Temporal records the raised exception's type name, so we match by name
+# — no need to import the activity-layer types into the sandbox. A denylist
+# (Temporal retries by default), kept reasonably complete for the common bug
+# classes; ``maximum_attempts`` below is the backstop for any type we forget.
+# (``AttributeError`` was the one missing here that let a registry-
+# deserialization bug retry 500+ times in production — #4.)
+#
+# Deliberately NOT listed (so it *is* retried): ``UnexpectedModelBehavior``. A
+# local Gemma occasionally leaks a chat-template token or malforms its JSON,
+# which pydantic-ai surfaces as this after its own output retries. The glitch is
+# *transient*, not deterministic: a fresh generation almost always parses (8/8
+# clean when reproduced). Treating it as terminal let one flaky reply-read kill
+# a whole balance offer (the Transportation overspend page). Retrying re-runs
+# the activity (a fresh model call); ``maximum_attempts`` still bounds the rare
+# case where the model is genuinely, repeatably stuck.
 _NON_RETRYABLE = (
     "ValueError",
     "TypeError",
@@ -51,7 +60,6 @@ _NON_RETRYABLE = (
     "NotImplementedError",  # the W4/W6 activity stubs raise this
     "AssertionError",
     "ValidationError",  # pydantic
-    "UnexpectedModelBehavior",  # pydantic-ai
 )
 
 # ── Bound the retrying by attempts, NOT a wall-clock budget ───────────────────
