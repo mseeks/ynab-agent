@@ -84,14 +84,10 @@ class BudgetBalanceWorkflow:
         """Start with no reply buffered; ``run`` posts the offer and waits."""
         self._responses: deque[InboundMessage] = deque()
         self._clarifications = 0
-        # The offer's own email thread (opened, addressed to the owners). NOT
-        # the W6 alert thread: replying on the agent's own alert addresses the
-        # reply back to the agent, so the owner never gets it.
-        self._thread_id = ""
 
     @workflow.signal
     def submit_response(self, message: InboundMessage) -> None:
-        """The owner replied on the offer thread (delivered by W3)."""
+        """The owner replied on the alert thread (delivered by W3)."""
         self._responses.append(message)
 
     @workflow.run
@@ -124,24 +120,23 @@ class BudgetBalanceWorkflow:
             retry_policy=ACTIVITY_RETRY,
         )
         if not options:
-            await self._open(
+            await self._send(
                 params,
                 render_balance_could_not_cover(assessment.name),
                 f"yb-nocover-{label}",
             )
             return BalanceResult(outcome="could-not-cover")
 
-        # Open the offer's own thread (to the owners) and index this workflow by
-        # it, so the owner's reply routes back here (W3 → BalanceThreadId). The
-        # ``yb-cover-`` is a distinct label namespace, so opening never collides
-        # with a prior self-replied message's label.
-        thread_id = await self._open(
+        # Index this workflow by the overspend-alert thread so the owner's reply
+        # routes back here (W3 → BalanceThreadId), then post the options as a
+        # reply on that same thread — the W6→W7 tie, one conversation (SPEC §8).
+        workflow.upsert_search_attributes(
+            [_BALANCE_THREAD_ID.value_set(params.thread_id)]
+        )
+        await self._send(
             params,
             render_balance_options(assessment.name, tuple(options)),
             f"yb-cover-{label}",
-        )
-        workflow.upsert_search_attributes(
-            [_BALANCE_THREAD_ID.value_set(thread_id)]
         )
 
         deadline = workflow.now() + BALANCE_PATIENCE
@@ -164,6 +159,7 @@ class BudgetBalanceWorkflow:
             )
             if isinstance(outcome, DeclineBalance):
                 await self._send(
+                    params,
                     render_balance_declined(assessment.name),
                     f"ybalance-declined-{label}",
                 )
@@ -173,6 +169,7 @@ class BudgetBalanceWorkflow:
             # ClarifyBalance: answer, then keep waiting for a clearer reply.
             self._clarifications += 1
             await self._send(
+                params,
                 outcome.question,
                 f"ybalance-clarify-{label}-{self._clarifications}",
             )
@@ -193,6 +190,7 @@ class BudgetBalanceWorkflow:
         rejection = check_moves(moves, state.available)
         if rejection is not None:
             await self._send(
+                params,
                 render_balance_failed(assessment.name, _reason(rejection)),
                 f"ybalance-failed-{label}",
             )
@@ -212,6 +210,7 @@ class BudgetBalanceWorkflow:
             verified = verified and ok
         if not verified:
             await self._send(
+                params,
                 render_balance_failed(
                     assessment.name, "the change didn't take effect cleanly"
                 ),
@@ -229,38 +228,26 @@ class BudgetBalanceWorkflow:
         for move in moves:
             total = total + move.amount
         await self._send(
+            params,
             render_balance_applied(assessment.name, total),
             f"ybalance-applied-{label}",
         )
         return BalanceResult(outcome="applied")
 
-    async def _open(
+    async def _send(
         self, params: BalanceParams, body: str, seq_label: str
-    ) -> str:
-        """Open the offer's own thread to the owners; return its id (SPEC §8).
+    ) -> None:
+        """Reply on the overspend-alert thread, addressed to the owners (§8).
 
-        A new thread addressed to the owners (idempotent on ``seq_label``), not
-        a reply on the W6 alert thread; a reply there is addressed back to
-        the agent's own inbox, so the owner would never receive it.
-        """
-        thread_id = await workflow.execute_activity(
-            balance_activities.open_balance_thread,
-            args=[params, body, seq_label],
-            start_to_close_timeout=ACTIVITY_TIMEOUT,
-            retry_policy=ACTIVITY_RETRY,
-        )
-        self._thread_id = thread_id
-        return thread_id
-
-    async def _send(self, body: str, seq_label: str) -> None:
-        """Reply on the offer's own thread (idempotent on ``seq_label``).
-
-        Only used after the owner has replied, so the reply addresses them
-        (it answers their message), not the agent.
+        Every balancer message — options, clarifications, the apply/decline
+        confirmation — replies on the W6 alert thread (``params.thread_id``) so
+        the owner sees one conversation. The activity sets the recipients
+        explicitly, so a reply on a thread the agent last spoke on still reaches
+        the owner. Idempotent on ``seq_label``.
         """
         await workflow.execute_activity(
             balance_activities.send_balance_email,
-            args=[self._thread_id, body, seq_label],
+            args=[params.thread_id, body, seq_label],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
         )

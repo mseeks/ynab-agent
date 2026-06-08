@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 from temporalio.api.enums.v1 import IndexedValueType
 from temporalio.api.operatorservice.v1 import AddSearchAttributesRequest
+from temporalio.common import SearchAttributeKey
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -115,6 +116,7 @@ def _reply(text: str = "do it") -> InboundMessage:
 class _Recorder:
     def __init__(self) -> None:
         self.sends: list[str] = []
+        self.threads: list[str] = []  # thread each balance email replied on
         self.sets: list[tuple[str, str]] = []  # (category, "$amount")
         self.logged = 0
 
@@ -153,18 +155,12 @@ def _activities(
     async def log_budget_moves(moves: list[BudgetMove], period: str) -> None:
         rec.logged += 1
 
-    @activity.defn(name="open_balance_thread")
-    async def open_balance_thread(
-        params: BalanceParams, body: str, seq_label: str
-    ) -> str:
-        rec.sends.append(seq_label)
-        return "thr-balance-offer"
-
     @activity.defn(name="send_balance_email")
     async def send_balance_email(
         thread_id: str, body: str, seq_label: str
     ) -> None:
         rec.sends.append(seq_label)
+        rec.threads.append(thread_id)
 
     @activity.defn(name="alert_failure")
     async def alert_failure(alert: object) -> None:
@@ -173,7 +169,6 @@ def _activities(
     return [
         propose_balance_options,
         interpret_balance_reply,
-        open_balance_thread,
         read_budget_state,
         set_category_budgeted,
         log_budget_moves,
@@ -307,3 +302,42 @@ async def test_no_reply_times_out() -> None:
     # elapses (time-skipped) with no answer.
     assert result.outcome == "timed-out"
     assert any(s.startswith("yb-cover") for s in rec.sends)
+
+
+async def test_offer_posts_and_routes_on_the_alert_thread() -> None:
+    """The balancer posts on the W6 alert thread and indexes itself by it.
+
+    Every balancer email replies on ``thread_id`` (the overspend-alert thread,
+    ``"thr-overspend"``), and ``BalanceThreadId`` is stamped with that same
+    thread — so the owner sees one conversation and a reply on it routes back
+    here (the W6→W7 tie, SPEC §8). This is the regression guard against posting
+    on a freshly opened thread instead.
+    """
+    rec = _Recorder()
+    async with (
+        await _start_env() as env,
+        Worker(
+            env.client,
+            task_queue=_TASK_QUEUE,
+            workflows=[BudgetBalanceWorkflow],
+            activities=_activities(
+                options=[_option()], outcomes=[DeclineBalance()], rec=rec
+            ),
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            BudgetBalanceWorkflow.run,
+            _params(),
+            id=balance_workflow_id("dining", _PERIOD),
+            task_queue=_TASK_QUEUE,
+        )
+        await handle.signal(BudgetBalanceWorkflow.submit_response, _reply())
+        await handle.result()
+        desc = await handle.describe()
+    stamped = desc.typed_search_attributes.get(
+        SearchAttributeKey.for_keyword("BalanceThreadId")
+    )
+    assert stamped == "thr-overspend"
+    # The options offer and the decline confirmation both replied on the alert
+    # thread — never on a separately opened one.
+    assert rec.threads == ["thr-overspend", "thr-overspend"]
