@@ -221,6 +221,94 @@ def test_send_on_thread_without_recipients_omits_the_override() -> None:
     assert backend.reply_tos == [None]
 
 
+def test_alert_on_thread_opens_then_replies_on_the_same_thread() -> None:
+    # First alert opens the thread; a worsening re-alert (new update label, same
+    # thread label) replies on that SAME thread, not a new one. The regression
+    # guard for re-alert orphaning: one conversation, so a reply always routes
+    # back to the W7 balancer indexed by that thread (SPEC §7).
+    backend = _FakeBackend()
+    client = MailClient(backend)
+    first = client.alert_on_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="Dining: trending over budget",
+        body="Dining is trending over budget...",
+        thread_label="yaspend-dining-2026-06",
+        update_label="yaspend-update-dining-2026-06-trending_over-500000",
+    )
+    second = client.alert_on_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="Dining: already over budget",
+        body="Dining is already over budget...",
+        thread_label="yaspend-dining-2026-06",
+        update_label="yaspend-update-dining-2026-06-already_over-560000",
+    )
+    assert first == second  # one conversation across the re-alert
+    assert [c[0] for c in backend.calls] == ["new", "reply"]
+    # The re-alert reply is addressed to the owner — the thread's latest message
+    # is the agent's own opening alert, so without this it would loop back.
+    assert backend.reply_tos == [["wife@example.com"]]
+
+
+def test_alert_on_thread_dedups_a_retried_alert() -> None:
+    # A retry of the first alert (same thread + update label) re-sends nothing:
+    # the update label rides on the opening message, so the retry's reply branch
+    # finds it already on record and skips.
+    backend = _FakeBackend()
+    client = MailClient(backend)
+    client.alert_on_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="Dining: trending over budget",
+        body="alert",
+        thread_label="yaspend-dining-2026-06",
+        update_label="yaspend-update-dining-2026-06-trending_over-500000",
+    )
+    client.alert_on_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="Dining: trending over budget",
+        body="alert",
+        thread_label="yaspend-dining-2026-06",
+        update_label="yaspend-update-dining-2026-06-trending_over-500000",
+    )
+    assert [c[0] for c in backend.calls] == ["new"]  # no duplicate send
+
+
+def test_alert_on_thread_dedups_a_retried_re_alert() -> None:
+    # First alert opens; a worsening re-alert replies; a retry of THAT re-alert
+    # (same update label) re-sends nothing. Proves the update label is recorded
+    # on the reply message too, so the dedup holds for replies, not just opens.
+    backend = _FakeBackend()
+    client = MailClient(backend)
+    client.alert_on_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="Dining: trending over budget",
+        body="first alert",
+        thread_label="yaspend-dining-2026-06",
+        update_label="yaspend-update-dining-2026-06-trending_over-500000",
+    )
+    client.alert_on_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="Dining: already over budget",
+        body="worse now",
+        thread_label="yaspend-dining-2026-06",
+        update_label="yaspend-update-dining-2026-06-already_over-560000",
+    )
+    client.alert_on_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="Dining: already over budget",
+        body="worse now",
+        thread_label="yaspend-dining-2026-06",
+        update_label="yaspend-update-dining-2026-06-already_over-560000",
+    )
+    assert [c[0] for c in backend.calls] == ["new", "reply"]  # retry no-op
+
+
 def test_close_archives_the_thread() -> None:
     backend = _FakeBackend()
     MailClient(backend).close(inbox_id="ib", thread_id="t1")

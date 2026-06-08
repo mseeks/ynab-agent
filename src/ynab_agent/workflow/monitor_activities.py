@@ -91,11 +91,13 @@ async def send_overspend_alert(assessment: OverspendAssessment) -> str:
     """Email the overspend alert and return its thread id (SPEC §7, §8).
 
     The body is deterministic (no model): the figures and verdict are already
-    decided. ``open_thread`` is idempotent on the thread label, so a retry
-    re-finds the thread rather than re-sending; the label folds in the verdict
-    and projected so a *worsening* re-alert (the one ``should_alert`` admits
-    mid-period) opens a fresh thread. The returned thread id is what W7 replies
-    on to offer a balancing move (the W6→W7 tie).
+    decided. ``alert_on_thread`` keeps one thread per overspend: the first
+    alert opens it, a *worsening* re-alert (the one ``should_alert`` admits
+    mid-period) replies an update on that same thread, and a retry of either
+    re-sends nothing (idempotent on the update label). The id it returns is
+    stable for the period: what W7 replies on to offer a balancing move, and
+    where a worsening re-alert lands too, so the conversation never forks (the
+    W6→W7 tie).
     """
     import asyncio
 
@@ -103,20 +105,23 @@ async def send_overspend_alert(assessment: OverspendAssessment) -> str:
         overspend_body,
         overspend_subject,
         overspend_thread_label,
+        overspend_update_label,
     )
     from ynab_agent.mail.client import MailClient
     from ynab_agent.settings import Settings
 
     now = datetime.datetime.now(datetime.UTC)
+    period = _period_of(now)
     settings = Settings()
     mail = MailClient.from_env()
     return await asyncio.to_thread(
-        mail.open_thread,
+        mail.alert_on_thread,
         inbox_id=settings.inbox,
         to=list(settings.owners),
         subject=overspend_subject(assessment),
         body=overspend_body(assessment, _days_left_in_month(now)),
-        txn_label=overspend_thread_label(assessment, _period_of(now)),
+        thread_label=overspend_thread_label(assessment, period),
+        update_label=overspend_update_label(assessment, period),
     )
 
 

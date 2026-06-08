@@ -566,6 +566,9 @@ timezone for day boundaries (§13). Flag when already over or trending over by m
 - The alert can offer a balancing move (ties to W7): "Reply `cover` to move $120 from Buffer."
   Propose-then-confirm.
 - Dedupe: at most one alert per category per period unless it materially worsens.
+- One conversation per overspend: every alert and re-alert for a category-period share a single
+  email thread (and the W7 offer on it). The thread key is stable for the period; a worsening
+  re-alert replies an update on it rather than opening a new thread, so a reply always routes back.
 
 ## 8. Budget balancer (W7, optional)
 
