@@ -74,8 +74,15 @@ class MailBackend(Protocol):
         message_id: str,
         text: str,
         labels: list[str] | None = None,
+        to: list[str] | None = None,
     ) -> SentEmail:
-        """Reply on an existing thread."""
+        """Reply on an existing thread.
+
+        ``to`` overrides the recipients. AgentMail otherwise addresses a reply
+        to the *sender* of ``message_id``; when that message is the agent's own
+        (replying on a thread the agent last spoke on), the reply loops back to
+        the agent and the owner never sees it. Pass the owners to deliver it.
+        """
         ...
 
     def find_thread(self, inbox_id: str, label: str) -> str | None:
@@ -143,7 +150,10 @@ class MailClient:
         """Send a new thread, or a reply if a message to reply to is set."""
         if email.reply_to_message_id is not None:
             return self._backend.send_reply(
-                email.inbox_id, email.reply_to_message_id, email.text
+                email.inbox_id,
+                email.reply_to_message_id,
+                email.text,
+                to=list(email.to) or None,
             )
         return self._backend.send_new(
             email.inbox_id, list(email.to), email.subject, email.text
@@ -172,12 +182,21 @@ class MailClient:
         return sent.thread_id
 
     def send_on_thread(
-        self, *, inbox_id: str, thread_id: str, body: str, seq_label: str
+        self,
+        *,
+        inbox_id: str,
+        thread_id: str,
+        body: str,
+        seq_label: str,
+        to: list[str] | None = None,
     ) -> bool:
         """Reply on a thread (idempotent on ``seq_label``); True if sent.
 
         Skips if a message with ``seq_label`` is already on record, so a retry
-        never double-sends (SPEC §3 outbound dedup).
+        never double-sends (SPEC §3 outbound dedup). ``to`` overrides the
+        recipients: when the thread's latest message is the agent's own (e.g.
+        the W6 alert the balancer replies on), AgentMail would address the reply
+        back to the agent, so pass the owners to deliver it to them (SPEC §8).
         """
         if self._backend.find_thread(inbox_id, seq_label) is not None:
             return False
@@ -185,7 +204,7 @@ class MailClient:
         if target is None:
             return False
         self._backend.send_reply(
-            inbox_id, target, body, labels=[_AGENT_LABEL, seq_label]
+            inbox_id, target, body, labels=[_AGENT_LABEL, seq_label], to=to
         )
         return True
 
@@ -221,10 +240,18 @@ class _AgentMailBackend:
         message_id: str,
         text: str,
         labels: list[str] | None = None,
+        to: list[str] | None = None,
     ) -> SentEmail:
-        result = self._client.inboxes.messages.reply(
-            inbox_id, message_id, text=text, labels=labels
-        )
+        # ``to`` overrides the recipients; omit it entirely (not None) when
+        # unset so AgentMail keeps its own reply-addressing default.
+        if to is not None:
+            result = self._client.inboxes.messages.reply(
+                inbox_id, message_id, text=text, labels=labels, to=to
+            )
+        else:
+            result = self._client.inboxes.messages.reply(
+                inbox_id, message_id, text=text, labels=labels
+            )
         return SentEmail(
             message_id=result.message_id, thread_id=result.thread_id
         )

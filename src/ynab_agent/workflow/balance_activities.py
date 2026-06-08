@@ -268,36 +268,16 @@ async def log_budget_moves(moves: list[BudgetMove], period: str) -> None:
 
 
 @activity.defn
-async def open_balance_thread(
-    params: BalanceParams, body: str, seq_label: str
-) -> str:
-    """Open the offer's own thread to the owners; return its id (SPEC §8).
-
-    Sent with ``open_thread`` (a new message *to the owners*), not a reply on
-    the W6 alert thread: replying to the agent's own alert addresses the reply
-    back to the agent's inbox, so the owner never receives it. Idempotent on
-    ``seq_label`` so a retry reuses the thread rather than sending twice.
-    """
-    import asyncio
-
-    from ynab_agent.mail.client import MailClient
-    from ynab_agent.settings import Settings
-
-    settings = Settings()
-    mail = MailClient.from_env()
-    return await asyncio.to_thread(
-        mail.open_thread,
-        inbox_id=settings.inbox,
-        to=list(settings.owners),
-        subject=f"{params.assessment.name}: cover the overspend?",
-        body=body,
-        txn_label=seq_label,
-    )
-
-
-@activity.defn
 async def send_balance_email(thread_id: str, body: str, seq_label: str) -> None:
-    """Reply on the offer thread (idempotent on ``seq_label``; SPEC §8)."""
+    """Reply on the overspend-alert thread, addressed to the owners (SPEC §8).
+
+    The whole balance conversation lives on the W6 alert thread (the W6→W7 tie):
+    options, clarifications, and the apply/decline confirmation all reply there,
+    so the owner sees one thread per overspend. ``to`` is set explicitly because
+    that thread's latest message is often the agent's own (the alert, or a
+    back-to-back agent reply); without it AgentMail addresses the reply back to
+    the agent and the owner never receives it. Idempotent on ``seq_label``.
+    """
     import asyncio
 
     from ynab_agent.mail.client import MailClient
@@ -311,4 +291,5 @@ async def send_balance_email(thread_id: str, body: str, seq_label: str) -> None:
         thread_id=thread_id,
         body=body,
         seq_label=seq_label,
+        to=list(settings.owners),
     )
