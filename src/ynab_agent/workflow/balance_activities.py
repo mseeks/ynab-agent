@@ -72,16 +72,16 @@ def _to_source_funds(
 
 @activity.defn
 async def start_balance_offer(
-    assessment: OverspendAssessment, thread_id: str
+    assessment: OverspendAssessment, thread_id: str, period: str
 ) -> None:
     """Start the balance offer for an alerted category (SPEC §8, the W6→W7 tie).
 
     Started ``REJECT_DUPLICATE`` on the (category, period) id, so a worsening
     re-alert in the same month is a no-op, not a second offer; at most one
     coverage offer per category per period, matching the monitor's own dedupe.
+    ``period`` is supplied by the workflow (the same value the alert thread was
+    keyed on), so the offer id and the alert thread can never drift apart.
     """
-    import datetime
-
     from temporalio.common import WorkflowIDReusePolicy
     from temporalio.exceptions import WorkflowAlreadyStartedError
 
@@ -94,7 +94,6 @@ async def start_balance_offer(
 
     if need_from_assessment(assessment).shortfall.is_zero:
         return  # nothing to cover
-    period = datetime.datetime.now(datetime.UTC).strftime("%Y-%m")
     temporal = await client()
     try:
         await temporal.start_workflow(
