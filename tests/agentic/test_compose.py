@@ -8,6 +8,7 @@ from ynab_agent.agentic.compose import (
     render_body,
     render_offer_accepted,
     render_offer_declined,
+    render_receipt_unsupported,
 )
 from ynab_agent.domain.effects import MessagePurpose
 
@@ -93,3 +94,9 @@ def test_offer_declined_says_it_keeps_proposing() -> None:
     body = render_offer_declined("Spotify")
     assert "Spotify" in body
     assert "propos" in body.lower()
+
+
+def test_receipt_unsupported_is_honest_and_points_to_the_thread() -> None:
+    body = render_receipt_unsupported()
+    assert "receipts" in body.lower()
+    assert "thread" in body.lower()  # points at the path that works

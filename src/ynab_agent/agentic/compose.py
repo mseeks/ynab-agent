@@ -104,6 +104,23 @@ def render_offer_declined(payee: str) -> str:
     )
 
 
+def render_receipt_unsupported() -> str:
+    """The honest note for a forwarded receipt the join can't process yet (§6).
+
+    The receipt⇄transaction join (W4) is a deferred increment, so rather than
+    swallow a forwarded receipt silently, the agent acknowledges it and points
+    the owner at the path that does work: replying on the transaction's own
+    email thread.
+    """
+    return (
+        "Thanks for forwarding this. I can't match forwarded receipts to "
+        "transactions yet, so I haven't filed it.\n\n"
+        "To add detail to a specific charge — an item list, a split, or a note "
+        "— just reply on that transaction's own email thread and I'll fold it "
+        "in."
+    )
+
+
 def render_balance_options(
     needy_name: str, options: tuple[BalanceOption, ...]
 ) -> str:

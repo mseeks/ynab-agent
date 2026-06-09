@@ -179,3 +179,55 @@ def test_signal_transaction_requires_a_thread_id() -> None:
                 "txn-1", _message(thread_id=None)
             )
         )
+
+
+# ── route_receipt: acknowledge instead of swallowing (SPEC §5b, §6) ──────────
+class _FakeMail:
+    def __init__(self) -> None:
+        self.sends: list[dict[str, object]] = []
+
+    def send_on_thread(
+        self,
+        *,
+        inbox_id: str,
+        thread_id: str,
+        body: str,
+        seq_label: str,
+        to: list[str] | None = None,
+    ) -> bool:
+        self.sends.append(
+            {"thread_id": thread_id, "body": body, "seq_label": seq_label}
+        )
+        return True
+
+
+def _stub_mail(monkeypatch: pytest.MonkeyPatch) -> _FakeMail:
+    from ynab_agent.mail.client import MailClient
+
+    monkeypatch.setenv("YNAB_AGENT_INBOX", "inbox-1")
+    monkeypatch.setenv("YNAB_AGENT_OWNERS", "matthew@x.com,wife@x.com")
+    fake = _FakeMail()
+    monkeypatch.setattr(MailClient, "from_env", classmethod(lambda cls: fake))
+    return fake
+
+
+def test_route_receipt_acknowledges_instead_of_dropping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A forwarded receipt is no longer silently swallowed: the owner gets an
+    # honest note pointing at the working path (SPEC §5b, §6).
+    fake = _stub_mail(monkeypatch)
+    asyncio.run(dispatch_activities.route_receipt(_message(thread_id="thr-r")))
+    assert len(fake.sends) == 1
+    sent = fake.sends[0]
+    assert sent["thread_id"] == "thr-r"
+    assert "receipts" in str(sent["body"])
+    assert sent["seq_label"] == "yarcpt-m1"  # idempotent on the message id
+
+
+def test_route_receipt_no_op_without_a_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _stub_mail(monkeypatch)
+    asyncio.run(dispatch_activities.route_receipt(_message(thread_id=None)))
+    assert fake.sends == []
