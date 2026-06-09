@@ -90,15 +90,23 @@ def evaluate_gate(
     """Decide whether the transaction may auto-apply (SPEC §4.2, §14). Pure.
 
     The hard floor is consulted first; it can only force ASK, never grant AUTO.
-    Then exactly one *blessed* matching rule is required to gate auto-apply. Per
-    the §14 opt-in on-ramp, a learned rule that reaches ``trusted`` by
-    consistency is only *eligible* — it does not auto-apply until the owner
-    blesses it (``source=human_explicit``). So autonomy is always granted, never
-    taken: a trusted-but-unblessed rule still routes to ASK.
+    A YNAB-matched/duplicate import is then routed to a human regardless of
+    trust (SPEC §13): auto-approving it would *accept the duplicate*. Only after
+    both deterministic guards is exactly one *blessed* matching rule required to
+    gate auto-apply. Per the §14 opt-in on-ramp, a learned rule that reaches
+    ``trusted`` by consistency is only *eligible* — it does not auto-apply until
+    the owner blesses it (``source=human_explicit``). So autonomy is always
+    granted, never taken: a trusted-but-unblessed rule still routes to ASK.
     """
     floor = check_floor(snapshot.amount, counters, policy)
     if floor is not FloorVerdict.ALLOW:
         return GateOutcome(verdict=GateVerdict.ASK, reason=f"floor: {floor}")
+
+    if snapshot.is_matched_import:
+        return GateOutcome(
+            verdict=GateVerdict.ASK,
+            reason="matched/duplicate import — accept by hand (SPEC §13)",
+        )
 
     blessed = [
         rule

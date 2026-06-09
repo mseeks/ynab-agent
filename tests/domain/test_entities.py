@@ -85,6 +85,13 @@ def test_has_memo_ignores_blank() -> None:
     assert _snapshot(memo="AmazonBasics cable").has_memo
 
 
+def test_is_matched_import_flags_a_ynab_match() -> None:
+    assert not _snapshot().is_matched_import
+    assert _snapshot(
+        matched_transaction_id=YnabTransactionId("t9")
+    ).is_matched_import
+
+
 def test_amount_range_rejects_inverted_bounds() -> None:
     with pytest.raises(ValidationError):
         AmountRange(low=Money.from_currency(100), high=Money.from_currency(10))

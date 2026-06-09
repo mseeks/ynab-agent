@@ -81,6 +81,15 @@ class YnabSnapshot(Frozen):
         """Whether the memo is present and non-blank (Amazon-hold exit)."""
         return bool(self.memo and self.memo.strip())
 
+    @property
+    def is_matched_import(self) -> bool:
+        """Whether YNAB matched this to an existing txn (SPEC §13).
+
+        Approving such an import *accepts the duplicate*, so it is never
+        auto-approved — the gate routes it to a human regardless of trust.
+        """
+        return self.matched_transaction_id is not None
+
 
 class TxnCore(Frozen):
     """The data common to every post-snapshot state."""
