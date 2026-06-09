@@ -36,6 +36,7 @@ from ynab_agent.domain.effects import (
     FeedRuleLearning,
     MessagePurpose,
     OpenThread,
+    RecordAutoAction,
     ReplayBuffered,
     RuleLearningKind,
     SendThreadMessage,
@@ -233,6 +234,9 @@ def _from_enriching(
                     return _advanced(
                         AutoApplied(core=txn.core, decision=decision),
                         CommitToYnab(decision=decision),
+                        RecordAutoAction(
+                            ynab_id=str(txn.core.snapshot.ynab_id)
+                        ),
                     )
                 case AskHuman(proposal=proposal):
                     deadline = now + policy.patience_window

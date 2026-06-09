@@ -2,8 +2,9 @@
 
 ``_load_enrichment_inputs`` reads YNAB and returns (candidates, rules, counters)
 for the gate + propose step. Its one piece of pure logic is turning the budget's
-category spends into the agent's candidate choices; the YNAB read and the
-empty-rules / zero-counters v1 policy are thin glue exercised via the workflow.
+category spends into the agent's candidate choices; the YNAB read, the registry
+rule query, and the circuit-breaker counters read are thin glue over the durable
+workflows, exercised via the workflow tests.
 """
 
 from __future__ import annotations

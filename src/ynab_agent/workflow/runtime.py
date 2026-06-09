@@ -26,6 +26,9 @@ from ynab_agent.workflow import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 from ynab_agent.workflow.alert_ledger_workflow import AlertLedgerWorkflow
+from ynab_agent.workflow.auto_action_ledger_workflow import (
+    AutoActionLedgerWorkflow,
+)
 from ynab_agent.workflow.balance_workflow import BudgetBalanceWorkflow
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
@@ -51,6 +54,7 @@ WORKFLOWS = [
     AutonomyOfferWorkflow,
     OverspendLedgerWorkflow,
     BudgetBalanceWorkflow,
+    AutoActionLedgerWorkflow,
 ]
 
 ALL_ACTIVITIES: list[Callable[..., object]] = [
@@ -63,6 +67,7 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     activities.interpret_inbound,
     activities.converge,
     activities.feed_rule_learning,
+    activities.record_auto_action,
     activities.close_thread,
     poll_activities.fetch_unapproved,
     poll_activities.address_transaction,
