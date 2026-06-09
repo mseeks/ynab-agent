@@ -179,3 +179,77 @@ def test_signal_transaction_requires_a_thread_id() -> None:
                 "txn-1", _message(thread_id=None)
             )
         )
+
+
+# ── handle_command: read-back + confirm before blessing (SPEC §5c, §0.6) ─────
+class _FakeYnab:
+    def category_spends(self) -> tuple[object, ...]:
+        from ynab_agent.budget.overspend import CategorySpend
+        from ynab_agent.domain.ids import CategoryId
+        from ynab_agent.domain.money import Money
+
+        zero = Money.from_milliunits(0)
+        return (
+            CategorySpend(
+                category=CategoryId("groceries"),
+                name="Groceries",
+                budgeted=zero,
+                activity=zero,
+                balance=zero,
+            ),
+        )
+
+
+def _stub_command(monkeypatch: pytest.MonkeyPatch, *, bless: bool) -> None:
+    """Stub the YNAB read and the model parse so handle_command is offline."""
+    from ynab_agent.agentic import command as command_mod
+    from ynab_agent.ynab.client import YnabClient
+
+    monkeypatch.setattr(
+        YnabClient, "from_env", classmethod(lambda cls: _FakeYnab())
+    )
+
+    async def _parse(request: object) -> command_mod.CommandReading:
+        kind = (
+            command_mod.CommandKind.BLESS
+            if bless
+            else command_mod.CommandKind.OTHER
+        )
+        return command_mod.CommandReading(
+            kind=kind,
+            payee_pattern="Costco" if bless else None,
+            category_id="groceries" if bless else None,
+        )
+
+    monkeypatch.setattr(command_mod, "parse_command", _parse)
+
+
+def test_handle_command_opens_a_confirm_not_an_inline_bless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A standing command no longer blesses inline (SPEC §0.6): it starts a
+    # CommandConfirmWorkflow read-back, never signals the registry directly.
+    _stub_command(monkeypatch, bless=True)
+    fake = _FakeStartClient()
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
+
+    asyncio.run(dispatch_activities.handle_command(_message(thread_id="t")))
+
+    assert len(fake.started) == 1
+    workflow, arg, kwargs = fake.started[0]
+    # Crucially the confirm workflow starts — not a direct registry bless.
+    assert workflow == "CommandConfirmWorkflow"
+    assert str(kwargs["id"]).startswith("command-confirm-")
+    assert arg.command.match.payee_pattern == "Costco"  # type: ignore[attr-defined]
+
+
+def test_handle_command_ignores_a_non_bless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_command(monkeypatch, bless=False)
+    fake = _FakeStartClient()
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
+
+    asyncio.run(dispatch_activities.handle_command(_message(thread_id="t")))
+
+    assert fake.started == []
