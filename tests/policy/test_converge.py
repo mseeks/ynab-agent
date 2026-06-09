@@ -12,10 +12,12 @@ from ynab_agent.domain.money import Money
 from ynab_agent.domain.proposal import Decision
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.policy.converge import (
+    PrecommitAction,
     TargetState,
     classify_verify,
     content_hash,
     needs_write,
+    precommit_action,
     reconciliation_blocks,
     target_of,
 )
@@ -79,3 +81,72 @@ def test_reconciliation_guard() -> None:
     assert reconciliation_blocks(reconciled)
     assert reconciliation_blocks(closed_month)
     assert not reconciliation_blocks(cleared)
+
+
+# ── precommit_action: the pre-write converge decision (SPEC §3 r3-4) ─────────
+def test_precommit_no_change_when_target_equals_prior() -> None:
+    # YNAB already holds the prior state and the target asks nothing new.
+    action = precommit_action(
+        _target("dining"), _target("dining"), _target("dining")
+    )
+    assert action is PrecommitAction.NO_CHANGE
+
+
+def test_precommit_already_target_when_write_already_landed() -> None:
+    # current == target but differs from the prior: a retried converge whose
+    # write landed (or an out-of-band edit that happens to match the target).
+    # Adopt it as re-applied rather than rewriting — and never as NO_CHANGE,
+    # which would revert the workflow's decision to the stale prior.
+    assert (
+        precommit_action(_target("gifts"), _target("gifts"), _target("dining"))
+        is PrecommitAction.ALREADY_TARGET
+    )
+    # No prior (a revision entered from LAPSED) with the target already present.
+    assert (
+        precommit_action(_target("gifts"), _target("gifts"), None)
+        is PrecommitAction.ALREADY_TARGET
+    )
+
+
+def test_precommit_diverged_on_out_of_band_recategorisation() -> None:
+    # A write is needed, but YNAB drifted to a different non-empty category than
+    # the agent last applied (a spouse edited it directly) — surface it BEFORE
+    # writing, never clobber.
+    action = precommit_action(
+        _target("groceries"), _target("gifts"), _target("dining")
+    )
+    assert action is PrecommitAction.DIVERGED
+
+
+def test_precommit_writes_when_current_matches_prior() -> None:
+    # The normal revision: YNAB still shows what the agent last applied, and the
+    # target differs — converge.
+    action = precommit_action(
+        _target("dining"), _target("gifts"), _target("dining")
+    )
+    assert action is PrecommitAction.WRITE
+
+
+def test_precommit_writes_from_lapsed_without_a_prior() -> None:
+    # No prior baseline (entered from LAPSED): there is nothing of ours to
+    # clobber, so a differing target simply writes.
+    action = precommit_action(_target("dining"), _target("gifts"), None)
+    assert action is PrecommitAction.WRITE
+
+
+def test_precommit_writes_when_current_is_unreadable() -> None:
+    # current None (a split or uncategorized) is not a divergence — there is no
+    # non-empty state to protect — so it writes (and the read-back classifies).
+    action = precommit_action(None, _target("gifts"), _target("dining"))
+    assert action is PrecommitAction.WRITE
+
+
+def test_precommit_memo_only_drift_is_not_divergence() -> None:
+    # A spouse changing only the memo (same category) is not a divergence; the
+    # allocation still matches the prior, so the converge proceeds.
+    action = precommit_action(
+        _target("dining", memo="their note"),
+        _target("gifts"),
+        _target("dining", memo="orig"),
+    )
+    assert action is PrecommitAction.WRITE

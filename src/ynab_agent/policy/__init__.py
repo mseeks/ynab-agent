@@ -10,10 +10,12 @@ safety review and the amount-anomaly heuristic live in the Pydantic AI layer.
 from __future__ import annotations
 
 from ynab_agent.policy.converge import (
+    PrecommitAction,
     TargetState,
     classify_verify,
     content_hash,
     needs_write,
+    precommit_action,
     reconciliation_blocks,
     target_of,
 )
@@ -42,6 +44,7 @@ __all__ = [
     "FloorVerdict",
     "GateOutcome",
     "GateVerdict",
+    "PrecommitAction",
     "TargetState",
     "build_auto_decision",
     "check_budget_move_floor",
@@ -51,6 +54,7 @@ __all__ = [
     "evaluate_gate",
     "matching_rules",
     "needs_write",
+    "precommit_action",
     "reconciliation_blocks",
     "resolve_allocation",
     "rule_matches",
