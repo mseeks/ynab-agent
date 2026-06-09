@@ -12,7 +12,11 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING
 
-from ynab_agent.domain.allocations import ResolvedAllocation
+from ynab_agent.domain.allocations import (
+    ResolvedAllocation,
+    ResolvedSplit,
+    ResolvedSplitLine,
+)
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.events import VerifyOutcome
 
@@ -43,13 +47,40 @@ def target_of(decision: Decision) -> TargetState:
     )
 
 
+def _split_line_key(line: ResolvedSplitLine) -> tuple[str, int, str]:
+    """A canonical sort key for a split line (category, amount, memo)."""
+    return (str(line.category), line.amount.milliunits, line.memo or "")
+
+
+def _canonical(target: TargetState) -> TargetState:
+    """Put a split's lines in a canonical order before hashing.
+
+    YNAB does not promise to return a split's subtransactions in the order they
+    were written, so two equal splits must hash the same regardless of order. A
+    whole-category target is already canonical.
+    """
+    allocation = target.allocation
+    if isinstance(allocation, ResolvedSplit):
+        ordered = tuple(sorted(allocation.lines, key=_split_line_key))
+        return target.model_copy(
+            update={
+                "allocation": allocation.model_copy(update={"lines": ordered})
+            }
+        )
+    return target
+
+
 def content_hash(target: TargetState) -> str:
     """A stable hash of the end-state, for ``(ynab_id, content_hash)`` dedup.
 
     Deterministic across processes (Pydantic JSON with fixed field order and
-    integer milliunits), so it is safe under Temporal replay.
+    integer milliunits), so it is safe under Temporal replay. Split lines are
+    canonically ordered first, so a read-back that reorders them still hashes
+    equal to the target (SPEC §3 r4).
     """
-    return hashlib.sha256(target.model_dump_json().encode()).hexdigest()
+    return hashlib.sha256(
+        _canonical(target).model_dump_json().encode()
+    ).hexdigest()
 
 
 def needs_write(current: TargetState | None, target: TargetState) -> bool:

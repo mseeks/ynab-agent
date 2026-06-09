@@ -18,9 +18,11 @@ from ynab_agent.domain.allocations import (
     ResolvedSplitLine,
 )
 from ynab_agent.domain.enums import ClearedState, DecidedBy
+from ynab_agent.domain.events import VerifyOutcome
 from ynab_agent.domain.ids import CategoryId, RuleId
 from ynab_agent.domain.money import Money
 from ynab_agent.domain.proposal import Decision
+from ynab_agent.policy.converge import classify_verify, target_of
 from ynab_agent.ynab.client import (
     AGENT_REVIEW_FLAG,
     YnabClient,
@@ -235,8 +237,97 @@ def test_to_target_maps_a_categorized_snapshot() -> None:
 
 
 def test_to_target_is_none_for_an_uncategorized_snapshot() -> None:
-    # No single category to verify (split/uncategorized) → could-not-confirm.
+    # No category and no subtransactions to verify → could-not-confirm.
     assert to_target(to_snapshot(_wire_txn(category_id=None))) is None
+
+
+def test_to_snapshot_maps_split_subtransactions() -> None:
+    snap = to_snapshot(
+        _wire_txn(
+            category_id=None,
+            subtransactions=[
+                {"amount": -3000, "category_id": "groceries", "memo": "food"},
+                {"amount": -1500, "category_id": "gifts"},
+                # deleted and uncategorized lines are dropped.
+                {"amount": 0, "category_id": "x", "deleted": True},
+                {"amount": -500, "category_id": None},
+            ],
+        )
+    )
+    assert {str(line.category) for line in snap.subtransactions} == {
+        "groceries",
+        "gifts",
+    }
+
+
+def test_to_target_reconstructs_a_split() -> None:
+    # A split parent (null category) now verifies field-by-field from its
+    # subtransactions, rather than always reading as could-not-confirm.
+    target = to_target(
+        to_snapshot(
+            _wire_txn(
+                category_id=None,
+                subtransactions=[
+                    {"amount": -3000, "category_id": "groceries"},
+                    {"amount": -1500, "category_id": "gifts"},
+                ],
+            )
+        )
+    )
+    assert target is not None
+    assert isinstance(target.allocation, ResolvedSplit)
+    assert {str(line.category) for line in target.allocation.lines} == {
+        "groceries",
+        "gifts",
+    }
+
+
+def test_split_write_verifies_match_even_if_lines_reorder() -> None:
+    # The end-to-end split bug: a written split must MATCH on read-back. YNAB
+    # may return the subtransactions in a different order, so the verify is
+    # order-insensitive (SPEC §3 r4).
+    decision = Decision(
+        allocation=ResolvedSplit(
+            lines=(
+                ResolvedSplitLine(
+                    category=CategoryId("gifts"),
+                    amount=Money.from_milliunits(-1500),
+                    memo="present",
+                ),
+                ResolvedSplitLine(
+                    category=CategoryId("groceries"),
+                    amount=Money.from_milliunits(-3000),
+                    memo="food",
+                ),
+            )
+        ),
+        approved=True,
+        decided_by=DecidedBy.HUMAN,
+        decided_at=_NOW,
+    )
+    # Read-back returns the lines in the opposite order, with the parent
+    # category nulled (YNAB's split shape).
+    read = to_target(
+        to_snapshot(
+            _wire_txn(
+                approved=True,  # YNAB shows it approved after the write
+                category_id=None,
+                subtransactions=[
+                    {
+                        "amount": -3000,
+                        "category_id": "groceries",
+                        "memo": "food",
+                    },
+                    {
+                        "amount": -1500,
+                        "category_id": "gifts",
+                        "memo": "present",
+                    },
+                ],
+            )
+        )
+    )
+    assert classify_verify(read, target_of(decision)) is VerifyOutcome.MATCH
 
 
 def test_client_read_back_round_trips_to_a_target() -> None:
