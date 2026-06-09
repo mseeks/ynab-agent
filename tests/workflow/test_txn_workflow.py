@@ -129,6 +129,7 @@ def _activities(
     converge_outcome: ConvergeOutcome | None = None,
     read_back_seq: list[object] | None = None,
     learning_sink: list[FeedRuleLearning] | None = None,
+    enrich_snapshot_sink: list[YnabSnapshot] | None = None,
 ) -> list[Callable[..., object]]:
     """Build mock activity implementations for one scenario."""
     committed: dict[str, object] = {}
@@ -140,6 +141,8 @@ def _activities(
 
     @activity.defn(name="enrich")
     async def enrich(snap: YnabSnapshot) -> EnrichmentOutcome:
+        if enrich_snapshot_sink is not None:
+            enrich_snapshot_sink.append(snap)
         return enrich_outcome
 
     @activity.defn(name="commit_to_ynab")
@@ -235,6 +238,50 @@ async def test_auto_apply_flows_to_open_then_archives() -> None:
         )
         # Reconciled → the archive timer (time-skipped) drives it to done.
         await handle.result()
+
+
+async def test_hold_amazon_resolves_on_memo_backfill_signal() -> None:
+    # A blank Amazon txn holds for item detail; a notify_snapshot carrying the
+    # backfilled memo (what W1 delivers, SPEC §2/§3) resolves the hold, and
+    # enrichment runs on the snapshot *with* the memo — not the held blank one
+    # the ~36h deadline fallback would use.
+    held = YnabSnapshot(
+        ynab_id=YnabTransactionId("t1"),
+        account=AccountId("a1"),
+        payee="Amazon",
+        amount=Money.from_currency("-31.40"),
+        txn_date=datetime.date(2026, 5, 28),
+        cleared=ClearedState.RECONCILED,
+    )
+    backfilled = held.model_copy(update={"memo": "AmazonBasics HDMI cable"})
+    enriched: list[YnabSnapshot] = []
+    acts = _activities(
+        snapshot=held,
+        enrich_outcome=AskHuman(proposal=_proposal()),
+        enrich_snapshot_sink=enriched,
+    )
+    async with (
+        await _start_env() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[TransactionWorkflow],
+            activities=acts,
+        ),
+    ):
+        # signal-with-start delivers the backfill snapshot as W1 would, so the
+        # hold resolves to its memo rather than waiting out the deadline.
+        handle = await env.client.start_workflow(
+            TransactionWorkflow.run,
+            TransactionParams(ynab_id=YnabTransactionId("t1")),
+            id="txn-hold",
+            task_queue=TASK_QUEUE,
+            start_signal="notify_snapshot",
+            start_signal_args=[backfilled],
+        )
+        await _wait_for_state(handle, "awaiting_human")
+    assert enriched
+    assert enriched[-1].memo == "AmazonBasics HDMI cable"
 
 
 async def test_ask_then_answer_reaches_open_and_archives() -> None:

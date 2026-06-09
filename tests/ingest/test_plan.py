@@ -7,7 +7,12 @@ import datetime
 from ynab_agent.domain.ids import AccountId, YnabTransactionId
 from ynab_agent.domain.money import Money
 from ynab_agent.domain.transaction import YnabSnapshot
-from ynab_agent.ingest.plan import is_duplicate_import, plan_ingest
+from ynab_agent.ingest.plan import (
+    is_amazon,
+    is_duplicate_import,
+    memo_backfilled,
+    plan_ingest,
+)
 from ynab_agent.ingest.scope import IngestScope, in_scope
 
 _INSTALL = datetime.date(2026, 5, 1)
@@ -94,3 +99,37 @@ def test_plan_skips_already_approved_transactions() -> None:
     unapproved = _snapshot(ynab_id="t2")
     plan = plan_ingest([approved, unapproved], _scope(), cold_start=False)
     assert [a.snapshot.ynab_id for a in plan] == ["t2"]
+
+
+# ── Amazon memo backfill (SPEC §2, §3) ──────────────────────────────────────
+def _amazon(ynab_id: str = "t1", memo: str | None = None) -> YnabSnapshot:
+    return _snapshot(ynab_id=ynab_id).model_copy(
+        update={"payee": "Amazon", "memo": memo}
+    )
+
+
+def test_is_amazon_matches_loosely() -> None:
+    assert is_amazon("Amazon")
+    assert is_amazon("Amazon.com")
+    assert is_amazon("AMAZON MKTPLACE")
+    assert not is_amazon("Blue Bottle")
+
+
+def test_memo_backfilled_only_for_amazon_with_a_memo() -> None:
+    assert memo_backfilled(_amazon(memo="AmazonBasics HDMI cable"))
+    assert not memo_backfilled(_amazon(memo=None))  # held, no detail yet
+    assert not memo_backfilled(_snapshot())  # not Amazon
+    # A non-Amazon txn that happens to carry a memo is not a backfill signal.
+    assert not memo_backfilled(
+        _snapshot().model_copy(update={"memo": "team lunch"})
+    )
+
+
+def test_plan_flags_amazon_backfill_for_notify() -> None:
+    plan = plan_ingest(
+        [_amazon("t1", memo="HDMI cable"), _amazon("t2", memo=None)],
+        _scope(),
+        cold_start=False,
+    )
+    flags = {str(a.snapshot.ynab_id): a.notify_existing for a in plan}
+    assert flags == {"t1": True, "t2": False}

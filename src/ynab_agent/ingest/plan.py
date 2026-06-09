@@ -30,15 +30,42 @@ class AddressTxn(Frozen):
         snapshot: The polled YNAB snapshot to hand to the W2.
         route_to_human: ``True`` for a matched/duplicate import — the W2 must
             not auto-approve it (SPEC §13).
+        notify_existing: ``True`` when an Amazon item-detail memo has backfilled
+            (Amazon payee + a memo now present). If the W2 is already in flight,
+            W1 signals it the fresh snapshot so a ``HOLD_AMAZON`` run resolves
+            early instead of waiting out the ~36h deadline (SPEC §2, §3).
     """
 
     snapshot: YnabSnapshot
     route_to_human: bool = False
+    notify_existing: bool = False
 
 
 def is_duplicate_import(snapshot: YnabSnapshot) -> bool:
     """Whether YNAB matched this import to an existing txn (SPEC §13)."""
     return snapshot.matched_transaction_id is not None
+
+
+def is_amazon(payee: str) -> bool:
+    """Whether a payee is Amazon-ish, so the §3 item-detail hold applies.
+
+    A deliberately loose substring match (SPEC §11 leaves the exact payee
+    patterns open). The *same* predicate gates W1's backfill signal here and
+    W2's hold entry, so the two never disagree about what counts as Amazon.
+    """
+    return "amazon" in payee.lower()
+
+
+def memo_backfilled(snapshot: YnabSnapshot) -> bool:
+    """Whether an Amazon hold can now resolve: Amazon payee + memo present.
+
+    The condition W1 turns into a ``notify_snapshot`` to an already-running W2
+    (SPEC §2, §3). W1 is stateless per tick, so it cannot see the empty→present
+    *transition*; an Amazon txn that currently carries a memo is exactly the
+    resolvable case, and signalling a W2 that is already past the hold is a
+    harmless no-op.
+    """
+    return is_amazon(snapshot.payee) and snapshot.has_memo
 
 
 def plan_ingest(
@@ -68,7 +95,11 @@ def plan_ingest(
     if cold_start:
         return ()
     return tuple(
-        AddressTxn(snapshot=snap, route_to_human=is_duplicate_import(snap))
+        AddressTxn(
+            snapshot=snap,
+            route_to_human=is_duplicate_import(snap),
+            notify_existing=memo_backfilled(snap),
+        )
         for snap in snapshots
         if in_scope(snap, scope) and not snap.approved
     )

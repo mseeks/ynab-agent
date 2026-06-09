@@ -149,3 +149,61 @@ async def test_continuous_loop_keeps_ticking_via_continue_as_new() -> None:
             )
     # A second tick ran only because the first continued-as-new.
     assert len(ticks) == 2
+
+
+async def test_address_transaction_signals_amazon_backfill_when_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The W2 already exists; an Amazon memo has backfilled, so W1 signals
+    # notify_snapshot to wake a HOLD_AMAZON run early (SPEC §2, §3). Without the
+    # backfill flag, an already-running W2 is left untouched.
+    from temporalio.exceptions import WorkflowAlreadyStartedError
+
+    import ynab_agent.workflow.temporal_client as temporal_client
+    from ynab_agent.workflow import poll_activities
+
+    class _Handle:
+        def __init__(self) -> None:
+            self.signals: list[tuple[str, object]] = []
+
+        async def signal(self, name: str, arg: object) -> None:
+            self.signals.append((name, arg))
+
+    class _Client:
+        def __init__(self) -> None:
+            self.handle = _Handle()
+
+        async def start_workflow(self, *args: object, **kwargs: object) -> None:
+            raise WorkflowAlreadyStartedError(
+                workflow_id=str(kwargs.get("id")),
+                workflow_type="TransactionWorkflow",
+            )
+
+        def get_workflow_handle(self, workflow_id: str) -> _Handle:
+            return self.handle
+
+    snap = _snapshot("t1").model_copy(
+        update={"payee": "Amazon", "memo": "HDMI cable"}
+    )
+
+    backfill = _Client()
+
+    async def _backfill_client() -> _Client:
+        return backfill
+
+    monkeypatch.setattr(temporal_client, "client", _backfill_client)
+    await poll_activities.address_transaction(
+        AddressTxn(snapshot=snap, notify_existing=True)
+    )
+    assert backfill.handle.signals == [("notify_snapshot", snap)]
+
+    plain = _Client()
+
+    async def _plain_client() -> _Client:
+        return plain
+
+    monkeypatch.setattr(temporal_client, "client", _plain_client)
+    await poll_activities.address_transaction(
+        AddressTxn(snapshot=snap, notify_existing=False)
+    )
+    assert plain.handle.signals == []

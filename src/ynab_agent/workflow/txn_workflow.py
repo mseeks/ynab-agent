@@ -90,6 +90,7 @@ with workflow.unsafe.imports_passed_through():
         YnabSnapshot,
         born,
     )
+    from ynab_agent.ingest.plan import is_amazon
     from ynab_agent.policy.converge import classify_verify, target_of
     from ynab_agent.workflow import activities, alert_activities
     from ynab_agent.workflow.alerting import build_failure_alert
@@ -112,13 +113,13 @@ _CONTINUE_AS_NEW_AFTER = 4_000
 _RESTING = (Discovered, AwaitingHuman, Open, Lapsed, HoldAmazon)
 
 
-def _is_amazon(payee: str) -> bool:
-    return "amazon" in payee.lower()
-
-
 def _hold_for_amazon(snapshot: YnabSnapshot) -> bool:
-    """Whether to hold for Amazon item detail: Amazon-ish and no memo yet."""
-    return _is_amazon(snapshot.payee) and not snapshot.has_memo
+    """Whether to hold for Amazon item detail: Amazon-ish and no memo yet.
+
+    Shares :func:`~ynab_agent.ingest.plan.is_amazon` with W1's backfill signal,
+    so "what counts as Amazon" has a single source of truth (SPEC §3, §11).
+    """
+    return is_amazon(snapshot.payee) and not snapshot.has_memo
 
 
 @workflow.defn
