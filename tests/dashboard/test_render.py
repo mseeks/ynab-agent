@@ -165,6 +165,14 @@ def test_full_model_renders_every_zone() -> None:
         assert marker in html, marker
 
 
+def test_masthead_stamp_is_in_household_time() -> None:
+    # The "as of" time shows the household timezone (SPEC §13): 12:00 UTC on
+    # 2026-06-05 is 07:00 CDT in US Central, not UTC.
+    html = render.page(_full())
+    assert "2026-06-05 07:00 CDT" in html
+    assert "12:00 UTC" not in html
+
+
 def test_html_is_escaped_at_the_boundary() -> None:
     model = _full().model_copy(
         update={
