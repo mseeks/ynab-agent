@@ -223,7 +223,10 @@ async def _fold_memo_directly(txn_id: str, receipt: Receipt) -> None:
     """
     import asyncio
 
-    from ynab_agent.agentic.compose import render_receipt_matched
+    from ynab_agent.agentic.compose import (
+        render_receipt_matched,
+        render_receipt_matched_html,
+    )
     from ynab_agent.domain.receipt import receipt_memo
     from ynab_agent.mail.client import MailClient
     from ynab_agent.settings import Settings
@@ -254,6 +257,7 @@ async def _fold_memo_directly(txn_id: str, receipt: Receipt) -> None:
         body=render_receipt_matched(receipt_summary(receipt), charge),
         seq_label=f"yarcpt-matched-{receipt.id}",
         to=list(settings.owners),
+        html=render_receipt_matched_html(receipt, charge),
     )
 
 
@@ -344,7 +348,10 @@ async def ask_disambiguation(receipt_id: str, candidates: list[str]) -> None:
     """
     import asyncio
 
-    from ynab_agent.agentic.compose import render_receipt_disambiguation
+    from ynab_agent.agentic.compose import (
+        render_receipt_disambiguation,
+        render_receipt_disambiguation_html,
+    )
     from ynab_agent.mail.client import MailClient
     from ynab_agent.settings import Settings
 
@@ -367,6 +374,9 @@ async def ask_disambiguation(receipt_id: str, candidates: list[str]) -> None:
         ),
         seq_label=f"yarcpt-ask-{receipt_id}",
         to=list(settings.owners),
+        html=render_receipt_disambiguation_html(
+            receipt, tuple(options), with_threads=any_thread
+        ),
     )
 
 
@@ -375,7 +385,10 @@ async def ask_no_match(receipt_id: str) -> None:
     """Tell the sender no matching transaction was found (TTL expiry, §6)."""
     import asyncio
 
-    from ynab_agent.agentic.compose import render_receipt_no_match
+    from ynab_agent.agentic.compose import (
+        render_receipt_no_match,
+        render_receipt_no_match_html,
+    )
     from ynab_agent.mail.client import MailClient
     from ynab_agent.settings import Settings
 
@@ -391,6 +404,7 @@ async def ask_no_match(receipt_id: str) -> None:
         body=render_receipt_no_match(receipt_summary(receipt)),
         seq_label=f"yarcpt-nomatch-{receipt_id}",
         to=list(settings.owners),
+        html=render_receipt_no_match_html(receipt),
     )
 
 

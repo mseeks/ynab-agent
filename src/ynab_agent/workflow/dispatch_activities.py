@@ -190,6 +190,7 @@ async def route_receipt(message: InboundMessage) -> None:
 
     from ynab_agent.agentic.compose import (
         render_receipt_ack,
+        render_receipt_ack_html,
         render_receipt_unparseable,
     )
     from ynab_agent.agentic.receipt_parse import (
@@ -238,6 +239,7 @@ async def route_receipt(message: InboundMessage) -> None:
         body=render_receipt_ack(receipt_summary(receipt)),
         seq_label=f"yarcpt-ack-{message.message_id}",
         to=list(settings.owners),
+        html=render_receipt_ack_html(receipt),
     )
     await receipt_activities.start_join(receipt)
 

@@ -407,9 +407,15 @@ class _FakeMail:
         body: str,
         seq_label: str,
         to: list[str] | None = None,
+        html: str | None = None,
     ) -> bool:
         self.sends.append(
-            {"thread_id": thread_id, "body": body, "seq_label": seq_label}
+            {
+                "thread_id": thread_id,
+                "body": body,
+                "seq_label": seq_label,
+                "html": html,
+            }
         )
         return True
 

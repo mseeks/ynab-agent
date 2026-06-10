@@ -374,3 +374,73 @@ def test_help_covers_the_verbs_and_the_safety_promise() -> None:
     assert "stop auto-handling" in body
     assert "list my rules" in body
     assert "never change anything" in body
+
+
+def _parsed_receipt() -> object:
+    import datetime
+
+    from ynab_agent.domain.ids import ReceiptId
+    from ynab_agent.domain.money import Money
+    from ynab_agent.domain.receipt import Receipt, ReceiptLineItem
+
+    return Receipt(
+        id=ReceiptId("r1"),
+        parked_at=datetime.datetime(2026, 6, 10, 12, 0, tzinfo=datetime.UTC),
+        merchant="Apple",
+        date=datetime.date(2026, 6, 7),
+        total=Money(milliunits=-9990),
+        line_items=(ReceiptLineItem(description="iCloud+ with 2 TB"),),
+    )
+
+
+def test_receipt_html_card_carries_the_parsed_facts() -> None:
+    # The receipt emails get the same card treatment the transaction emails
+    # got (merchant/total/date/items ↔ payee/amount/date/memo) — they used
+    # to fall back to the generic typography and read as unstyled text.
+    from ynab_agent.agentic.compose import render_receipt_ack_html
+
+    html = render_receipt_ack_html(_parsed_receipt())  # type: ignore[arg-type]
+    assert "Apple" in html
+    assert "2026-06-07" in html
+    assert "iCloud+ with 2 TB" in html
+    assert "bring the detail" in html
+
+
+def test_receipt_disambiguation_html_keeps_the_honest_instruction() -> None:
+    from ynab_agent.agentic.compose import render_receipt_disambiguation_html
+
+    options = (
+        "-$4.50 at Blue Bottle Coffee on May 28",
+        "-$4.50 at Blue Bottle Coffee on May 29",
+    )
+    with_threads = render_receipt_disambiguation_html(
+        _parsed_receipt(),  # type: ignore[arg-type]
+        options,
+        with_threads=True,
+    )
+    without = render_receipt_disambiguation_html(
+        _parsed_receipt(),  # type: ignore[arg-type]
+        options,
+        with_threads=False,
+    )
+    assert "May 28" in with_threads and "May 29" in with_threads
+    assert "reply there" in with_threads
+    assert "email thread from me" not in without
+    assert "directly in YNAB" in without
+
+
+def test_receipt_matched_and_no_match_html_render_the_card() -> None:
+    from ynab_agent.agentic.compose import (
+        render_receipt_matched_html,
+        render_receipt_no_match_html,
+    )
+
+    matched = render_receipt_matched_html(
+        _parsed_receipt(),  # type: ignore[arg-type]
+        "Apple — -$9.99 on Jun 7",
+    )
+    assert "Apple — -$9.99 on Jun 7" in matched
+    assert "Nothing else on the charge was touched" in matched
+    no_match = render_receipt_no_match_html(_parsed_receipt())  # type: ignore[arg-type]
+    assert "30" in no_match
+    assert "forward the receipt again" in no_match

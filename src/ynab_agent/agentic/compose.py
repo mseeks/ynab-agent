@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.effects import MessagePurpose
+from ynab_agent.domain.receipt import Receipt, items_brief
 from ynab_agent.mail import html as email_html
 
 if TYPE_CHECKING:
@@ -270,6 +271,21 @@ def render_receipt_matched(summary: str, charge: str) -> str:
     )
 
 
+# The disambiguation instruction, shared verbatim by the text and HTML
+# renderings so the honesty guarantee (threads only promised when one
+# exists) cannot drift between the two parts.
+_DISAMBIGUATION_WITH_THREADS = (
+    "Where a charge has its own email thread from me, reply there "
+    "with the detail you want filed. For any that don't, add the "
+    "note directly in YNAB — I won't guess between them."
+)
+_DISAMBIGUATION_NO_THREADS = (
+    "None of these are in my email queue (they're already settled "
+    "in YNAB), so I won't guess between them — add the detail to "
+    "the right charge's memo directly in YNAB."
+)
+
+
 def render_receipt_disambiguation(
     summary: str, options: tuple[str, ...], *, with_threads: bool
 ) -> str:
@@ -286,18 +302,11 @@ def render_receipt_disambiguation(
     lines.extend(
         f"{index}. {option}" for index, option in enumerate(options, start=1)
     )
-    if with_threads:
-        instruction = (
-            "Where a charge has its own email thread from me, reply there "
-            "with the detail you want filed. For any that don't, add the "
-            "note directly in YNAB — I won't guess between them."
-        )
-    else:
-        instruction = (
-            "None of these are in my email queue (they're already settled "
-            "in YNAB), so I won't guess between them — add the detail to "
-            "the right charge's memo directly in YNAB."
-        )
+    instruction = (
+        _DISAMBIGUATION_WITH_THREADS
+        if with_threads
+        else _DISAMBIGUATION_NO_THREADS
+    )
     lines += ["", instruction]
     return "\n".join(lines)
 
@@ -314,6 +323,79 @@ def render_receipt_no_match(summary: str) -> str:
         "within 30 days, so I've stopped trying.\n\n"
         "If you want the detail kept, add it to the charge's memo in YNAB "
         "— or forward the receipt again and I'll take another look."
+    )
+
+
+def _receipt_card(receipt: Receipt) -> str:
+    """The receipt as a card: merchant, the total big, date + items muted.
+
+    The same shape as the transaction card (``facts_block``) — a receipt's
+    merchant/total/date/items map straight onto payee/amount/date/memo — so
+    the receipt emails read as kin to the proposal emails.
+    """
+    return email_html.facts_block(
+        payee=receipt.merchant or "Forwarded receipt",
+        amount=str(receipt.total) if receipt.total is not None else "",
+        date=receipt.date.isoformat() if receipt.date is not None else "",
+        memo=items_brief(receipt),
+    )
+
+
+def render_receipt_ack_html(receipt: Receipt) -> str:
+    """The styled receipt ack: what was read as a card, then the plan."""
+    return email_html.wrap_email(
+        _receipt_card(receipt),
+        email_html.paragraphs(
+            "Got it — this is what I read.\n\n"
+            "I'll match it to the right transaction and bring the detail "
+            "to that charge. If no match has posted yet, I'll keep "
+            "checking as new transactions come in."
+        ),
+    )
+
+
+def render_receipt_matched_html(receipt: Receipt, charge: str) -> str:
+    """The styled matched confirmation: the card, then both sides named."""
+    return email_html.wrap_email(
+        _receipt_card(receipt),
+        email_html.paragraphs(
+            f"Matched to {charge} and added the items to its memo. "
+            "Nothing else on the charge was touched — reply if that "
+            "match looks wrong."
+        ),
+    )
+
+
+def render_receipt_disambiguation_html(
+    receipt: Receipt, options: tuple[str, ...], *, with_threads: bool
+) -> str:
+    """The styled which-charge question: card, options, honest instruction."""
+    numbered = "\n".join(
+        f"{index}. {option}" for index, option in enumerate(options, start=1)
+    )
+    instruction = (
+        _DISAMBIGUATION_WITH_THREADS
+        if with_threads
+        else _DISAMBIGUATION_NO_THREADS
+    )
+    return email_html.wrap_email(
+        _receipt_card(receipt),
+        email_html.prompt_block("This plausibly matches more than one charge:"),
+        email_html.paragraphs(numbered),
+        email_html.paragraphs(instruction),
+    )
+
+
+def render_receipt_no_match_html(receipt: Receipt) -> str:
+    """The styled aged-out closure: the card, then where the detail can go."""
+    return email_html.wrap_email(
+        _receipt_card(receipt),
+        email_html.paragraphs(
+            "I couldn't pin this receipt to a single charge within 30 "
+            "days, so I've stopped trying.\n\n"
+            "If you want the detail kept, add it to the charge's memo in "
+            "YNAB — or forward the receipt again and I'll take another look."
+        ),
     )
 
 
