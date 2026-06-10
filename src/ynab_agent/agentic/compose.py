@@ -87,6 +87,22 @@ def render_autonomy_offer(payee: str, category: str) -> str:
     )
 
 
+def render_command_confirm(payee: str, category: str) -> str:
+    """The read-back for an explicit "always X as Y" command (SPEC §5c, §0.6).
+
+    A standing command grants autonomy, so the agent echoes its interpretation
+    and waits for a one-word confirm before blessing — a command can arrive on a
+    brand-new thread where the allow-list is the only gate, so a misread or a
+    mistaken send must not silently grant auto-apply.
+    """
+    return (
+        f"You asked me to always categorize {payee} as {category}.\n\n"
+        f"Reply YES to confirm — I'll auto-handle {payee} as {category} from "
+        "now on, flag each one for you, and you can undo any with a one-word "
+        "reply. Reply NO to keep approving each one yourself."
+    )
+
+
 def render_offer_accepted(payee: str, category: str) -> str:
     """The confirmation sent when the owner accepts the offer (§14.7 3b)."""
     return (

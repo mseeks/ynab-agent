@@ -6,6 +6,7 @@ from ynab_agent.agentic.compose import (
     ComposeRequest,
     render_autonomy_offer,
     render_body,
+    render_command_confirm,
     render_offer_accepted,
     render_offer_declined,
 )
@@ -93,3 +94,10 @@ def test_offer_declined_says_it_keeps_proposing() -> None:
     body = render_offer_declined("Spotify")
     assert "Spotify" in body
     assert "propos" in body.lower()
+
+
+def test_command_confirm_echoes_the_command_and_asks_for_yes() -> None:
+    body = render_command_confirm("Costco", "Groceries")
+    assert "Costco" in body
+    assert "Groceries" in body
+    assert "YES" in body  # an explicit one-word confirm (SPEC §0.6)

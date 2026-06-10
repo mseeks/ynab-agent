@@ -179,17 +179,23 @@ async def route_receipt(_message: InboundMessage) -> None:
 
 @activity.defn
 async def handle_command(message: InboundMessage) -> None:
-    """Parse a standing command and bless the rule it grants (SPEC §5c, §14).
+    """Parse a standing command and open a read-back to confirm it (SPEC §5c).
 
     The owner's direct opt-in: "always categorize X as Y" becomes an
-    ``ExplicitCommand`` signalled to the durable registry's ``bless``, which
-    trusts the rule for auto-apply (``source=human_explicit``). Anything not a
-    clear bless — a question or comment — is a deliberate no-op (the parser
-    declines it), so a stray message never grants autonomy.
+    ``ExplicitCommand``. Because a standing command grants autonomy — and can
+    arrive on a brand-new thread where the allow-list is the only gate — it is
+    *not* blessed inline (SPEC §0.6). Instead a one-shot
+    ``CommandConfirmWorkflow`` opens a read-back ("Auto-handle X as Y? reply
+    yes") and blesses only on a one-word confirm. The confirm is keyed by
+    (payee, category): a resend while one is pending is a no-op; a later command
+    after it closed re-opens a fresh one. Anything not a clear bless — a
+    question or comment — is a deliberate no-op (the parser declines it), so a
+    stray message never starts one.
     """
     import asyncio
 
-    from temporalio.common import WorkflowIDConflictPolicy
+    from temporalio.common import WorkflowIDReusePolicy
+    from temporalio.exceptions import WorkflowAlreadyStartedError
 
     from ynab_agent.agentic.command import (
         CommandRequest,
@@ -197,9 +203,9 @@ async def handle_command(message: InboundMessage) -> None:
         to_explicit_command,
     )
     from ynab_agent.agentic.enrich import CandidateCategory
-    from ynab_agent.workflow.registry_types import (
-        REGISTRY_WORKFLOW_ID,
-        RegistryParams,
+    from ynab_agent.workflow.command_types import (
+        CommandConfirmParams,
+        command_confirm_id,
     )
     from ynab_agent.workflow.temporal_client import client, task_queue
     from ynab_agent.ynab.client import YnabClient
@@ -219,12 +225,15 @@ async def handle_command(message: InboundMessage) -> None:
     if command is None:
         return
     temporal = await client()
-    await temporal.start_workflow(
-        "RuleRegistryWorkflow",
-        RegistryParams(),
-        id=REGISTRY_WORKFLOW_ID,
-        task_queue=task_queue(),
-        id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
-        start_signal="bless",
-        start_signal_args=[command],
-    )
+    try:
+        await temporal.start_workflow(
+            "CommandConfirmWorkflow",
+            CommandConfirmParams(command=command),
+            id=command_confirm_id(command),
+            task_queue=task_queue(),
+            id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+        )
+    except WorkflowAlreadyStartedError:
+        # A confirm for this (payee, category) is already pending: a resend is a
+        # no-op (SPEC §5c, idempotent against resends).
+        return

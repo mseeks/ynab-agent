@@ -16,6 +16,7 @@ from ynab_agent.workflow import (
     activities,
     alert_activities,
     balance_activities,
+    command_activities,
     dispatch_activities,
     monitor_activities,
     offer_activities,
@@ -30,6 +31,7 @@ from ynab_agent.workflow.auto_action_ledger_workflow import (
     AutoActionLedgerWorkflow,
 )
 from ynab_agent.workflow.balance_workflow import BudgetBalanceWorkflow
+from ynab_agent.workflow.command_workflow import CommandConfirmWorkflow
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
 from ynab_agent.workflow.offer_workflow import AutonomyOfferWorkflow
@@ -55,6 +57,7 @@ WORKFLOWS = [
     OverspendLedgerWorkflow,
     BudgetBalanceWorkflow,
     AutoActionLedgerWorkflow,
+    CommandConfirmWorkflow,
 ]
 
 ALL_ACTIVITIES: list[Callable[..., object]] = [
@@ -85,6 +88,9 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     offer_activities.interpret_offer_reply,
     offer_activities.accept_offer,
     offer_activities.decline_offer,
+    command_activities.open_command_thread,
+    command_activities.accept_command,
+    command_activities.decline_command,
     receipt_activities.match_receipt,
     receipt_activities.signal_match,
     receipt_activities.ask_disambiguation,
