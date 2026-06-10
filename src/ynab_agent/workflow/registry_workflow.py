@@ -28,7 +28,6 @@ with workflow.unsafe.imports_passed_through():
     from ynab_agent.domain.rule import Rule
     from ynab_agent.learn.events import ExplicitCommand
     from ynab_agent.learn.registry import (
-        RegistryState,
         bless_by_id,
         bless_rule,
         eligible_for_bless,
@@ -53,12 +52,18 @@ with workflow.unsafe.imports_passed_through():
 class RuleRegistryWorkflow:
     """The household's one durable rule table (one fold per learning signal)."""
 
-    def __init__(self) -> None:
-        """Start empty; the run method adopts any carried-forward state."""
-        self._state = RegistryState()
+    @workflow.init
+    def __init__(self, params: RegistryParams) -> None:
+        """Adopt carried-forward state before any signal handler runs.
+
+        Adoption must happen here, not in ``run``: a signal-with-start's
+        signal is handled *before* the run method body, so assigning
+        ``params.state`` there would drop the birth learning signal.
+        """
+        self._state = params.state
 
     @workflow.run
-    async def run(self, params: RegistryParams) -> None:
+    async def run(self, _params: RegistryParams) -> None:
         """Hold the rule table; volunteer offers; roll when history grows.
 
         A thin effect-dispatcher (mirroring the W2 driver): each wake, if a rule
@@ -68,7 +73,6 @@ class RuleRegistryWorkflow:
         the table forward. Draining before the roll mirrors W2 draining its
         inbound before continue-as-new.
         """
-        self._state = params.state
         while True:
             await workflow.wait_condition(
                 lambda: (

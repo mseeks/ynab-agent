@@ -66,3 +66,32 @@ async def test_record_then_count_and_window() -> None:
             AutoActionLedgerWorkflow.counters, CountersRequest(now=later)
         )
         assert (rolled.this_run, rolled.today) == (0, 2)
+
+
+async def test_birth_record_survives_the_run_start() -> None:
+    # The breaker signal-with-starts this ledger: the record rides the FIRST
+    # workflow task, handled before the run body, so run() must adopt carried
+    # state without clobbering that first fold.
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=_TASK_QUEUE,
+            workflows=[AutoActionLedgerWorkflow],
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            AutoActionLedgerWorkflow.run,
+            LedgerParams(),
+            id=AUTO_ACTION_LEDGER_WORKFLOW_ID,
+            task_queue=_TASK_QUEUE,
+            start_signal="record",
+            start_signal_args=["txn-1"],
+        )
+        now = await env.get_current_time()
+        counts = await handle.query(
+            AutoActionLedgerWorkflow.counters, CountersRequest(now=now)
+        )
+        assert (counts.this_run, counts.today) == (1, 1)

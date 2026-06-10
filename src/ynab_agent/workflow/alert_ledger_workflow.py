@@ -21,21 +21,26 @@ from temporalio import workflow
 from ynab_agent.workflow.alert_types import LedgerParams, ShouldNotifyRequest
 
 with workflow.unsafe.imports_passed_through():
-    from ynab_agent.alert.ledger import LedgerState, record, should_notify
+    from ynab_agent.alert.ledger import record, should_notify
 
 
 @workflow.defn
 class AlertLedgerWorkflow:
     """The deployment's one durable alert-dedup tail (one fold per alert)."""
 
-    def __init__(self) -> None:
-        """Start empty; the run method adopts any carried-forward state."""
-        self._state = LedgerState()
+    @workflow.init
+    def __init__(self, params: LedgerParams) -> None:
+        """Adopt carried-forward state before any signal handler runs.
+
+        Adoption must happen here, not in ``run``: a signal-with-start's
+        signal is handled *before* the run method body, so assigning
+        ``params.state`` there would drop the birth alert from the tail.
+        """
+        self._state = params.state
 
     @workflow.run
-    async def run(self, params: LedgerParams) -> None:
+    async def run(self, _params: LedgerParams) -> None:
         """Hold the tail, folding signals until history wants rolling."""
-        self._state = params.state
         await workflow.wait_condition(
             lambda: workflow.info().is_continue_as_new_suggested()
         )

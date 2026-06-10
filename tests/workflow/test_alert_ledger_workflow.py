@@ -66,3 +66,32 @@ async def test_record_then_dedup_and_recover() -> None:
             AlertLedgerWorkflow.should_notify,
             ShouldNotifyRequest(key="txn-1", now=tomorrow),
         )
+
+
+async def test_birth_record_survives_the_run_start() -> None:
+    # ``alert_failure`` signal-with-starts this ledger: the record rides the
+    # FIRST workflow task, handled before the run body, so run() must adopt
+    # carried state without clobbering that first fold.
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=_TASK_QUEUE,
+            workflows=[AlertLedgerWorkflow],
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            AlertLedgerWorkflow.run,
+            LedgerParams(),
+            id=ALERT_LEDGER_WORKFLOW_ID,
+            task_queue=_TASK_QUEUE,
+            start_signal="record",
+            start_signal_args=["txn-1"],
+        )
+        now = await env.get_current_time()
+        assert not await handle.query(
+            AlertLedgerWorkflow.should_notify,
+            ShouldNotifyRequest(key="txn-1", now=now),
+        )

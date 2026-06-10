@@ -65,3 +65,32 @@ async def test_ledger_parks_dedups_and_tracks_status() -> None:
         kept = await handle.query(ReceiptLedgerWorkflow.get, "r1")
         assert kept is not None
         assert kept.status is ReceiptStatus.MATCHED
+
+
+async def test_birth_park_survives_the_run_start() -> None:
+    # The production birth: route_receipt signal-with-starts the ledger, so
+    # the park is handled in the FIRST workflow task, before the run body.
+    # Adopting params.state inside run() clobbered that first fold — the
+    # receipt acked, then vanished, and the join failed "not in the ledger".
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=_TASK_QUEUE,
+            workflows=[ReceiptLedgerWorkflow],
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            ReceiptLedgerWorkflow.run,
+            ReceiptLedgerParams(),
+            id=RECEIPT_LEDGER_WORKFLOW_ID,
+            task_queue=_TASK_QUEUE,
+            start_signal="park",
+            start_signal_args=[_receipt("r-birth")],
+        )
+        got = await handle.query(ReceiptLedgerWorkflow.get, "r-birth")
+        assert got is not None
+        open_now = await handle.query(ReceiptLedgerWorkflow.open_receipts)
+        assert [str(r.id) for r in open_now] == ["r-birth"]

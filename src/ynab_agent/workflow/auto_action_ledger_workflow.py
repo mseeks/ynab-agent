@@ -25,7 +25,6 @@ from ynab_agent.workflow.auto_action_types import CountersRequest, LedgerParams
 
 with workflow.unsafe.imports_passed_through():
     from ynab_agent.policy.auto_action_ledger import (
-        AutoActionLedgerState,
         counters,
         record,
     )
@@ -36,14 +35,19 @@ with workflow.unsafe.imports_passed_through():
 class AutoActionLedgerWorkflow:
     """The deployment's one durable auto-action tail (one fold per action)."""
 
-    def __init__(self) -> None:
-        """Start empty; the run method adopts any carried-forward state."""
-        self._state = AutoActionLedgerState()
+    @workflow.init
+    def __init__(self, params: LedgerParams) -> None:
+        """Adopt carried-forward state before any signal handler runs.
+
+        Adoption must happen here, not in ``run``: a signal-with-start's
+        signal is handled *before* the run method body, so assigning
+        ``params.state`` there would drop the birth action from the tail.
+        """
+        self._state = params.state
 
     @workflow.run
-    async def run(self, params: LedgerParams) -> None:
+    async def run(self, _params: LedgerParams) -> None:
         """Hold the tail, folding signals until history wants rolling."""
-        self._state = params.state
         await workflow.wait_condition(
             lambda: workflow.info().is_continue_as_new_suggested()
         )

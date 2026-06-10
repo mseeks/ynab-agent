@@ -177,3 +177,32 @@ async def test_bless_existing_grants_autonomy_by_id() -> None:
         rules = await handle.query(RuleRegistryWorkflow.rules)
         assert rules[0].source is RuleSource.LEARNED
         assert rules[0].trust is TrustState.CONFIRMED
+
+
+async def test_birth_record_survives_the_run_start() -> None:
+    # Learning signal-with-starts the registry: the record rides the FIRST
+    # workflow task, handled before the run body, so run() must adopt carried
+    # state without clobbering that first fold.
+    offered: list[Rule] = []
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=_TASK_QUEUE,
+            workflows=[RuleRegistryWorkflow],
+            activities=_activities(offered),
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            RuleRegistryWorkflow.run,
+            RegistryParams(),
+            id=REGISTRY_WORKFLOW_ID,
+            task_queue=_TASK_QUEUE,
+            start_signal="record",
+            start_signal_args=[_confirm()],
+        )
+        rules = await handle.query(RuleRegistryWorkflow.rules)
+        assert len(rules) == 1
+        assert rules[0].match.payee_pattern == "Spotify"

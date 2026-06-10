@@ -85,3 +85,38 @@ async def test_record_then_prior_round_trips_and_scopes() -> None:
             )
             is None
         )
+
+
+async def test_birth_record_survives_the_run_start() -> None:
+    # The monitor signal-with-starts this ledger: the record rides the FIRST
+    # workflow task, handled before the run body, so run() must adopt carried
+    # state without clobbering that first fold.
+    alert = PriorAlert(
+        verdict=OverspendVerdict.TRENDING_OVER,
+        projected=Money.from_currency("500"),
+    )
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=_TASK_QUEUE,
+            workflows=[OverspendLedgerWorkflow],
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            OverspendLedgerWorkflow.run,
+            LedgerParams(),
+            id=OVERSPEND_LEDGER_WORKFLOW_ID,
+            task_queue=_TASK_QUEUE,
+            start_signal="record",
+            start_signal_args=[
+                RecordRequest(category="dining", period="2026-06", alert=alert)
+            ],
+        )
+        got = await handle.query(
+            OverspendLedgerWorkflow.prior,
+            PriorRequest(category="dining", period="2026-06"),
+        )
+        assert got == alert

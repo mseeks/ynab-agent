@@ -27,7 +27,6 @@ from ynab_agent.workflow.receipt_ledger_types import (
 with workflow.unsafe.imports_passed_through():
     from ynab_agent.domain.receipt import Receipt
     from ynab_agent.join.store import (
-        ReceiptLedgerState,
         get,
         open_receipts,
         park,
@@ -39,14 +38,20 @@ with workflow.unsafe.imports_passed_through():
 class ReceiptLedgerWorkflow:
     """The household's one parked-receipt table (one fold per signal)."""
 
-    def __init__(self) -> None:
-        """Start empty; the run method adopts any carried-forward state."""
-        self._state = ReceiptLedgerState()
+    @workflow.init
+    def __init__(self, params: ReceiptLedgerParams) -> None:
+        """Adopt carried-forward state before any signal handler runs.
+
+        Adoption must happen here, not in ``run``: a signal-with-start's
+        signal is handled *before* the run method body, so assigning
+        ``params.state`` there would clobber the very fold that birthed the
+        ledger (the first parked receipt was silently lost this way).
+        """
+        self._state = params.state
 
     @workflow.run
-    async def run(self, params: ReceiptLedgerParams) -> None:
+    async def run(self, _params: ReceiptLedgerParams) -> None:
         """Hold the table, folding signals until history wants rolling."""
-        self._state = params.state
         await workflow.wait_condition(
             lambda: workflow.info().is_continue_as_new_suggested()
         )
