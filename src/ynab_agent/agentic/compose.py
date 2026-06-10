@@ -193,10 +193,35 @@ def render_balance_could_not_cover(needy_name: str) -> str:
 
 
 def render_balance_failed(needy_name: str, reason: str) -> str:
-    """The note when an approved plan can't be applied (SPEC §8)."""
+    """The pre-write rejection note: the plan was vetoed, nothing written."""
     return (
         f"I couldn't cover {needy_name}: {reason}. Nothing was changed — reply "
         "and we can try another way."
+    )
+
+
+def render_balance_unverified(needy_name: str) -> str:
+    """The post-write failure note (SPEC §8): some moves may have landed.
+
+    Distinct from :func:`render_balance_failed` on purpose — after writes have
+    started, "nothing was changed" can be a lie, and an owner who believes it
+    won't check. Be honest about the uncertainty and point at YNAB.
+    """
+    return (
+        f"I tried to cover {needy_name} and couldn't confirm every move "
+        "landed — some may have applied. Please glance at the affected "
+        "categories in YNAB, and reply with what you see; I'll sort out the "
+        "rest."
+    )
+
+
+def render_balance_stale(needy_name: str) -> str:
+    """The note when approval arrives after the budget month rolled over."""
+    return (
+        f"The month ended between my offer and your reply, so I didn't move "
+        f"anything for {needy_name} — applying it now would change the NEW "
+        "month's budget. If it's still over, today's check will raise a fresh "
+        "alert."
     )
 
 

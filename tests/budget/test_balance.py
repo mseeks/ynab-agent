@@ -342,3 +342,35 @@ def test_move_targets_skips_the_rta_sentinel_source() -> None:
     targets = move_targets(moves, current)
     assert targets == {CategoryId("dining"): Money.from_currency("500")}
     assert READY_TO_ASSIGN_SOURCE not in targets
+
+
+def test_greedy_fallback_caps_each_move_at_the_floor_ceiling() -> None:
+    # One source could cover the whole $700 shortfall, but a single $700 move
+    # breaches the $500 per-move ceiling the floor would refuse to apply —
+    # the fallback must never offer a plan the agent's own floor vetoes.
+    plan = plan_coverage(
+        [
+            Need(
+                category=CategoryId("dining"),
+                shortfall=Money.from_currency("700"),
+            )
+        ],
+        [
+            Source(
+                category=CategoryId("buffer"),
+                available=Money.from_currency("1000"),
+                priority=SourcePriority.BUFFER,
+            ),
+            Source(
+                category=CategoryId("fun"),
+                available=Money.from_currency("400"),
+                priority=SourcePriority.OVERFUNDED,
+            ),
+        ],
+    )
+    assert all(move.amount <= Money.from_currency("500") for move in plan.moves)
+    total = Money.zero()
+    for move in plan.moves:
+        total = total + move.amount
+    assert total == Money.from_currency("700")  # still fully covered
+    assert plan.uncovered == ()

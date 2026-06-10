@@ -26,7 +26,11 @@ from ynab_agent.budget.balance import (
     ClarifyBalance,
     DeclineBalance,
 )
-from ynab_agent.budget.overspend import OverspendAssessment, OverspendVerdict
+from ynab_agent.budget.overspend import (
+    MonthClock,
+    OverspendAssessment,
+    OverspendVerdict,
+)
 from ynab_agent.dispatch.classify import InboundMessage
 from ynab_agent.domain.ids import CategoryId, MessageId, ThreadId
 from ynab_agent.domain.money import Money
@@ -37,6 +41,7 @@ from ynab_agent.workflow.balance_types import (
     balance_workflow_id,
 )
 from ynab_agent.workflow.balance_workflow import BudgetBalanceWorkflow
+from ynab_agent.workflow.monitor_types import PeriodClock
 from ynab_agent.workflow.runtime import DATA_CONVERTER
 
 if TYPE_CHECKING:
@@ -117,6 +122,7 @@ class _Recorder:
     def __init__(self) -> None:
         self.sends: list[str] = []
         self.threads: list[str] = []  # thread each balance email replied on
+        self.sent: list[str] = []  # the bodies, for copy assertions
         self.sets: list[tuple[str, str]] = []  # (category, "$amount")
         self.logged = 0
 
@@ -127,8 +133,16 @@ def _activities(
     outcomes: list[BalanceOutcome],
     rec: _Recorder,
     set_ok: bool = True,
+    live_period: str = _PERIOD,
 ) -> list[Callable[..., object]]:
     pending = list(outcomes)
+
+    @activity.defn(name="current_period")
+    async def current_period() -> PeriodClock:
+        return PeriodClock(
+            period=live_period,
+            clock=MonthClock(day_of_month=15, days_in_month=30),
+        )
 
     @activity.defn(name="propose_balance_options")
     async def propose_balance_options(
@@ -161,12 +175,14 @@ def _activities(
     ) -> None:
         rec.sends.append(seq_label)
         rec.threads.append(thread_id)
+        rec.sent.append(body)
 
     @activity.defn(name="alert_failure")
     async def alert_failure(alert: object) -> None:
         return None
 
     return [
+        current_period,
         propose_balance_options,
         interpret_balance_reply,
         read_budget_state,
@@ -198,6 +214,7 @@ async def _run(
     outcomes: list[BalanceOutcome],
     replies: int,
     set_ok: bool = True,
+    live_period: str = _PERIOD,
 ) -> tuple[BalanceResult, _Recorder]:
     rec = _Recorder()
     async with (
@@ -207,7 +224,11 @@ async def _run(
             task_queue=_TASK_QUEUE,
             workflows=[BudgetBalanceWorkflow],
             activities=_activities(
-                options=options, outcomes=outcomes, rec=rec, set_ok=set_ok
+                options=options,
+                outcomes=outcomes,
+                rec=rec,
+                set_ok=set_ok,
+                live_period=live_period,
             ),
         ),
     ):
@@ -341,3 +362,32 @@ async def test_offer_posts_and_routes_on_the_alert_thread() -> None:
     # The options offer and the decline confirmation both replied on the alert
     # thread — never on a separately opened one.
     assert rec.threads == ["thr-overspend", "thr-overspend"]
+
+
+async def test_approval_after_month_rollover_applies_nothing() -> None:
+    # The offer was for 2026-06; the reply lands in July. The moves were
+    # computed against June's figures — applying them would silently rewrite
+    # JULY's budget, so nothing is written and the note says why.
+    result, rec = await _run(
+        options=[_option()],
+        outcomes=[_apply_moves("120")],
+        replies=1,
+        live_period="2026-07",
+    )
+    assert result.outcome == "stale-period"
+    assert rec.sets == []  # no budget write happened
+    assert any("month ended" in body for body in rec.sent)
+
+
+async def test_verify_failure_says_some_moves_may_have_landed() -> None:
+    # Post-write failure: never claim "nothing was changed" once writes have
+    # started — point the owner at YNAB instead.
+    result, rec = await _run(
+        options=[_option()],
+        outcomes=[_apply_moves("120")],
+        replies=1,
+        set_ok=False,
+    )
+    assert result.outcome == "verify-failed"
+    assert any("couldn't confirm" in body for body in rec.sent)
+    assert not any("Nothing was changed" in body for body in rec.sent)

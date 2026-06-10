@@ -91,13 +91,17 @@ def _take(available: Money, wanted: Money) -> Money:
 
 
 def plan_coverage(
-    needs: Iterable[Need], sources: Iterable[Source]
+    needs: Iterable[Need],
+    sources: Iterable[Source],
+    policy: FloorPolicy = CAUTIOUS_FLOOR,
 ) -> CoveragePlan:
     """Greedily cover each need from sources in priority order (SPEC §8). Pure.
 
     Needs are covered in the order given; for each, sources are drained
-    cheapest-priority first. A need only partially covered is reported in
-    ``uncovered`` with its remaining shortfall — the planner invents no money.
+    cheapest-priority first, each move capped at the floor's per-move ceiling —
+    the fallback must never offer a plan the agent's own floor would refuse to
+    apply. A need only partially covered is reported in ``uncovered`` with its
+    remaining shortfall — the planner invents no money.
     """
     remaining = {source.category: source.available for source in sources}
     ordered = sorted(sources, key=lambda s: (s.priority, str(s.category)))
@@ -113,7 +117,7 @@ def plan_coverage(
             available = remaining[source.category]
             if available <= zero:
                 continue
-            take = _take(available, shortfall)
+            take = _take(_take(available, shortfall), policy.per_move_ceiling)
             moves.append(
                 BudgetMove(
                     source=source.category,

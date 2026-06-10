@@ -64,11 +64,19 @@ class OverspendVerdict(StrEnum):
 
 
 class OverspendPolicy(Frozen):
-    """The single tunable: how far over the projection must trend to alert."""
+    """The tunables: the trend threshold, and when trending becomes credible.
+
+    ``min_trend_day`` guards the run-rate's early-month blowup: on day 1 the
+    projection is spend x31, so any normal charge reads as "trending over" and
+    would fire a false alarm (and a phantom W7 money-moving offer) at every
+    month start. Truly over-budget categories still alert on any day —
+    ALREADY_OVER is real arithmetic, not a projection.
+    """
 
     trend_threshold: Money = Field(
         default_factory=lambda: Money.from_currency(25)
     )
+    min_trend_day: int = Field(default=5, ge=1)
 
 
 DEFAULT_OVERSPEND_POLICY = OverspendPolicy()
@@ -144,7 +152,10 @@ def assess(
 
     if spent > category.budgeted:
         verdict = OverspendVerdict.ALREADY_OVER
-    elif projected - category.budgeted > policy.trend_threshold:
+    elif (
+        clock.day_of_month >= policy.min_trend_day
+        and projected - category.budgeted > policy.trend_threshold
+    ):
         verdict = OverspendVerdict.TRENDING_OVER
     else:
         verdict = OverspendVerdict.OK

@@ -230,8 +230,9 @@ Decide what the reply means and set `verdict`:
     (each: a `source_category_id` from the list and a dollar `amount`). If they
     picked an option as-is, copy that option's moves. If they modified it ("only
     $50", "take it from dining instead", "half from each"), output the modified
-    moves. The moves must add up to at least the shortfall and never exceed any
-    source's available funds.
+    moves — a PARTIAL cover is fine when that is what they asked for ("only
+    $50" covers $50 of a $120 shortfall). Never exceed any source's available
+    funds, and never move more than the shortfall in total.
   - `decline` — a clear no ("no thanks", "leave it", "I'll handle it myself").
   - `unclear` — a question, a different topic, or anything you are unsure about;
     set a short `question` to send back.

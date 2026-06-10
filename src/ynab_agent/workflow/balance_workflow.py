@@ -41,6 +41,8 @@ with workflow.unsafe.imports_passed_through():
         render_balance_declined,
         render_balance_failed,
         render_balance_options,
+        render_balance_stale,
+        render_balance_unverified,
     )
     from ynab_agent.budget.balance import (
         ApplyMoves,
@@ -52,7 +54,11 @@ with workflow.unsafe.imports_passed_through():
     )
     from ynab_agent.dispatch.classify import InboundMessage
     from ynab_agent.domain.money import Money
-    from ynab_agent.workflow import alert_activities, balance_activities
+    from ynab_agent.workflow import (
+        alert_activities,
+        balance_activities,
+        monitor_activities,
+    )
     from ynab_agent.workflow.alerting import build_failure_alert
     from ynab_agent.workflow.balance_types import (
         BalanceParams,
@@ -182,6 +188,22 @@ class BudgetBalanceWorkflow:
     ) -> BalanceResult:
         """Validate, write targets, verify, audit, confirm (SPEC §8)."""
         assessment = params.assessment
+        # A reply approved after the budget month rolled over must not apply:
+        # the moves were computed against LAST month's figures, and writing
+        # them now would silently change the new month's budget while the
+        # confirmation talks about the old one.
+        period_clock = await workflow.execute_activity(
+            monitor_activities.current_period,
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=ACTIVITY_RETRY,
+        )
+        if period_clock.period != params.period:
+            await self._send(
+                params,
+                render_balance_stale(assessment.name),
+                f"ybalance-stale-{label}",
+            )
+            return BalanceResult(outcome="stale-period")
         state = await workflow.execute_activity(
             balance_activities.read_budget_state,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
@@ -211,9 +233,9 @@ class BudgetBalanceWorkflow:
         if not verified:
             await self._send(
                 params,
-                render_balance_failed(
-                    assessment.name, "the change didn't take effect cleanly"
-                ),
+                # Post-write: some moves may have landed — never claim
+                # "nothing was changed" after writes started.
+                render_balance_unverified(assessment.name),
                 f"ybalance-failed-{label}-verify",
             )
             return BalanceResult(outcome="verify-failed")

@@ -143,3 +143,31 @@ def test_escalation_to_already_over_re_alerts() -> None:
 def test_month_clock_rejects_day_past_month_end() -> None:
     with pytest.raises(ValueError, match="day_of_month"):
         MonthClock(day_of_month=31, days_in_month=30)
+
+
+def test_trending_is_suppressed_in_the_first_days_of_the_month() -> None:
+    # Day 1: $30 of $400 projects to $930 (x31) — a normal charge, not a
+    # blowout. The run-rate is meaningless this early; no trending alarm.
+    out = assess(
+        _category(budgeted="400", activity="-30"),
+        MonthClock(day_of_month=1, days_in_month=31),
+    )
+    assert out.verdict is OverspendVerdict.OK
+
+
+def test_already_over_still_alerts_on_day_one() -> None:
+    # Real arithmetic, not a projection: a genuinely over-budget category
+    # alerts on any day.
+    out = assess(
+        _category(budgeted="400", activity="-420"),
+        MonthClock(day_of_month=1, days_in_month=31),
+    )
+    assert out.verdict is OverspendVerdict.ALREADY_OVER
+
+
+def test_trending_fires_once_the_month_is_credible() -> None:
+    out = assess(
+        _category(budgeted="400", activity="-150"),
+        MonthClock(day_of_month=5, days_in_month=30),
+    )
+    assert out.verdict is OverspendVerdict.TRENDING_OVER
