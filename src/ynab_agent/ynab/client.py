@@ -16,7 +16,11 @@ import os
 from typing import TYPE_CHECKING, Protocol
 
 from ynab_agent.budget.overspend import CategorySpend
-from ynab_agent.domain.allocations import ResolvedCategory
+from ynab_agent.domain.allocations import (
+    ResolvedCategory,
+    ResolvedSplit,
+    ResolvedSplitLine,
+)
 from ynab_agent.domain.enums import ClearedState, DecidedBy, FlagColor
 from ynab_agent.domain.ids import (
     AccountId,
@@ -28,7 +32,12 @@ from ynab_agent.domain.ids import (
 from ynab_agent.domain.money import Money
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.policy.converge import TargetState
-from ynab_agent.ynab.wire import WireCategory, WireMonth, WireTransaction
+from ynab_agent.ynab.wire import (
+    WireCategory,
+    WireMonth,
+    WireSubtransaction,
+    WireTransaction,
+)
 
 if TYPE_CHECKING:
     import httpx
@@ -52,6 +61,26 @@ _HTTP_NOT_FOUND = 404
 AGENT_REVIEW_FLAG = FlagColor.PURPLE
 
 
+def _to_split_lines(
+    subs: tuple[WireSubtransaction, ...],
+) -> tuple[ResolvedSplitLine, ...]:
+    """Map a split's wire subtransactions onto domain split lines (SPEC §3).
+
+    Skips deleted lines and any line without a category (an uncategorized line
+    cannot be a :class:`ResolvedSplitLine`); the agent only writes fully
+    categorized splits, so a clean read-back maps every line.
+    """
+    return tuple(
+        ResolvedSplitLine(
+            category=CategoryId(sub.category_id),
+            amount=Money.from_milliunits(sub.amount),
+            memo=sub.memo,
+        )
+        for sub in subs
+        if not sub.deleted and sub.category_id
+    )
+
+
 def to_snapshot(wire: WireTransaction) -> YnabSnapshot:
     """Map a YNAB transaction onto the domain snapshot (SPEC §1)."""
     return YnabSnapshot(
@@ -70,6 +99,7 @@ def to_snapshot(wire: WireTransaction) -> YnabSnapshot:
         matched_transaction_id=YnabTransactionId(wire.matched_transaction_id)
         if wire.matched_transaction_id
         else None,
+        subtransactions=_to_split_lines(wire.subtransactions),
     )
 
 
@@ -87,10 +117,18 @@ def to_category_spend(wire: WireCategory) -> CategorySpend:
 def to_target(snapshot: YnabSnapshot) -> TargetState | None:
     """The read-back end-state of a transaction for verification (SPEC §3 r4).
 
-    Returns ``None`` when there is no single category to verify — a split (whose
-    subtransactions a snapshot does not detail) or an uncategorized txn — so the
-    spine treats it as could-not-confirm rather than a false divergence.
+    Reconstructs a split from its subtransactions so a split write verifies
+    field-by-field (a clean read-back hashes equal to the target); falls back to
+    a whole-category target; returns ``None`` only for an uncategorized txn (no
+    end-state to confirm), so the spine treats that as could-not-confirm rather
+    than a false divergence.
     """
+    if len(snapshot.subtransactions) > 1:  # a split has at least two lines
+        return TargetState(
+            allocation=ResolvedSplit(lines=snapshot.subtransactions),
+            memo=snapshot.memo,
+            approved=snapshot.approved,
+        )
     if snapshot.category_id is None:
         return None
     return TargetState(

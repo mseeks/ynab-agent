@@ -17,6 +17,21 @@ class _Wire(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
 
+class WireSubtransaction(_Wire):
+    """One subtransaction of a YNAB split (the fields we verify against, §3).
+
+    A split parent carries ``category_id = null`` and one of these per line, so
+    the read-back reconstructs the split end-state from them — letting a split
+    write be confirmed field-by-field rather than always could-not-confirm
+    (SPEC §3 r4).
+    """
+
+    amount: int
+    category_id: str | None = None
+    memo: str | None = None
+    deleted: bool = False
+
+
 class WireTransaction(_Wire):
     """A YNAB transaction as the API returns it (the fields we use)."""
 
@@ -34,6 +49,7 @@ class WireTransaction(_Wire):
     category_id: str | None = None
     import_id: str | None = None
     matched_transaction_id: str | None = None
+    subtransactions: tuple[WireSubtransaction, ...] = ()
 
 
 class WireCategory(_Wire):

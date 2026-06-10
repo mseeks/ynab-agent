@@ -18,7 +18,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from ynab_agent.domain.allocations import ResolvedSplit
+from ynab_agent.domain.allocations import ResolvedSplit, ResolvedSplitLine
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.enums import (
     AwaitingFlag,
@@ -65,6 +65,10 @@ class YnabSnapshot(Frozen):
     month_closed: bool = False
     import_id: ImportId | None = None
     matched_transaction_id: YnabTransactionId | None = None
+    # The split's subtransactions when this is a split parent (``category_id``
+    # is then ``None``); empty for a whole-category txn. Carried so a split
+    # write can be verified field-by-field on read-back (SPEC §3 r4).
+    subtransactions: tuple[ResolvedSplitLine, ...] = ()
 
     @property
     def reconciled(self) -> bool:

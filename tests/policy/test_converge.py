@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import datetime
 
-from ynab_agent.domain.allocations import ResolvedCategory
+from ynab_agent.domain.allocations import (
+    ResolvedCategory,
+    ResolvedSplit,
+    ResolvedSplitLine,
+)
 from ynab_agent.domain.enums import ClearedState, DecidedBy
 from ynab_agent.domain.events import VerifyOutcome
 from ynab_agent.domain.ids import AccountId, CategoryId, YnabTransactionId
@@ -31,10 +35,35 @@ def _target(category: str = "dining", memo: str | None = None) -> TargetState:
     )
 
 
+def _split_target(*cats: str) -> TargetState:
+    return TargetState(
+        allocation=ResolvedSplit(
+            lines=tuple(
+                ResolvedSplitLine(
+                    category=CategoryId(c), amount=Money.from_milliunits(-1000)
+                )
+                for c in cats
+            )
+        )
+    )
+
+
 def test_content_hash_is_stable_and_distinguishing() -> None:
     assert content_hash(_target()) == content_hash(_target())
     assert content_hash(_target("dining")) != content_hash(_target("gifts"))
     assert content_hash(_target(memo="a")) != content_hash(_target(memo="b"))
+
+
+def test_content_hash_is_order_insensitive_for_splits() -> None:
+    # YNAB may return a split's lines in any order; two equal splits must hash
+    # the same so a read-back verifies as MATCH (SPEC §3 r4).
+    assert content_hash(_split_target("gifts", "groceries")) == content_hash(
+        _split_target("groceries", "gifts")
+    )
+    # A genuinely different split still hashes differently.
+    assert content_hash(_split_target("gifts", "groceries")) != content_hash(
+        _split_target("gifts", "dining")
+    )
 
 
 def test_needs_write_skips_an_equal_state() -> None:
