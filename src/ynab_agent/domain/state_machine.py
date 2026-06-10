@@ -331,7 +331,8 @@ def _resolve_write_verify(
         case VerifyOutcome.MATCH:
             archive = now + policy.archive_window
             effects: tuple[Effect, ...] = (
-                SendThreadMessage(purpose=applied_message),
+                # Carry the decision so the confirm/FYI names what was written.
+                SendThreadMessage(purpose=applied_message, decision=decision),
                 SetTimer(timer=TimerKind.ARCHIVE, deadline=archive),
             )
             if learning is not None:
@@ -370,12 +371,13 @@ def _enter_flagged_awaiting(
     *,
     now: datetime.datetime,
     policy: LifecyclePolicy,
+    detail: str | None = None,
 ) -> Transition:
     """Route a verify failure to a flagged AWAITING_HUMAN with a read-back."""
     deadline = now + policy.patience_window
     return _advanced(
         AwaitingHuman(core=core, patience_deadline=deadline, flag=flag),
-        SendThreadMessage(purpose=message),
+        SendThreadMessage(purpose=message, detail=detail),
         SetTimer(timer=TimerKind.PATIENCE, deadline=deadline),
     )
 
@@ -394,7 +396,7 @@ def _from_awaiting_human(
                 CommitToYnab(decision=decision),
                 CancelTimer(timer=TimerKind.PATIENCE),
             )
-        case ClarifyRequested():
+        case ClarifyRequested(question=question):
             deadline = now + policy.patience_window
             return _advanced(
                 AwaitingHuman(
@@ -403,7 +405,11 @@ def _from_awaiting_human(
                     patience_deadline=deadline,
                     flag=txn.flag,
                 ),
-                SendThreadMessage(purpose=MessagePurpose.CLARIFY),
+                # Carry the model's actual question — without it the owner got
+                # the same canned line no matter what was being asked.
+                SendThreadMessage(
+                    purpose=MessagePurpose.CLARIFY, detail=question
+                ),
                 SetTimer(timer=TimerKind.PATIENCE, deadline=deadline),
             )
         case PatienceExpired():
@@ -459,7 +465,9 @@ def _from_open(txn: Open, event: LifecycleEvent) -> Transition:
                 decision=human_decision,
                 prior=txn.decision,
             )
-            notice = SendThreadMessage(purpose=MessagePurpose.OVERRIDE_NOTICE)
+            notice = SendThreadMessage(
+                purpose=MessagePurpose.OVERRIDE_NOTICE, decision=human_decision
+            )
             if not txn.core.snapshot.reconciled:
                 return _advanced(
                     Open(core=txn.core, decision=human_decision),
@@ -533,21 +541,32 @@ def _from_revising(
                         now=now,
                         policy=policy,
                     )
-                case Diverged():
+                case Diverged(ynab_summary=ynab, requested_summary=asked):
+                    # The signature safety moment (SPEC §3 r4): the owner must
+                    # see both sides to break the tie, not a contentless note.
                     return _enter_flagged_awaiting(
                         txn.core,
                         AwaitingFlag.DIVERGED,
                         MessagePurpose.DIVERGED_READBACK,
                         now=now,
                         policy=policy,
+                        detail=(
+                            f"YNAB now shows {ynab}, but your reply asked for "
+                            f"{asked} — which should win? Reply with your "
+                            "choice and I'll set it."
+                        ),
                     )
-                case NeedsHuman():
+                case NeedsHuman(reason=reason):
                     deadline = now + policy.patience_window
                     return _advanced(
                         AwaitingHuman(
                             core=txn.core, patience_deadline=deadline
                         ),
-                        SendThreadMessage(purpose=MessagePurpose.PROPOSAL),
+                        # A question, not a bare PROPOSAL shell — there is no
+                        # proposal here, and the reason says what's needed.
+                        SendThreadMessage(
+                            purpose=MessagePurpose.CLARIFY, detail=reason
+                        ),
                         SetTimer(timer=TimerKind.PATIENCE, deadline=deadline),
                     )
             assert_never(outcome)
@@ -595,7 +614,10 @@ def _reapply(
     return _advanced(
         Open(core=txn.core, decision=decision),
         learning,
-        SendThreadMessage(purpose=MessagePurpose.REVISE_SUMMARY),
+        # Carry the re-decided outcome so the summary says what changed.
+        SendThreadMessage(
+            purpose=MessagePurpose.REVISE_SUMMARY, decision=decision
+        ),
         SetTimer(timer=TimerKind.ARCHIVE, deadline=archive),
     )
 

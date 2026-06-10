@@ -78,6 +78,95 @@ def test_clarify_asks_the_question() -> None:
     assert "Which trip?" in body
 
 
+def test_clarify_prefers_the_carried_detail() -> None:
+    # The model's actual question rides the effect as `detail` (SPEC §3, §5).
+    body = render_body(
+        _req(
+            purpose=MessagePurpose.CLARIFY.value,
+            detail="Was this the annual renewal?",
+        )
+    )
+    assert "Was this the annual renewal?" in body
+
+
+def test_confirm_names_the_decided_category() -> None:
+    body = render_body(
+        _req(purpose=MessagePurpose.CONFIRM.value, decided_category="Groceries")
+    )
+    assert "Groceries" in body
+    assert "the category you picked" not in body
+
+
+def test_fyi_names_category_rule_and_undo() -> None:
+    body = render_body(
+        _req(purpose=MessagePurpose.FYI.value, decided_category="Dining")
+    )
+    assert "Dining" in body
+    assert "standing rule" in body
+    assert "Reply" in body  # the one-reply undo promise (SPEC §14.5)
+
+
+def test_revise_summary_says_what_changed() -> None:
+    body = render_body(
+        _req(
+            purpose=MessagePurpose.REVISE_SUMMARY.value,
+            decided_category="Gifts",
+        )
+    )
+    assert "Gifts" in body
+    assert "Updated" in body
+
+
+def test_handoff_says_its_yours_now() -> None:
+    body = render_body(_req(purpose=MessagePurpose.HANDOFF.value))
+    assert "YNAB" in body
+    assert "haven't heard back" in body.lower()
+    assert "A quick note" not in body
+
+
+def test_possibly_inconsistent_says_check_ynab() -> None:
+    body = render_body(_req(purpose=MessagePurpose.POSSIBLY_INCONSISTENT.value))
+    assert "couldn't confirm" in body.lower()
+    assert "YNAB" in body
+
+
+def test_diverged_readback_uses_the_carried_comparison() -> None:
+    body = render_body(
+        _req(
+            purpose=MessagePurpose.DIVERGED_READBACK.value,
+            detail="YNAB now shows Groceries, but your reply asked for Gifts "
+            "— which should win?",
+        )
+    )
+    assert "Groceries" in body
+    assert "which should win?" in body
+
+
+def test_archive_notice_asks_for_a_category_or_handled() -> None:
+    body = render_body(_req(purpose=MessagePurpose.ARCHIVE_NOTICE.value))
+    assert "uncategorized" in body.lower()
+    assert "handled" in body.lower()
+
+
+def test_override_notice_names_what_the_owner_set() -> None:
+    body = render_body(
+        _req(
+            purpose=MessagePurpose.OVERRIDE_NOTICE.value,
+            decided_category="Travel",
+        )
+    )
+    assert "Travel" in body
+    assert "backed off" in body
+
+
+def test_no_purpose_renders_the_placeholder_any_more() -> None:
+    # Every real lifecycle purpose has copy; the placeholder only survives as
+    # the never-reached fallback for an unmapped future purpose.
+    for purpose in MessagePurpose:
+        body = render_body(_req(purpose=purpose.value))
+        assert "A quick note on this transaction." not in body, purpose
+
+
 def test_autonomy_offer_names_payee_category_and_asks_yes_no() -> None:
     body = render_autonomy_offer("Spotify", "Subscriptions")
     assert "Spotify" in body

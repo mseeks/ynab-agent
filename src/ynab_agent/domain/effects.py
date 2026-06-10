@@ -57,10 +57,19 @@ class OpenThread(Frozen):
 
 
 class SendThreadMessage(Frozen):
-    """Send a message on the transaction's thread."""
+    """Send a message on the transaction's thread.
+
+    ``detail`` is the message-specific content the template wraps (the model's
+    clarifying question, a diverged which-wins comparison); ``decision`` lets
+    the send name what was actually written (the confirm/FYI/revise-summary
+    category). Without these the spine once rendered every post-proposal email
+    as a contentless placeholder — the payloads were computed, then dropped.
+    """
 
     kind: Literal["send_message"] = "send_message"
     purpose: MessagePurpose
+    detail: str | None = None
+    decision: Decision | None = None
 
 
 class CommitToYnab(Frozen):

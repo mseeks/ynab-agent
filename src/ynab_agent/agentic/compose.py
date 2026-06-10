@@ -48,6 +48,13 @@ class ComposeRequest(Frozen):
     question: str | None = (
         None  # an explicit question, when the purpose has one
     )
+    # Message-specific content carried from the state machine (the model's
+    # clarify question, a diverged which-wins comparison) — see the
+    # SendThreadMessage effect.
+    detail: str | None = None
+    # The category NAME a decision actually wrote (confirm / FYI / revision
+    # summary / override notice), so those emails name what happened.
+    decided_category: str | None = None
 
 
 def _facts(request: ComposeRequest) -> str:
@@ -196,23 +203,84 @@ def render_balance_failed(needy_name: str, reason: str) -> str:
 def render_body(request: ComposeRequest) -> str:
     """Lay out the email body for one transaction message (SPEC §5).
 
-    The subject is templated separately by the caller; this is the body.
+    The subject is templated separately by the caller; this is the body. Every
+    purpose carries real copy for its lifecycle moment (SPEC §3 state notes) —
+    none of these may fall back to a contentless placeholder.
     """
     facts = _facts(request)
-    if request.purpose == MessagePurpose.PROPOSAL.value:
+    purpose = request.purpose
+    if purpose == MessagePurpose.PROPOSAL.value:
         return _proposal_body(request, facts)
-    if request.purpose == MessagePurpose.CONFIRM.value:
-        category = request.proposed_category or "the category you picked"
-        return f"{facts}\n\nDone — set to {category} and approved."
-    if request.purpose == MessagePurpose.CLARIFY.value:
-        question = request.question or "Which category should this be?"
-        return f"{facts}\n\n{question}"
-    if request.purpose == MessagePurpose.OVERRIDE_NOTICE.value:
-        return (
-            f"{facts}\n\nNoticed you recategorized this one yourself — I've "
-            "backed off auto-handling this payee and will go back to asking."
+    if purpose == MessagePurpose.CONFIRM.value:
+        category = (
+            request.decided_category
+            or request.proposed_category
+            or "the category you picked"
         )
-    # fyi / archive_notice / revise_summary / handoff / possibly_inconsistent /
-    # diverged_readback — a brief, neutral note (question carries any detail).
-    note = request.question or "A quick note on this transaction."
+        return f"{facts}\n\nDone — set to {category} and approved."
+    if purpose == MessagePurpose.FYI.value:
+        filed = (
+            f"Filed automatically as {request.decided_category}"
+            if request.decided_category
+            else "Filed automatically"
+        )
+        return (
+            f"{facts}\n\n{filed} under your standing rule and flagged in "
+            "YNAB so you can spot it. Reply here any time to change it."
+        )
+    if purpose == MessagePurpose.CLARIFY.value:
+        question = (
+            request.detail
+            or request.question
+            or "Which category should this be?"
+        )
+        return f"{facts}\n\n{question}"
+    if purpose == MessagePurpose.REVISE_SUMMARY.value:
+        updated = (
+            f"Updated — now {request.decided_category}, re-approved."
+            if request.decided_category
+            else "Updated and re-approved."
+        )
+        return f"{facts}\n\n{updated} Reply if that's not right."
+    if purpose == MessagePurpose.HANDOFF.value:
+        return (
+            f"{facts}\n\nI haven't heard back, so I'm leaving this one for "
+            "you to handle in YNAB — no more nudges from me. A reply here "
+            "still works any time."
+        )
+    if purpose == MessagePurpose.POSSIBLY_INCONSISTENT.value:
+        return (
+            f"{facts}\n\nI tried to update this in YNAB and couldn't confirm "
+            "the change landed — please check it there, and reply with what "
+            "you see so we end up in the right place."
+        )
+    if purpose == MessagePurpose.DIVERGED_READBACK.value:
+        comparison = request.detail or (
+            "YNAB now shows something different from what was asked for — "
+            "which should win? Reply with your choice and I'll set it."
+        )
+        return f"{facts}\n\n{comparison}"
+    if purpose == MessagePurpose.ARCHIVE_NOTICE.value:
+        return (
+            f"{facts}\n\nThis one is still uncategorized and its window is "
+            "closing. Reply with a category and I'll file it — or reply "
+            "'handled' if you've taken care of it."
+        )
+    if purpose == MessagePurpose.OVERRIDE_NOTICE.value:
+        what = (
+            f"you set this to {request.decided_category} yourself"
+            if request.decided_category
+            else "you recategorized this one yourself"
+        )
+        return (
+            f"{facts}\n\nNoticed {what} — I've backed off auto-handling this "
+            "payee and will go back to asking."
+        )
+    # An unmapped purpose would mean a new MessagePurpose without copy; say
+    # something honest rather than nothing.
+    note = (
+        request.detail
+        or request.question
+        or ("A quick note on this transaction.")
+    )
     return f"{facts}\n\n{note}"

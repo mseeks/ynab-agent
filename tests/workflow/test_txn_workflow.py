@@ -18,7 +18,11 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from ynab_agent.domain.allocations import ProposedCategory, ResolvedCategory
-from ynab_agent.domain.effects import FeedRuleLearning, RuleLearningKind
+from ynab_agent.domain.effects import (
+    FeedRuleLearning,
+    MessagePurpose,
+    RuleLearningKind,
+)
 from ynab_agent.domain.enums import ClearedState, DecidedBy, TrustState
 from ynab_agent.domain.events import (
     AskHuman,
@@ -131,6 +135,7 @@ def _activities(
     learning_sink: list[FeedRuleLearning] | None = None,
     auto_action_sink: list[str] | None = None,
     enrich_snapshot_sink: list[YnabSnapshot] | None = None,
+    message_sink: list[tuple[str, str, object]] | None = None,
 ) -> list[Callable[..., object]]:
     """Build mock activity implementations for one scenario."""
     committed: dict[str, object] = {}
@@ -157,7 +162,15 @@ def _activities(
         return committed.get("target")
 
     @activity.defn(name="open_thread")
-    async def open_thread(ynab_id: str, proposal: object) -> str:
+    async def open_thread(
+        ynab_id: str,
+        proposal: object,
+        purpose: object = None,
+        detail: object = None,
+        decision: object = None,
+    ) -> str:
+        if message_sink is not None:
+            message_sink.append(("open", str(purpose), detail))
         return "thread-1"
 
     @activity.defn(name="send_thread_message")
@@ -167,7 +180,11 @@ def _activities(
         purpose: object,
         action_seq: int,
         proposal: object,
+        detail: object = None,
+        decision: object = None,
     ) -> None:
+        if message_sink is not None:
+            message_sink.append(("send", str(purpose), detail))
         return None
 
     @activity.defn(name="interpret_inbound")
@@ -227,10 +244,12 @@ async def _wait_for_state(
 
 async def test_auto_apply_flows_to_open_then_archives() -> None:
     auto_actions: list[str] = []
+    messages: list[tuple[str, str, object]] = []
     acts = _activities(
         snapshot=_snapshot(reconciled=True),
         enrich_outcome=AutoApply(decision=_decision(DecidedBy.AGENT)),
         auto_action_sink=auto_actions,
+        message_sink=messages,
     )
     async with (
         await _start_env() as env,
@@ -251,6 +270,9 @@ async def test_auto_apply_flows_to_open_then_archives() -> None:
         await handle.result()
     # The auto-apply recorded itself in the circuit-breaker ledger (SPEC §0.6).
     assert auto_actions == ["t1"]
+    # The FYI OPENED the thread (no proposal email exists on the auto path) —
+    # without this the post-verify FYI send crashed the workflow (SPEC §14.5).
+    assert ("open", str(MessagePurpose.FYI), None) in messages
 
 
 async def test_hold_amazon_resolves_on_memo_backfill_signal() -> None:
