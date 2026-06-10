@@ -97,4 +97,6 @@ class Money(BaseModel):
         return self.milliunits >= other.milliunits
 
     def __str__(self) -> str:
-        return f"${self.currency_amount:.2f}"
+        # Accounting style: the sign leads the symbol (-$13.07, never $-13.07).
+        sign = "-" if self.milliunits < 0 else ""
+        return f"{sign}${abs(self.currency_amount):.2f}"

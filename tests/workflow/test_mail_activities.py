@@ -48,7 +48,7 @@ def test_txn_and_seq_labels_are_namespaced() -> None:
 def test_subject_names_payee_amount_and_category() -> None:
     subject = _subject(_snapshot(), "Dining Out")
     assert "Blue Bottle" in subject
-    assert "-4.50" in subject
+    assert "-$4.50" in subject  # accounting style, never $-4.50
     assert "Dining Out" in subject
     assert "[YNAB]" not in subject  # known sender; no prefix
 
@@ -56,7 +56,7 @@ def test_subject_names_payee_amount_and_category() -> None:
 def test_subject_without_category_is_just_payee_amount() -> None:
     subject = _subject(_snapshot(), None)
     assert "Blue Bottle" in subject
-    assert "-4.50" in subject
+    assert "-$4.50" in subject
 
 
 def test_allocation_display_single_category_uses_name() -> None:

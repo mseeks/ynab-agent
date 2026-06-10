@@ -56,13 +56,13 @@ def _full() -> DashboardModel:
         needs_you=(
             QueueItem(
                 kind="proposal",
-                label="Amazon $-5.00",
+                label="Amazon -$5.00",
                 ident="t1",
                 payee="Amazon",
-                amount="$-5.00",
+                amount="-$5.00",
                 category="Shopping",
                 approved=False,
-                question="Amazon — $-5.00 · Shopping?",
+                question="Amazon — -$5.00 · Shopping?",
                 since=datetime(2026, 6, 3, 12, 0, tzinfo=UTC),
             ),
         ),
@@ -150,7 +150,7 @@ def test_full_model_renders_every_zone() -> None:
         "ynab-agent",
         "1 thing waiting on you.",  # the narrative headline
         "Needs you",
-        "Amazon — $-5.00 · Shopping?",  # humanized queue row
+        "Amazon — -$5.00 · Shopping?",  # humanized queue row
         "winding down",  # the handled footnote
         "Is it working?",
         "What it's done",
@@ -216,7 +216,7 @@ def test_needs_you_split_and_empty_states_render() -> None:
     full = _full()
     html = render.page(full)
     # The humanized question is the row title; the handled count is a footnote.
-    assert "Amazon — $-5.00 · Shopping?" in html
+    assert "Amazon — -$5.00 · Shopping?" in html
     assert "1 more proposal" in html
     # An emptied queue shows the caught-up state and renders no queue rows.
     empty = full.model_copy(update={"needs_you": (), "handled": ()})

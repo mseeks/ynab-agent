@@ -18,7 +18,7 @@ def _req(**kw: object) -> ComposeRequest:
     base: dict[str, object] = {
         "purpose": MessagePurpose.PROPOSAL.value,
         "payee": "Hulu",
-        "amount_display": "$-13.07",
+        "amount_display": "-$13.07",
         "txn_date": "May 29",
     }
     base.update(kw)
@@ -29,7 +29,7 @@ def test_proposal_lays_out_facts_suggestion_and_reply() -> None:
     body = render_body(
         _req(proposed_category="Entertainment", rationale="recurring stream")
     )
-    assert "Hulu — $-13.07 — May 29" in body
+    assert "Hulu — -$13.07 — May 29" in body
     assert "Suggested: Entertainment" in body
     assert "recurring stream" in body
     assert "reply" in body.lower()

@@ -99,8 +99,8 @@ def test_queue_splits_needs_you_from_already_handled() -> None:
         ),
     )
     facts = {
-        "t1": TxnFacts(payee="Amazon", amount="$-5.00", approved=False),
-        "t2": TxnFacts(payee="CP Energy", amount="$-61.00", approved=True),
+        "t1": TxnFacts(payee="Amazon", amount="-$5.00", approved=False),
+        "t2": TxnFacts(payee="CP Energy", amount="-$61.00", approved=True),
         # t3 unresolved (YNAB couldn't find it) → defaults to needs-you.
     }
     model = _assemble(temporal=(readout, None), queue_facts=facts)
@@ -108,7 +108,7 @@ def test_queue_splits_needs_you_from_already_handled() -> None:
     assert {q.ident for q in model.handled} == {"t2"}  # approved → winding down
     row = next(q for q in model.needs_you if q.ident == "t1")
     assert row.payee == "Amazon"
-    assert row.amount == "$-5.00"
+    assert row.amount == "-$5.00"
 
 
 def test_proposal_borrows_its_thread_subject_as_the_label() -> None:
@@ -116,14 +116,14 @@ def test_proposal_borrows_its_thread_subject_as_the_label() -> None:
         awaiting=(QueueItem(kind="proposal", label="t1", ident="t1"),),
     )
     convo = Conversation(
-        subject="Amazon — $-5.00 · Shopping?",
+        subject="Amazon — -$5.00 · Shopping?",
         preview="",
         kind="proposal",
         ref="t1",
     )
     model = _assemble(temporal=(readout, None), agentmail=((convo,), None))
-    assert model.needs_you[0].question == "Amazon — $-5.00 · Shopping?"
-    assert model.needs_you[0].label == "Amazon — $-5.00 · Shopping?"
+    assert model.needs_you[0].question == "Amazon — -$5.00 · Shopping?"
+    assert model.needs_you[0].label == "Amazon — -$5.00 · Shopping?"
 
 
 def test_temporal_pieces_slot_into_the_model() -> None:
@@ -158,9 +158,9 @@ def test_narrative_reflects_the_numbers() -> None:
     )
     # t1 unapproved (needs you), t2/t3 already settled in YNAB.
     facts = {
-        "t1": TxnFacts(payee="p", amount="$-1.00", approved=False),
-        "t2": TxnFacts(payee="p", amount="$-1.00", approved=True),
-        "t3": TxnFacts(payee="p", amount="$-1.00", approved=True),
+        "t1": TxnFacts(payee="p", amount="-$1.00", approved=False),
+        "t2": TxnFacts(payee="p", amount="-$1.00", approved=True),
+        "t3": TxnFacts(payee="p", amount="-$1.00", approved=True),
     }
     model = _assemble(
         temporal=(readout, None),

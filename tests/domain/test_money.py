@@ -58,6 +58,12 @@ def test_str_formats_currency() -> None:
     assert str(Money.from_currency("4.50")) == "$4.50"
 
 
+def test_str_puts_the_sign_before_the_symbol() -> None:
+    # Accounting style: -$13.07 reads at a glance; $-13.07 does not.
+    assert str(Money.from_currency("-13.07")) == "-$13.07"
+    assert str(Money.zero()) == "$0.00"
+
+
 def test_is_frozen() -> None:
     m = Money.from_milliunits(1)
     field = "milliunits"  # a variable dodges B010 while staying mypy-clean
