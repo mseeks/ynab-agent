@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from html import escape
 from typing import TYPE_CHECKING
 
+from ynab_agent.domain.config import HOUSEHOLD_TZ
+
 if TYPE_CHECKING:
     from ynab_agent.dashboard.model import (
         DashboardModel,
@@ -213,7 +215,9 @@ def _meta(state: str) -> tuple[str, str]:
 def _masthead(model: DashboardModel) -> str:
     h = model.health
     now = model.generated_at
-    stamp = now.strftime("%Y-%m-%d %H:%M UTC")
+    # Show the "as of" time in the household timezone (SPEC §13), so the
+    # operator reads it in their own day, with the zone (CDT/CST) made explicit.
+    stamp = now.astimezone(HOUSEHOLD_TZ).strftime("%Y-%m-%d %H:%M %Z")
 
     chips: list[str] = []
     if h.needs_you:

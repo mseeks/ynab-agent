@@ -17,7 +17,11 @@ from ynab_agent.budget.overspend import (
 )
 from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.money import Money
-from ynab_agent.workflow.monitor_types import MonitorParams, MonitorResult
+from ynab_agent.workflow.monitor_types import (
+    MonitorParams,
+    MonitorResult,
+    PeriodClock,
+)
 from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
 from ynab_agent.workflow.runtime import DATA_CONVERTER
 
@@ -47,6 +51,10 @@ def _activities(
     offered: list[str],
     periods: list[str],
 ) -> list[Callable[..., object]]:
+    @activity.defn(name="current_period")
+    async def current_period() -> PeriodClock:
+        return PeriodClock(period="2026-06", clock=_CLOCK)
+
     @activity.defn(name="fetch_category_spends")
     async def fetch_category_spends() -> list[CategorySpend]:
         return spends
@@ -80,6 +88,7 @@ def _activities(
         offered.append(thread_id)
 
     return [
+        current_period,
         fetch_category_spends,
         load_prior_alert,
         send_overspend_alert,

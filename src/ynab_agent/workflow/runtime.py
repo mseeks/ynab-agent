@@ -85,6 +85,7 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     receipt_activities.ask_disambiguation,
     receipt_activities.ask_no_match,
     receipt_activities.save_receipt_status,
+    monitor_activities.current_period,
     monitor_activities.fetch_category_spends,
     monitor_activities.load_prior_alert,
     monitor_activities.send_overspend_alert,

@@ -12,13 +12,19 @@ spend magnitude is ``-activity`` when it is an outflow.
 
 from __future__ import annotations
 
+import calendar
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from pydantic import Field, model_validator
 
 from ynab_agent.domain.base import Frozen
+from ynab_agent.domain.config import HOUSEHOLD_TZ
 from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.money import Money
+
+if TYPE_CHECKING:
+    import datetime
 
 # Days in the shortest/longest months — the bounds a month length must fall in.
 _MIN_MONTH_DAYS = 28
@@ -91,6 +97,23 @@ def spent_magnitude(category: CategorySpend) -> Money:
     if category.activity.is_outflow:
         return -category.activity
     return Money.zero()
+
+
+def period_and_clock(now: datetime.datetime) -> tuple[str, MonthClock]:
+    """The budget period (``YYYY-MM``) and month position, in household time.
+
+    ``now`` is the deterministic UTC instant (``workflow.now()``); it is
+    converted to the declared household timezone (SPEC §11, §13) before the
+    day and month are read, so a charge near midnight or a month boundary is
+    bucketed into the right month and the run-rate's ``day_of_month`` is the
+    household's, not UTC's (which is hours ahead).
+    """
+    local = now.astimezone(HOUSEHOLD_TZ)
+    clock = MonthClock(
+        day_of_month=local.day,
+        days_in_month=calendar.monthrange(local.year, local.month)[1],
+    )
+    return local.strftime("%Y-%m"), clock
 
 
 def project_spend(

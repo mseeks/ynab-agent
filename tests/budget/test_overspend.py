@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from ynab_agent.budget.overspend import (
@@ -10,6 +12,7 @@ from ynab_agent.budget.overspend import (
     OverspendVerdict,
     PriorAlert,
     assess,
+    period_and_clock,
     project_spend,
     should_alert,
     spent_magnitude,
@@ -27,6 +30,26 @@ def _category(*, budgeted: str, activity: str) -> CategorySpend:
         activity=Money.from_currency(activity),
         balance=Money.from_currency(budgeted) + Money.from_currency(activity),
     )
+
+
+def test_period_and_clock_uses_household_timezone_at_a_month_boundary() -> None:
+    # 03:00 UTC on Jun 1 is still 22:00 May 31 in US Central (CDT, UTC-5): the
+    # budget month is May and the run-rate day is the 31st — not UTC's Jun 1.
+    utc = datetime.datetime(2026, 6, 1, 3, 0, tzinfo=datetime.UTC)
+    period, clock = period_and_clock(utc)
+    assert period == "2026-05"
+    assert clock.day_of_month == 31
+    assert clock.days_in_month == 31
+
+
+def test_period_and_clock_matches_the_local_day_midmonth() -> None:
+    utc = datetime.datetime(
+        2026, 6, 15, 18, 0, tzinfo=datetime.UTC
+    )  # 13:00 CDT
+    period, clock = period_and_clock(utc)
+    assert period == "2026-06"
+    assert clock.day_of_month == 15
+    assert clock.days_in_month == 30
 
 
 def test_spent_magnitude_flips_outflow_sign() -> None:

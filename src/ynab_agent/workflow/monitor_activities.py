@@ -27,12 +27,29 @@ from ynab_agent.budget.overspend import (
     OverspendAssessment,
     PriorAlert,
 )
+from ynab_agent.domain.config import HOUSEHOLD_TZ
+from ynab_agent.workflow.monitor_types import PeriodClock
 
 
 def _days_left_in_month(now: datetime.datetime) -> int:
     """Calendar days remaining in ``now``'s month (0 on the last day)."""
     days_in_month = calendar.monthrange(now.year, now.month)[1]
     return days_in_month - now.day
+
+
+@activity.defn
+async def current_period() -> PeriodClock:
+    """The budget period + month position, in household time (SPEC §7, §13).
+
+    The timezone conversion (``period_and_clock``) runs here, in an activity,
+    so the workflow sandbox never touches ``zoneinfo``; the recorded result
+    keeps the workflow replay-deterministic, and one period reaches every
+    activity in the pass.
+    """
+    from ynab_agent.budget.overspend import period_and_clock
+
+    period, clock = period_and_clock(datetime.datetime.now(datetime.UTC))
+    return PeriodClock(period=period, clock=clock)
 
 
 @activity.defn
@@ -112,7 +129,9 @@ async def send_overspend_alert(
     from ynab_agent.mail.client import MailClient
     from ynab_agent.settings import Settings
 
-    now = datetime.datetime.now(datetime.UTC)
+    # "Days left" is the household's, not UTC's (SPEC §13): near midnight the
+    # two differ by a day, and the owner reads this in their own evening.
+    now = datetime.datetime.now(datetime.UTC).astimezone(HOUSEHOLD_TZ)
     settings = Settings()
     mail = MailClient.from_env()
     return await asyncio.to_thread(
