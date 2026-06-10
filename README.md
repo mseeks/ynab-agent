@@ -65,20 +65,47 @@ SPEC.md        the design spec
 
 ## Status
 
-The full system is built and tested inside-out. Every workflow (W1–W7), the
-policy layer, rule learning, and the audit log are pure and exhaustively tested;
-the model agents are real (offline-tested via `TestModel`, plus opt-in live
-Gemma smokes); **AgentMail sending is live**; the **YNAB REST client** is built
-and unit-tested with live calls gated on `YNAB_API_KEY`. The activity ports are
-progressively wired to the real clients (the YNAB reads are connected); the rest
-run mock implementations in the tests.
+**In production.** Every activity port is wired to its real client — YNAB over
+REST, email over AgentMail (multipart text + HTML), the agentic steps over
+Pydantic AI + Ollama/Gemma — and the whole system runs as a k8s worker against
+a Temporal cluster, with the hourly ingest loop, the daily overspend monitor,
+and an hourly out-of-band deadman started by the install itself. Tests cover
+it inside-out: the pure core exhaustively, the agents offline via `TestModel`,
+the workflows on Temporal's time-skipping server (plus opt-in live smokes).
 
 The **autonomy lifecycle is complete** (SPEC §14.7 3b / §14.8): a learned rule
 *earns* eligibility (a deliberately high `K`), the agent *proactively offers* to
 auto-handle the payee (a one-time email; a yes blesses it), a clean-context model
 *safety review* vetoes any auto-apply it finds doubtful, and autonomy is *revoked*
-— the rule demoted back to Observe — on an explicit correction or a silent
-manual edit in YNAB.
+— the rule demoted back to Observe — on an explicit correction, a silent manual
+edit in YNAB, or a one-line "stop auto-handling X" email.
+
+## Operating it
+
+Everything an owner needs is an email; everything an operator needs is one of
+these:
+
+- **Talk to it.** Reply to any of its emails in your own words. Standing
+  instructions go to its inbox directly: `always categorize X as Y` (it reads
+  the command back and waits for a YES), `stop auto-handling X` (immediate),
+  `list my rules`, `help`.
+- **First contact.** Before adding a second owner to `YNAB_AGENT_OWNERS`, tell
+  them what the agent's address is and that replying in plain words is the
+  whole interface — their first email otherwise arrives from a stranger.
+  Mail from addresses *not* on the list is quarantined (held, never acted on)
+  and pages the operator.
+- **Pause it** (stop ingesting new transactions; replies still work):
+  `temporal workflow terminate -w ynab-poll --reason "pause"` — the deadman
+  will page hourly while it's down, which is the point. Resume by re-running
+  the install (it re-applies the poll starter and schedules, all idempotent).
+- **Kill it** (stop everything): scale the worker to zero —
+  `kubectl scale deploy/ynab-agent-worker -n ynab-agent --replicas=0`. Nothing
+  is lost: Temporal holds every in-flight conversation durably, and the next
+  scale-up resumes them where they paused.
+- **Bound it.** The hard floor caps any auto-apply's amount and trips a
+  per-run/per-day circuit breaker; autonomy only ever comes from a rule you
+  blessed, and every automatic action is flagged in YNAB and undoable with a
+  one-word reply.
 
 ## Running
 

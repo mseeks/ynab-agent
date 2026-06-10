@@ -3,9 +3,11 @@
 Every side effect the workflow performs — reading YNAB, committing a write,
 sending email, the agentic enrichment/interpretation/converge steps — is an
 activity, so neither the model's nor the spine's I/O runs in workflow code
-(SPEC §0.5). These are *stubs*: typed signatures with no body. The real
-implementations (YNAB/AgentMail MCP, Pydantic AI) are wired in a later step; the
-workflow tests register mock implementations.
+(SPEC §0.5). All of them are fully wired: YNAB over its REST client, email
+over AgentMail, the agentic steps over Pydantic AI + Ollama/Gemma. The heavy
+clients are imported lazily inside the bodies so they never enter a workflow
+sandbox; the workflow tests register mock implementations against the same
+signatures.
 """
 
 from __future__ import annotations

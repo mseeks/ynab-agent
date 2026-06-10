@@ -28,6 +28,7 @@ with workflow.unsafe.imports_passed_through():
     )
     from ynab_agent.domain.ids import YnabTransactionId
     from ynab_agent.workflow import alert_activities, dispatch_activities
+    from ynab_agent.workflow.alert_types import FailureAlert
     from ynab_agent.workflow.alerting import build_failure_alert
     from ynab_agent.workflow.constants import (
         ACTIVITY_RETRY,
@@ -146,6 +147,27 @@ class DispatchWorkflow:
             case RouteToInterpret():
                 return await self._interpret(message)
             case Quarantine(reason=reason):
+                # Held, not acted on — but never silently (SPEC §0.6, §13): a
+                # legitimate sender failing the allow-list (the spouse's other
+                # address, a re-configured From) would otherwise vanish. Page
+                # the operator, deduped per sender so a spammer can't flood.
+                await workflow.execute_activity(
+                    alert_activities.alert_failure,
+                    FailureAlert(
+                        key=f"quarantine-{message.from_address.lower()}",
+                        title="ynab-agent: inbound message quarantined",
+                        body=(
+                            f"From {message.from_address}: "
+                            f"{message.subject!r} was held, not acted on "
+                            f"({reason}). If this sender is legitimate, add "
+                            "the address to YNAB_AGENT_OWNERS and re-run "
+                            "the install; the sender can then re-send."
+                        ),
+                    ),
+                    start_to_close_timeout=ALERT_TIMEOUT,
+                    schedule_to_close_timeout=ALERT_BUDGET,
+                    retry_policy=ALERT_RETRY,
+                )
                 return DispatchResult(action="quarantine", detail=reason)
             case Ignore(reason=reason):
                 return DispatchResult(action="ignore", detail=reason)

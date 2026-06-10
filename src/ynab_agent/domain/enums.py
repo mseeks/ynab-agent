@@ -109,17 +109,6 @@ class FlagColor(StrEnum):
     PURPLE = "purple"
 
 
-class ShadowMode(StrEnum):
-    """The single bake-in spine flag (SPEC §0.6).
-
-    ``SHADOW`` proposes and verify-reads but skips the commit; ``LIVE`` runs the
-    normal ladder.
-    """
-
-    SHADOW = "shadow"
-    LIVE = "live"
-
-
 class ReviewVerdict(StrEnum):
     """The agent-powered safety review's one-way ratchet (SPEC §0.6).
 

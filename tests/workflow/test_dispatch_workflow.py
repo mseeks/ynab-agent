@@ -10,6 +10,7 @@ from temporalio.worker import Worker
 
 from ynab_agent.dispatch.classify import InboundKind, InboundMessage
 from ynab_agent.domain.ids import MessageId, ThreadId
+from ynab_agent.workflow.alert_types import FailureAlert
 from ynab_agent.workflow.dispatch_types import DispatchParams, DispatchResult
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.runtime import DATA_CONVERTER
@@ -81,6 +82,10 @@ def _activities(
     async def handle_command(message: InboundMessage) -> None:
         calls.append(("command", message.message_id))
 
+    @activity.defn(name="alert_failure")
+    async def alert_failure(alert: FailureAlert) -> None:
+        calls.append(("alert", alert.key))
+
     return [
         resolve_thread,
         resolve_offer_thread,
@@ -91,6 +96,7 @@ def _activities(
         signal_balance,
         route_receipt,
         handle_command,
+        alert_failure,
     ]
 
 
@@ -177,7 +183,21 @@ async def test_forwarded_receipt_routes_to_join() -> None:
     assert ("receipt", "m1") in calls
 
 
-async def test_unsigned_message_quarantined() -> None:
+async def test_unsigned_message_quarantined_and_paged() -> None:
+    # Held, never acted on — and never silently: the operator is paged,
+    # deduped per sender (SPEC §0.6, §13).
     result, calls = await _run(wf_id="d-quar", message=_msg(verified=False))
     assert result.action == "quarantine"
-    assert calls == []
+    assert calls == [("alert", "quarantine-matthew@example.com")]
+
+
+async def test_unlisted_sender_quarantined_and_paged() -> None:
+    # The spouse writing from an unlisted address must not vanish into a
+    # silent hold — the page names the sender so the operator can fix the
+    # allow-list.
+    result, calls = await _run(
+        wf_id="d-quar-sender", message=_msg(sender="spouse@other.com")
+    )
+    assert result.action == "quarantine"
+    assert "not allow-listed" in (result.detail or "")
+    assert calls == [("alert", "quarantine-spouse@other.com")]
