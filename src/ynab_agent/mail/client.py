@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import model_validator
 
 from ynab_agent.domain.base import Frozen
+from ynab_agent.mail.html import text_to_html
 
 if TYPE_CHECKING:
     from agentmail import AgentMail
@@ -38,11 +39,17 @@ class SentEmail(Frozen):
 
 
 class OutboundEmail(Frozen):
-    """One message to send: a new thread, or a reply continuing one."""
+    """One message to send: a new thread, or a reply continuing one.
+
+    ``html`` is the styled rendering of the same content; when unset, a clean
+    typographic rendering is derived from ``text`` so no email ever lands as
+    raw unstyled text. The text part always rides along as the fallback.
+    """
 
     inbox_id: str
     subject: str
     text: str
+    html: str | None = None
     to: tuple[str, ...] = ()
     reply_to_message_id: str | None = None
 
@@ -64,6 +71,7 @@ class MailBackend(Protocol):
         subject: str,
         text: str,
         labels: list[str] | None = None,
+        html: str | None = None,
     ) -> SentEmail:
         """Start a new thread."""
         ...
@@ -75,6 +83,7 @@ class MailBackend(Protocol):
         text: str,
         labels: list[str] | None = None,
         to: list[str] | None = None,
+        html: str | None = None,
     ) -> SentEmail:
         """Reply on an existing thread.
 
@@ -148,15 +157,21 @@ class MailClient:
 
     def send(self, email: OutboundEmail) -> SentEmail:
         """Send a new thread, or a reply if a message to reply to is set."""
+        html = email.html or text_to_html(email.text)
         if email.reply_to_message_id is not None:
             return self._backend.send_reply(
                 email.inbox_id,
                 email.reply_to_message_id,
                 email.text,
                 to=list(email.to) or None,
+                html=html,
             )
         return self._backend.send_new(
-            email.inbox_id, list(email.to), email.subject, email.text
+            email.inbox_id,
+            list(email.to),
+            email.subject,
+            email.text,
+            html=html,
         )
 
     def open_thread(
@@ -167,6 +182,7 @@ class MailClient:
         subject: str,
         body: str,
         txn_label: str,
+        html: str | None = None,
     ) -> str:
         """Open the transaction's thread (idempotent); return its id.
 
@@ -177,7 +193,12 @@ class MailClient:
         if existing is not None:
             return existing
         sent = self._backend.send_new(
-            inbox_id, to, subject, body, labels=[_AGENT_LABEL, txn_label]
+            inbox_id,
+            to,
+            subject,
+            body,
+            labels=[_AGENT_LABEL, txn_label],
+            html=html or text_to_html(body),
         )
         return sent.thread_id
 
@@ -189,6 +210,7 @@ class MailClient:
         body: str,
         seq_label: str,
         to: list[str] | None = None,
+        html: str | None = None,
     ) -> bool:
         """Reply on a thread (idempotent on ``seq_label``); True if sent.
 
@@ -204,7 +226,12 @@ class MailClient:
         if target is None:
             return False
         self._backend.send_reply(
-            inbox_id, target, body, labels=[_AGENT_LABEL, seq_label], to=to
+            inbox_id,
+            target,
+            body,
+            labels=[_AGENT_LABEL, seq_label],
+            to=to,
+            html=html or text_to_html(body),
         )
         return True
 
@@ -237,6 +264,7 @@ class MailClient:
                 subject,
                 body,
                 labels=[_AGENT_LABEL, thread_label, update_label],
+                html=text_to_html(body),
             )
             return sent.thread_id
         if self._backend.find_thread(inbox_id, update_label) is None:
@@ -251,6 +279,7 @@ class MailClient:
                     body,
                     labels=[_AGENT_LABEL, update_label],
                     to=to,
+                    html=text_to_html(body),
                 )
         return existing
 
@@ -272,9 +301,15 @@ class _AgentMailBackend:
         subject: str,
         text: str,
         labels: list[str] | None = None,
+        html: str | None = None,
     ) -> SentEmail:
         result = self._client.inboxes.messages.send(
-            inbox_id, to=to, subject=subject, text=text, labels=labels
+            inbox_id,
+            to=to,
+            subject=subject,
+            text=text,
+            html=html,
+            labels=labels,
         )
         return SentEmail(
             message_id=result.message_id, thread_id=result.thread_id
@@ -287,16 +322,17 @@ class _AgentMailBackend:
         text: str,
         labels: list[str] | None = None,
         to: list[str] | None = None,
+        html: str | None = None,
     ) -> SentEmail:
         # ``to`` overrides the recipients; omit it entirely (not None) when
         # unset so AgentMail keeps its own reply-addressing default.
         if to is not None:
             result = self._client.inboxes.messages.reply(
-                inbox_id, message_id, text=text, labels=labels, to=to
+                inbox_id, message_id, text=text, html=html, labels=labels, to=to
             )
         else:
             result = self._client.inboxes.messages.reply(
-                inbox_id, message_id, text=text, labels=labels
+                inbox_id, message_id, text=text, html=html, labels=labels
             )
         return SentEmail(
             message_id=result.message_id, thread_id=result.thread_id

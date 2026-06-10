@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.effects import MessagePurpose
+from ynab_agent.mail import html as email_html
 
 if TYPE_CHECKING:
     from ynab_agent.budget.balance import BalanceOption
@@ -225,24 +226,23 @@ def render_balance_stale(needy_name: str) -> str:
     )
 
 
-def render_body(request: ComposeRequest) -> str:
-    """Lay out the email body for one transaction message (SPEC §5).
+def _note(request: ComposeRequest) -> str:
+    """The message sentence(s) after the facts, per purpose (SPEC §5).
 
-    The subject is templated separately by the caller; this is the body. Every
-    purpose carries real copy for its lifecycle moment (SPEC §3 state notes) —
-    none of these may fall back to a contentless placeholder.
+    Shared by the text and HTML renderings so the copy can never drift between
+    the two parts. The PROPOSAL purpose is laid out structurally instead and
+    never reaches here. Every purpose carries real copy for its lifecycle
+    moment (SPEC §3 state notes) — none may fall back to a contentless
+    placeholder.
     """
-    facts = _facts(request)
     purpose = request.purpose
-    if purpose == MessagePurpose.PROPOSAL.value:
-        return _proposal_body(request, facts)
     if purpose == MessagePurpose.CONFIRM.value:
         category = (
             request.decided_category
             or request.proposed_category
             or "the category you picked"
         )
-        return f"{facts}\n\nDone — set to {category} and approved."
+        return f"Done — set to {category} and approved."
     if purpose == MessagePurpose.FYI.value:
         filed = (
             f"Filed automatically as {request.decided_category}"
@@ -250,44 +250,42 @@ def render_body(request: ComposeRequest) -> str:
             else "Filed automatically"
         )
         return (
-            f"{facts}\n\n{filed} under your standing rule and flagged in "
+            f"{filed} under your standing rule and flagged in "
             "YNAB so you can spot it. Reply here any time to change it."
         )
     if purpose == MessagePurpose.CLARIFY.value:
-        question = (
+        return (
             request.detail
             or request.question
             or "Which category should this be?"
         )
-        return f"{facts}\n\n{question}"
     if purpose == MessagePurpose.REVISE_SUMMARY.value:
         updated = (
             f"Updated — now {request.decided_category}, re-approved."
             if request.decided_category
             else "Updated and re-approved."
         )
-        return f"{facts}\n\n{updated} Reply if that's not right."
+        return f"{updated} Reply if that's not right."
     if purpose == MessagePurpose.HANDOFF.value:
         return (
-            f"{facts}\n\nI haven't heard back, so I'm leaving this one for "
+            "I haven't heard back, so I'm leaving this one for "
             "you to handle in YNAB — no more nudges from me. A reply here "
             "still works any time."
         )
     if purpose == MessagePurpose.POSSIBLY_INCONSISTENT.value:
         return (
-            f"{facts}\n\nI tried to update this in YNAB and couldn't confirm "
+            "I tried to update this in YNAB and couldn't confirm "
             "the change landed — please check it there, and reply with what "
             "you see so we end up in the right place."
         )
     if purpose == MessagePurpose.DIVERGED_READBACK.value:
-        comparison = request.detail or (
+        return request.detail or (
             "YNAB now shows something different from what was asked for — "
             "which should win? Reply with your choice and I'll set it."
         )
-        return f"{facts}\n\n{comparison}"
     if purpose == MessagePurpose.ARCHIVE_NOTICE.value:
         return (
-            f"{facts}\n\nThis one is still uncategorized and its window is "
+            "This one is still uncategorized and its window is "
             "closing. Reply with a category and I'll file it — or reply "
             "'handled' if you've taken care of it."
         )
@@ -298,14 +296,67 @@ def render_body(request: ComposeRequest) -> str:
             else "you recategorized this one yourself"
         )
         return (
-            f"{facts}\n\nNoticed {what} — I've backed off auto-handling this "
+            f"Noticed {what} — I've backed off auto-handling this "
             "payee and will go back to asking."
         )
     # An unmapped purpose would mean a new MessagePurpose without copy; say
     # something honest rather than nothing.
-    note = (
+    return (
         request.detail
         or request.question
         or ("A quick note on this transaction.")
     )
-    return f"{facts}\n\n{note}"
+
+
+def render_body(request: ComposeRequest) -> str:
+    """Lay out the email body for one transaction message (SPEC §5).
+
+    The subject is templated separately by the caller; this is the plain-text
+    part — the canonical copy, of which :func:`render_body_html` is only a
+    styled view.
+    """
+    facts = _facts(request)
+    if request.purpose == MessagePurpose.PROPOSAL.value:
+        return _proposal_body(request, facts)
+    return f"{facts}\n\n{_note(request)}"
+
+
+# The purposes that ask the owner to decide something: their note is the call
+# to action, so the HTML sets it slightly louder than body text.
+_PROMPT_PURPOSES = frozenset(
+    {
+        MessagePurpose.CLARIFY.value,
+        MessagePurpose.DIVERGED_READBACK.value,
+        MessagePurpose.ARCHIVE_NOTICE.value,
+    }
+)
+
+
+def render_body_html(request: ComposeRequest) -> str:
+    """The styled rendering of :func:`render_body` — same words, laid out.
+
+    A transaction card (payee, the amount big, date + memo muted), then the
+    purpose's content: the proposal's suggested-category box with the reply
+    hint under a hairline, a question set slightly louder, or the note as a
+    plain paragraph.
+    """
+    facts = email_html.facts_block(
+        payee=request.payee,
+        amount=request.amount_display,
+        date=request.txn_date,
+        memo=request.memo,
+    )
+    if request.purpose == MessagePurpose.PROPOSAL.value:
+        return email_html.wrap_email(
+            facts,
+            email_html.suggestion_block(
+                request.proposed_category or "(needs a category)",
+                request.alternatives,
+                request.rationale,
+            ),
+            email_html.footer_block(_REPLY_HINT),
+        )
+    note = _note(request)
+    if request.purpose in _PROMPT_PURPOSES:
+        return email_html.wrap_email(facts, email_html.prompt_block(note))
+    return email_html.wrap_email(facts, email_html.paragraphs(note))

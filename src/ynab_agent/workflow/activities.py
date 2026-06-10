@@ -300,16 +300,21 @@ def _render_message(
     *,
     detail: str | None = None,
     decision: Decision | None = None,
-) -> str:
-    """Lay out one message body for the thread (deterministic; SPEC §5).
+) -> tuple[str, str]:
+    """Lay out one message for the thread as ``(text, html)`` (SPEC §5).
 
-    The proposal's category + alternatives (model-chosen upstream) are resolved
-    to names here and handed to the template — no model call at send time.
-    ``detail`` and ``decision`` carry the message-specific payload from the
-    state machine (the clarify question, the diverged comparison, what a
-    confirm/FYI/revision actually wrote).
+    Deterministic. The proposal's category + alternatives (model-chosen
+    upstream) are resolved to names here and handed to the template — no model
+    call at send time. ``detail`` and ``decision`` carry the message-specific
+    payload from the state machine (the clarify question, the diverged
+    comparison, what a confirm/FYI/revision actually wrote). The two parts are
+    rendered from the same request, so the words can never differ.
     """
-    from ynab_agent.agentic.compose import ComposeRequest, render_body
+    from ynab_agent.agentic.compose import (
+        ComposeRequest,
+        render_body,
+        render_body_html,
+    )
 
     proposed = (
         _allocation_display(proposal.allocation, names)
@@ -339,7 +344,7 @@ def _render_message(
         detail=detail,
         decided_category=_decided_display(decision, names),
     )
-    return render_body(request)
+    return render_body(request), render_body_html(request)
 
 
 @activity.defn
@@ -367,7 +372,7 @@ async def open_thread(
 
     settings = Settings()
     snapshot, names = await _read_for_compose(ynab_id)
-    body = _render_message(
+    body, html = _render_message(
         snapshot, proposal, purpose, names, detail=detail, decision=decision
     )
     headline = _decided_display(decision, names) or (
@@ -383,6 +388,7 @@ async def open_thread(
         subject=_subject(snapshot, headline),
         body=body,
         txn_label=_txn_label(ynab_id),
+        html=html,
     )
 
 
@@ -417,7 +423,7 @@ async def send_thread_message(
         raise RuntimeError(msg)
     settings = Settings()
     snapshot, names = await _read_for_compose(ynab_id)
-    body = _render_message(
+    body, html = _render_message(
         snapshot, proposal, purpose, names, detail=detail, decision=decision
     )
     mail = MailClient.from_env()
@@ -428,6 +434,7 @@ async def send_thread_message(
         body=body,
         seq_label=_seq_label(ynab_id, action_seq),
         to=list(settings.owners),
+        html=html,
     )
 
 

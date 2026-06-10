@@ -24,6 +24,7 @@ class _FakeBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.reply_tos: list[list[str] | None] = []  # `to` per send_reply call
+        self.htmls: list[str | None] = []  # `html` per send call, in order
         self._labels: dict[str, str] = {}  # label -> thread_id (first to carry)
         self._last: dict[str, str] = {}  # thread_id -> last message_id
         self._msg_thread: dict[str, str] = {}  # message_id -> thread_id
@@ -45,8 +46,10 @@ class _FakeBackend:
         subject: str,
         text: str,
         labels: list[str] | None = None,
+        html: str | None = None,
     ) -> SentEmail:
         self.calls.append(("new", inbox_id, ",".join(to), subject, text))
+        self.htmls.append(html)
         thread_id = self._next("t")
         message_id = self._next("m")
         self._last[thread_id] = message_id
@@ -61,9 +64,11 @@ class _FakeBackend:
         text: str,
         labels: list[str] | None = None,
         to: list[str] | None = None,
+        html: str | None = None,
     ) -> SentEmail:
         self.calls.append(("reply", inbox_id, message_id, text))
         self.reply_tos.append(to)
+        self.htmls.append(html)
         thread_id = self._msg_thread.get(message_id, "t1")
         new_id = self._next("m")
         self._last[thread_id] = new_id
@@ -307,6 +312,44 @@ def test_alert_on_thread_dedups_a_retried_re_alert() -> None:
         update_label="yaspend-update-dining-2026-06-already_over-560000",
     )
     assert [c[0] for c in backend.calls] == ["new", "reply"]  # retry no-op
+
+
+def test_every_send_carries_an_html_part() -> None:
+    # No email lands as raw unstyled text: when the caller passes no html, a
+    # clean typographic rendering is derived from the text part.
+    backend = _FakeBackend()
+    client = MailClient(backend)
+    thread_id = client.open_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="s",
+        body="best guess: Dining",
+        txn_label="yatxn-abc",
+    )
+    client.send_on_thread(
+        inbox_id="ib",
+        thread_id=thread_id,
+        body="a follow-up",
+        seq_label="yaseq-abc-2",
+    )
+    assert len(backend.htmls) == 2
+    assert backend.htmls[0] is not None
+    assert "best guess: Dining" in backend.htmls[0]
+    assert backend.htmls[1] is not None
+    assert "a follow-up" in backend.htmls[1]
+
+
+def test_explicit_html_overrides_the_derived_default() -> None:
+    backend = _FakeBackend()
+    MailClient(backend).open_thread(
+        inbox_id="ib",
+        to=["wife@example.com"],
+        subject="s",
+        body="plain words",
+        txn_label="yatxn-x",
+        html="<div>styled card</div>",
+    )
+    assert backend.htmls == ["<div>styled card</div>"]
 
 
 def test_close_archives_the_thread() -> None:

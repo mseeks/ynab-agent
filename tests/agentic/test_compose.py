@@ -6,6 +6,7 @@ from ynab_agent.agentic.compose import (
     ComposeRequest,
     render_autonomy_offer,
     render_body,
+    render_body_html,
     render_command_confirm,
     render_offer_accepted,
     render_offer_declined,
@@ -165,6 +166,67 @@ def test_no_purpose_renders_the_placeholder_any_more() -> None:
     for purpose in MessagePurpose:
         body = render_body(_req(purpose=purpose.value))
         assert "A quick note on this transaction." not in body, purpose
+
+
+def test_html_proposal_carries_the_same_facts_and_suggestion() -> None:
+    html = render_body_html(
+        _req(
+            proposed_category="Entertainment",
+            alternatives=("Streaming",),
+            rationale="recurring stream",
+            memo="monthly plan",
+        )
+    )
+    assert "Hulu" in html
+    assert "-$13.07" in html
+    assert "May 29" in html
+    assert "monthly plan" in html
+    assert "Entertainment" in html
+    assert "or: Streaming" in html
+    assert "recurring stream" in html
+    assert "reply" in html.lower()
+
+
+def test_html_escapes_model_and_ynab_text() -> None:
+    html = render_body_html(
+        _req(
+            payee="Joe's <Diner> & Co",
+            proposed_category="Dining",
+            rationale='looks like a "restaurant"',
+        )
+    )
+    assert "<Diner>" not in html
+    assert "Joe&#x27;s &lt;Diner&gt; &amp; Co" in html
+
+
+def test_html_clarify_sets_the_question_as_the_prompt() -> None:
+    html = render_body_html(
+        _req(purpose=MessagePurpose.CLARIFY.value, question="Which trip?")
+    )
+    assert "Which trip?" in html
+    assert "font-weight:500" in html  # the call to action is set louder
+
+
+def test_every_purpose_renders_html_with_the_same_words() -> None:
+    # The HTML is a styled view of the text part, never different copy: every
+    # purpose's note must appear (escaped) in the HTML rendering too. The
+    # proposal is laid out structurally and covered by its own test above.
+    from ynab_agent.mail.html import escape
+
+    for purpose in MessagePurpose:
+        if purpose is MessagePurpose.PROPOSAL:
+            continue
+        request = _req(
+            purpose=purpose.value,
+            proposed_category="Dining",
+            decided_category="Dining",
+            detail="the carried detail",
+        )
+        text = render_body(request)
+        html = render_body_html(request)
+        note = text.split("\n\n", 1)[1]
+        for line in note.splitlines():
+            assert escape(line) in html or not line, (purpose, line)
 
 
 def test_autonomy_offer_names_payee_category_and_asks_yes_no() -> None:
