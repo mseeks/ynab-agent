@@ -124,7 +124,9 @@ def _client() -> _Client:
         eligible=(_rule("eligible", TrustState.TRUSTED, RuleSource.LEARNED),),
     )
     routes = [
-        ("PollWorkflow", [_Exec("poll-1", _S.COMPLETED)]),
+        # The continuous loop's current run: RUNNING (a COMPLETED run is a
+        # finished one-shot and deliberately does NOT count as live).
+        ("PollWorkflow", [_Exec("poll-1", _S.RUNNING)]),
         (
             "TransactionWorkflow' AND ExecutionStatus = 'Running'",
             [_Exec("t1", _S.RUNNING), _Exec("t2", _S.RUNNING)],
@@ -164,6 +166,13 @@ def test_fetch_derives_the_whole_ledger() -> None:
     assert readout.archived == 2
     assert readout.terminated == 1
     assert len(readout.failures) == 1
+
+
+def test_a_completed_one_shot_poll_is_not_a_live_loop() -> None:
+    client = _client()
+    client._routes[0] = ("PollWorkflow", [_Exec("poll-1", _S.COMPLETED)])
+    readout, _error = asyncio.run(temporal_source.fetch(client))  # type: ignore[arg-type]
+    assert readout.poll_live is False
 
 
 def test_fetch_degrades_to_an_error_when_visibility_is_down() -> None:

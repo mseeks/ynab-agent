@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ynab_agent.dashboard import read_model
 from ynab_agent.dashboard.model import (
@@ -87,7 +87,7 @@ def test_queue_merges_proposals_and_offers() -> None:
     kinds = sorted(q.kind for q in model.needs_you)
     assert kinds == ["offer", "proposal"]
     offer = next(q for q in model.needs_you if q.kind == "offer")
-    assert offer.label == "Spotify"
+    assert offer.label == "Auto-handle Spotify?"
 
 
 def test_queue_splits_needs_you_from_already_handled() -> None:
@@ -188,6 +188,87 @@ def test_health_verdict_branches() -> None:
     )
     assert (m.health.tone, m.health.label) == ("ok", "healthy")
     assert m.health.poll_status == "running"
+
+
+def test_a_stalled_poll_reads_down_not_healthy() -> None:
+    # The server says RUNNING even with a dead worker — the run just never
+    # advances. No fresh tick (continue-as-new start) in 3h means ingestion
+    # has stopped, the exact condition the §13 deadman pages on.
+    stale = TemporalReadout(
+        poll_live=True,
+        poll_status="running",
+        poll_last_start=_NOW - timedelta(hours=4),
+    )
+    m = _assemble(temporal=(stale, None), ynab=(Budget(available=True), None))
+    assert m.health.poll_stale is True
+    assert (m.health.tone, m.health.label) == ("bad", "down")
+    fresh = stale.model_copy(
+        update={"poll_last_start": _NOW - timedelta(hours=1)}
+    )
+    m2 = _assemble(temporal=(fresh, None), ynab=(Budget(available=True), None))
+    assert m2.health.poll_stale is False
+    assert m2.health.tone == "ok"
+
+
+def test_worker_staleness_spans_two_poll_intervals() -> None:
+    # A quiet worker legitimately does nothing between hourly ticks: 90
+    # minutes of span silence is normal (the old one-interval threshold
+    # flapped degraded every hour); three hours is a real warning.
+    live = TemporalReadout(
+        poll_live=True, poll_status="running", poll_last_start=_NOW
+    )
+    quiet = RunTelemetry(
+        available=True,
+        total_spans=10,
+        last_activity=_NOW - timedelta(minutes=90),
+    )
+    m = _assemble(
+        temporal=(live, None),
+        ynab=(Budget(available=True), None),
+        clickhouse=(quiet, None),
+    )
+    assert m.health.tone == "ok"
+    silent = quiet.model_copy(
+        update={"last_activity": _NOW - timedelta(hours=3)}
+    )
+    m2 = _assemble(
+        temporal=(live, None),
+        ynab=(Budget(available=True), None),
+        clickhouse=(silent, None),
+    )
+    assert m2.health.tone == "warn"
+
+
+def test_off_sources_are_marked_off_not_broken() -> None:
+    # Deliberately-unconfigured optional sources are a choice, not a fault —
+    # they must be distinguishable from a configured-but-broken one.
+    m = _assemble(temporal=(TemporalReadout(), "RPCError: down"))
+    by_name = {s.name: s for s in m.sources}
+    assert by_name["clickhouse"].off is True  # the "off" fixtures
+    assert by_name["github"].off is True
+    assert by_name["temporal"].off is False  # genuinely broken
+    assert by_name["temporal"].ok is False
+
+
+def test_offer_fallbacks_never_show_a_raw_uuid() -> None:
+    with_payee = TemporalReadout(
+        offers=(OfferRow(rule_id="r9", payee="Spotify", status="running"),),
+    )
+    m = _assemble(temporal=(with_payee, None))
+    offer = next(q for q in m.needs_you if q.kind == "offer")
+    assert offer.label == "Auto-handle Spotify?"
+
+    bare = TemporalReadout(
+        offers=(
+            OfferRow(
+                rule_id="0123456789abcdef0123", payee="", status="running"
+            ),
+        ),
+    )
+    m2 = _assemble(temporal=(bare, None))
+    offer2 = next(q for q in m2.needs_you if q.kind == "offer")
+    assert offer2.label == "autonomy offer 01234567"
+    assert "0123456789abcdef0123" not in offer2.label
 
 
 def test_health_warns_on_high_span_error_rate() -> None:

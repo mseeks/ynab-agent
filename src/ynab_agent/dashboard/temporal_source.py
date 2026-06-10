@@ -12,7 +12,7 @@ never raising into the page.
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
 
 from temporalio.client import WorkflowExecutionStatus
@@ -123,9 +123,10 @@ async def _poll(client: Client) -> tuple[str, bool, datetime | None]:
             latest = execution
     if latest is None:
         return "none", False, None
+    # Only a loop that can still tick is live — the same statuses the §13
+    # deadman accepts. A COMPLETED run is a finished one-shot, not the loop.
     live = latest.status in (
         WorkflowExecutionStatus.RUNNING,
-        WorkflowExecutionStatus.COMPLETED,
         WorkflowExecutionStatus.CONTINUED_AS_NEW,
     )
     return _status(latest), live, latest.start_time
@@ -171,8 +172,12 @@ async def _lifecycle(
 
 async def _registry(
     client: Client,
-) -> tuple[tuple[RuleRow, ...], int, int, int]:
-    """The rule table + (observe, eligible, blessed) counts (view query)."""
+) -> tuple[tuple[RuleRow, ...], int, int, int, dict[str, str]]:
+    """The rule table + ladder counts + an id→payee map (view query).
+
+    The payee map humanizes the live-offer rows: an offer workflow's id only
+    carries the rule id, and a raw UUID in the owner's queue says nothing.
+    """
     from ynab_agent.domain.allocations import ProposedCategory
     from ynab_agent.domain.enums import RuleSource, TrustState
     from ynab_agent.workflow.registry_types import RegistryView
@@ -180,8 +185,10 @@ async def _registry(
     handle = client.get_workflow_handle(_REGISTRY_ID)
     view = await handle.query("view", result_type=RegistryView)
     rows: list[RuleRow] = []
+    payees: dict[str, str] = {}
     observe = eligible = blessed = 0
     for rule in view.rules:
+        payees[str(rule.id)] = rule.match.payee_pattern
         allocation = rule.action.allocation
         category = (
             str(allocation.category)
@@ -205,10 +212,12 @@ async def _registry(
             eligible += 1
         else:
             observe += 1
-    return tuple(rows), observe, eligible, blessed
+    return tuple(rows), observe, eligible, blessed, payees
 
 
-async def _offers(client: Client) -> tuple[OfferRow, ...]:
+async def _offers(
+    client: Client, payees: dict[str, str]
+) -> tuple[OfferRow, ...]:
     """The live autonomy-offer workflows (awaiting the owner's yes/no)."""
     offers: list[OfferRow] = []
     async for execution in _take(
@@ -217,10 +226,11 @@ async def _offers(client: Client) -> tuple[OfferRow, ...]:
             "AND ExecutionStatus = 'Running'"
         )
     ):
+        rule_id = execution.id.removeprefix("autonomy-offer-")
         offers.append(
             OfferRow(
-                rule_id=execution.id.removeprefix("autonomy-offer-"),
-                payee="",
+                rule_id=rule_id,
+                payee=payees.get(rule_id, ""),
                 status=_status(execution),
                 started_at=execution.start_time,
             )
@@ -281,8 +291,17 @@ async def _reason(client: Client, execution: WorkflowExecution) -> str | None:
         return None
 
 
+_MAX_FAILURES: Final = 12
+
+
 async def _terminal(client: Client) -> tuple[int, int, tuple[Failure, ...]]:
-    """Recent archived (completed W2) + terminated/failed counts + failures."""
+    """Recent archived (completed W2) + terminated/failed counts + failures.
+
+    Visibility pages in no useful order, so the terminal executions are
+    gathered first and sorted by close time — the listed failures are the
+    *most recent* ones, not the first the server happened to return. The
+    expensive per-workflow reason fetch runs only for the listed few.
+    """
     archived = terminated = 0
     failures: list[Failure] = []
     async for _completed in _take(
@@ -292,24 +311,28 @@ async def _terminal(client: Client) -> tuple[int, int, tuple[Failure, ...]]:
         )
     ):
         archived += 1
+    terminal: list[WorkflowExecution] = []
     async for execution in _take(
         client.list_workflows(
             "ExecutionStatus = 'Terminated' OR ExecutionStatus = 'Failed'"
         )
     ):
         terminated += 1
-        if len(failures) < 25:
-            kind = _status(execution)
-            reason = await _reason(client, execution)
-            failures.append(
-                Failure(
-                    workflow_id=execution.id,
-                    kind=kind,
-                    reason=reason,
-                    when=execution.close_time,
-                    intentional=_intentional(kind, reason),
-                )
+        terminal.append(execution)
+    epoch = datetime(1, 1, 1, tzinfo=UTC)  # unknown close time sorts last
+    terminal.sort(key=lambda e: e.close_time or epoch, reverse=True)
+    for execution in terminal[:_MAX_FAILURES]:
+        kind = _status(execution)
+        reason = await _reason(client, execution)
+        failures.append(
+            Failure(
+                workflow_id=execution.id,
+                kind=kind,
+                reason=reason,
+                when=execution.close_time,
+                intentional=_intentional(kind, reason),
             )
+        )
     return archived, terminated, tuple(failures)
 
 
@@ -344,10 +367,11 @@ async def fetch(client: Client) -> tuple[TemporalReadout, str | None]:
         errors.append(f"lifecycle: {type(exc).__name__}")
     # The registry may not exist until the first learning signal — a normal
     # state, not an error, so its absence is simply suppressed.
+    payees: dict[str, str] = {}
     with contextlib.suppress(Exception):
-        rules, observe, eligible, blessed = await _registry(client)
+        rules, observe, eligible, blessed, payees = await _registry(client)
     try:
-        offers = await _offers(client)
+        offers = await _offers(client, payees)
     except Exception as exc:
         errors.append(f"offers: {type(exc).__name__}")
     try:

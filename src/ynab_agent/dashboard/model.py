@@ -19,11 +19,16 @@ from ynab_agent.domain.base import Frozen
 
 
 class SourceHealth(Frozen):
-    """One data source's liveness dot (green when ``ok``, else red)."""
+    """One data source's liveness dot.
+
+    Green when ``ok``; gray when ``off`` (deliberately unconfigured — not a
+    fault); red otherwise (configured but broken).
+    """
 
     name: str
     ok: bool
     detail: str
+    off: bool = False
 
 
 # ── State of things (the narrative) ──────────────────────────────────────────
@@ -54,6 +59,7 @@ class Health(Frozen):
     tone: str = "ok"  # "ok" | "warn" | "bad"
     label: str = "healthy"
     poll_live: bool = False
+    poll_stale: bool = False  # RUNNING on the server but no fresh tick
     poll_status: str = "none"  # the W1 poll's latest execution status
     poll_last_start: datetime | None = None
     worker_last_span: datetime | None = None

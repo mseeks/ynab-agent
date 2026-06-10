@@ -36,8 +36,15 @@ if TYPE_CHECKING:
     )
     from ynab_agent.dashboard.temporal_source import TemporalReadout
 
-# A worker span older than this reads as a stale heartbeat (warn).
-_STALE_WORKER_SECS = 3600.0
+# A worker span older than this reads as a stale heartbeat (warn). Two poll
+# intervals, NOT one: a quiet worker legitimately does nothing between hourly
+# ticks, so a one-interval threshold flapped healthy/degraded every hour.
+STALE_WORKER_SECS = 7200.0
+# The W1 loop continues-as-new each tick, so a RUNNING run whose start is
+# older than this means the worker has stopped processing it — the server
+# keeps saying RUNNING with a dead worker. Mirrors the deadman's horizon
+# (``poll_activities.POLL_STALE_AFTER``).
+_STALE_POLL_SECS = 3 * 3600.0
 # A trace error rate above this contributes a warn to the health rollup.
 _ERROR_RATE_WARN = 0.05
 # The activities whose run-count means "a category was written to YNAB".
@@ -45,9 +52,15 @@ _APPLIED_ACTIVITY = "commit_to_ynab"
 
 
 def _health(name: str, error: str | None, ok_detail: str) -> SourceHealth:
-    """A source dot: green with a summary, or red with the error/'off'."""
+    """A source dot: green, gray for deliberately-off, red for broken.
+
+    An unconfigured optional source is a choice, not a fault, and must not
+    read like breakage.
+    """
     if error is None:
         return SourceHealth(name=name, ok=True, detail=ok_detail)
+    if error == "off":
+        return SourceHealth(name=name, ok=False, detail="off", off=True)
     return SourceHealth(name=name, ok=False, detail=error)
 
 
@@ -128,12 +141,17 @@ def _humanize_queue(
 
     for offer in readout.offers:
         convo = convo_by_ref.get(offer.rule_id)
+        # Best label first: the offer email's subject, then the rule's payee,
+        # then a *short* id with a human prefix — never a raw 32-char UUID.
+        label = (
+            (convo.subject if convo else None)
+            or (f"Auto-handle {offer.payee}?" if offer.payee else None)
+            or f"autonomy offer {_short(offer.rule_id)}"
+        )
         needs_you.append(
             QueueItem(
                 kind="offer",
-                label=(convo.subject if convo else None)
-                or offer.payee
-                or offer.rule_id,
+                label=label,
                 ident=offer.rule_id,
                 since=offer.started_at,
                 payee=offer.payee or None,
@@ -166,15 +184,23 @@ def _rollup(
     real_failures = sum(1 for f in failures if not f.intentional)
     worker_stale = (
         worker_last is not None
-        and (now - _aware(worker_last, now)).total_seconds()
-        > _STALE_WORKER_SECS
+        and (now - _aware(worker_last, now)).total_seconds() > STALE_WORKER_SECS
+    )
+    # The server reports RUNNING even when no worker is processing the loop —
+    # the run just never advances. A fresh start each tick (continue-as-new)
+    # is the real heartbeat, so an old start means ingestion has stopped.
+    poll_stale = (
+        poll_live
+        and poll_last_start is not None
+        and (now - _aware(poll_last_start, now)).total_seconds()
+        > _STALE_POLL_SECS
     )
 
     # Tone is *current* operational health — can it do its job right now. An
     # isolated historical failure is surfaced (chip + narrative) but doesn't
     # flip the verdict; a stuck worker, an unreachable money source, or a high
     # live error rate does.
-    if not poll_live or temporal_error is not None:
+    if not poll_live or poll_stale or temporal_error is not None:
         tone, label = "bad", "down"
     elif (
         worker_stale
@@ -189,6 +215,7 @@ def _rollup(
         tone=tone,
         label=label,
         poll_live=poll_live,
+        poll_stale=poll_stale,
         poll_status=poll_status,
         poll_last_start=poll_last_start,
         worker_last_span=worker_last,

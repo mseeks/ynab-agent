@@ -212,6 +212,43 @@ def test_empty_model_still_renders() -> None:
     assert "not configured" in html  # telemetry rail degrades cleanly
 
 
+def test_stalled_poll_reads_stalled() -> None:
+    full = _full()
+    stalled = full.model_copy(
+        update={
+            "health": full.health.model_copy(
+                update={"poll_stale": True, "tone": "bad", "label": "down"}
+            )
+        }
+    )
+    html = render.page(stalled)
+    assert "stalled" in html
+    # The healthy page never says it.
+    assert "stalled" not in render.page(full)
+
+
+def test_off_source_gets_a_mute_dot_not_a_red_one() -> None:
+    full = _full()
+    model = full.model_copy(
+        update={
+            "sources": (
+                SourceHealth(name="temporal", ok=False, detail="boom"),
+                SourceHealth(name="github", ok=False, detail="off", off=True),
+            )
+        }
+    )
+    html = render.page(model)
+    assert '<span class="dot mute"></span>github' in html
+    assert '<span class="dot bad"></span>temporal' in html
+
+
+def test_failures_rail_notes_the_recency_cap() -> None:
+    # 2 failures listed, 4 terminal retained → say so, instead of letting the
+    # short list read as the whole story.
+    html = render.page(_full())
+    assert "2 most recent of 4" in html
+
+
 def test_needs_you_split_and_empty_states_render() -> None:
     full = _full()
     html = render.page(full)

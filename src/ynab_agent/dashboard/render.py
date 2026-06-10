@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from html import escape
 from typing import TYPE_CHECKING
 
+from ynab_agent.dashboard.read_model import STALE_WORKER_SECS
 from ynab_agent.domain.config import HOUSEHOLD_TZ
 
 if TYPE_CHECKING:
@@ -227,9 +228,12 @@ def _masthead(model: DashboardModel) -> str:
         )
     else:
         chips.append('<span class="chip ok">✓ all caught up</span>')
-    poll_cls = "ok" if h.poll_live else "bad"
+    poll_cls = "ok" if h.poll_live and not h.poll_stale else "bad"
     poll_age = escape(_ago(h.poll_last_start, now))
-    chips.append(f'<span class="chip">{_dot(poll_cls)} poll {poll_age}</span>')
+    stalled = " · stalled" if h.poll_stale else ""
+    chips.append(
+        f'<span class="chip">{_dot(poll_cls)} poll {poll_age}{stalled}</span>'
+    )
     if model.budget.available:
         chips.append(
             f'<span class="chip">{model.budget.unapproved} unapproved</span>'
@@ -241,7 +245,8 @@ def _masthead(model: DashboardModel) -> str:
         )
 
     src = "".join(
-        f"<span>{_dot('ok' if s.ok else 'bad')}{escape(s.name)} "
+        f"<span>{_dot('ok' if s.ok else ('mute' if s.off else 'bad'))}"
+        f"{escape(s.name)} "
         f'<span class="faint">{escape(s.detail)}</span></span>'
         for s in model.sources
     )
@@ -339,16 +344,22 @@ def _qrow(q: QueueItem, now: datetime) -> str:
 def _working(model: DashboardModel) -> str:
     h = model.health
     now = model.generated_at
-    poll_word = escape(h.poll_status) if h.poll_live else "stopped"
+    if not h.poll_live:
+        poll_word = "stopped"
+    elif h.poll_stale:
+        poll_word = "stalled — no fresh tick"
+    else:
+        poll_word = escape(h.poll_status)
+    poll_ok = h.poll_live and not h.poll_stale
     poll_age = escape(_ago(h.poll_last_start, now))
     kpis = [
-        f'<span class="kpi">{_dot("ok" if h.poll_live else "bad")}'
+        f'<span class="kpi">{_dot("ok" if poll_ok else "bad")}'
         f'<b>poll</b> <span class="mut">{poll_word} '
         f"&middot; {poll_age}</span></span>"
     ]
     if h.worker_last_span is not None:
         wago = (now - _aware(h.worker_last_span)).total_seconds()
-        wdot = "ok" if wago < 3600 else "warn"
+        wdot = "ok" if wago < STALE_WORKER_SECS else "warn"
         span_age = escape(_ago(h.worker_last_span, now))
         kpis.append(
             f'<span class="kpi">{_dot(wdot)}<b>worker</b> '
@@ -570,7 +581,16 @@ def _failures_rail(model: DashboardModel) -> str:
         )
     extra = f" · {len(intentional)} resets" if intentional else ""
     count = f"{len(real)} real{extra}"
-    return _rail("Failures & resets", count, real_html + intentional_html)
+    listed = len(model.failures)
+    more = ""
+    if model.lifecycle.terminated > listed:
+        more = (
+            f'<p class="note">Showing the {listed} most recent of '
+            f"{model.lifecycle.terminated} terminal workflows retained.</p>"
+        )
+    return _rail(
+        "Failures & resets", count, real_html + intentional_html + more
+    )
 
 
 def _dispatch_rail(model: DashboardModel) -> str:
