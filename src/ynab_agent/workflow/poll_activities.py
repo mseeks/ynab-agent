@@ -45,9 +45,19 @@ async def address_transaction(action: AddressTxn) -> None:
     reset) can be re-created. The W2 reads its own snapshot in ``DISCOVERED``.
     ``route_to_human`` is not yet differentiated in v1 — the autonomy gate
     already routes conservatively — so it is carried for observability only.
+
+    One exception to the no-op: when ``notify_existing`` is set (an Amazon
+    item-detail memo has backfilled, SPEC §2/§3), W1 *signals* the
+    already-running W2 the fresh snapshot via ``notify_snapshot`` so a
+    ``HOLD_AMAZON`` run resolves early instead of waiting out the ~36h deadline.
+    Other states ignore the signal; a settled run can no longer be signalled
+    (suppressed), and the next tick re-tries while the txn stays unapproved.
     """
+    import contextlib
+
     from temporalio.common import WorkflowIDReusePolicy
     from temporalio.exceptions import WorkflowAlreadyStartedError
+    from temporalio.service import RPCError
 
     from ynab_agent.workflow.temporal_client import client, task_queue
     from ynab_agent.workflow.types import TransactionParams
@@ -63,4 +73,8 @@ async def address_transaction(action: AddressTxn) -> None:
             id_reuse_policy=(WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY),
         )
     except WorkflowAlreadyStartedError:
-        return
+        if not action.notify_existing:
+            return
+        handle = temporal.get_workflow_handle(str(ynab_id))
+        with contextlib.suppress(RPCError):
+            await handle.signal("notify_snapshot", action.snapshot)
