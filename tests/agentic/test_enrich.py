@@ -374,3 +374,25 @@ async def test_live_gemma_categorizes_a_coffee_shop() -> None:
     out = await propose(_REQUEST)
     assert out.category_id in {"dining", "groceries"}
     assert out.rationale
+
+
+def test_prompt_leads_with_the_stable_candidate_block() -> None:
+    # Prefix-cache contract: the candidate list is byte-stable across calls
+    # (one budget, one category list), so it must precede the per-call facts
+    # — together with the static system prompt it forms the shared prefix
+    # the model server can skip re-prefilling.
+    from ynab_agent.agentic.enrich import _format_request
+
+    prompt = _format_request(
+        EnrichmentRequest(
+            payee="Hulu",
+            amount_display="-$13.07",
+            memo="monthly",
+            rule_hint="past transactions were filed under 'Streaming'",
+            candidates=(CandidateCategory(id="c1", name="Streaming"),),
+        )
+    )
+    assert prompt.index("Candidate categories:") < prompt.index("Payee:")
+    assert prompt.rstrip().endswith(
+        "Rule hint: past transactions were filed under 'Streaming'"
+    )

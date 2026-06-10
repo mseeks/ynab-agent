@@ -180,3 +180,13 @@ async def test_live_gemma_reads_an_approval() -> None:
     # SPEC §0.5 spike #2: real Gemma reads a plain "ok" as some valid intent.
     out = await interpret(_REQUEST)
     assert out.intent in set(ReplyIntent)
+
+
+def test_prompt_leads_with_the_stable_candidate_block() -> None:
+    # Prefix-cache contract: the byte-stable candidate list precedes the
+    # per-call facts, and the reply (the most variable line) comes last.
+    from ynab_agent.agentic.interpret import _format_request
+
+    prompt = _format_request(_REQUEST)
+    assert prompt.index("Candidate categories:") < prompt.index("Payee:")
+    assert prompt.rstrip().split("\n")[-1].startswith("Reply:")

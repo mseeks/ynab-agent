@@ -75,8 +75,8 @@ class Interpretation(Frozen):
 
 _SYSTEM_PROMPT = """\
 You read one reply a human sent about a proposed transaction categorization. You
-are given the reply text, the payee and amount, the category currently proposed,
-and the candidate categories (id + name).
+are given the candidate categories (id + name), the payee and amount, the
+category currently proposed, and finally the reply text itself.
 
 Classify the reply's intent: `approve` if they accept the current proposal (e.g.
 "ok", "yes", "sounds good"); `recategorize` if they name or describe a category
@@ -101,15 +101,22 @@ _AGENT: Agent[None, Interpretation] = Agent(
 
 
 def _format_request(request: InterpretRequest) -> str:
-    """Render the request as the agent's user prompt."""
-    lines = [
-        f"Reply: {request.reply_text}",
-        f"Payee: {request.payee}",
-        f"Amount: {request.amount_display}",
-        f"Currently proposed: {request.proposed_category_name or '(none)'}",
-        "Candidate categories:",
-    ]
+    """Render the request as the agent's user prompt.
+
+    Ordered for KV prefix-cache reuse: the candidate category list is
+    byte-stable across calls, so it leads and extends the shared prefix the
+    server can skip re-prefilling; the per-call facts follow, with the
+    reply — the most variable line — last (which also puts it nearest the
+    generation point).
+    """
+    lines = ["Candidate categories:"]
     lines.extend(f"  - {c.name} (id: {c.id})" for c in request.candidates)
+    lines.append(f"Payee: {request.payee}")
+    lines.append(f"Amount: {request.amount_display}")
+    lines.append(
+        f"Currently proposed: {request.proposed_category_name or '(none)'}"
+    )
+    lines.append(f"Reply: {request.reply_text}")
     return "\n".join(lines)
 
 

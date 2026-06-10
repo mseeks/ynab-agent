@@ -72,8 +72,9 @@ class EnrichmentSuggestion(Frozen):
 
 _SYSTEM_PROMPT = """\
 You categorize a single bank transaction for a personal budget. You are given
-the payee, amount, an optional memo, an optional hint from a learned rule, and a
-list of candidate budget categories (each with an id and a name).
+a list of candidate budget categories (each with an id and a name), then the
+transaction's facts: payee, amount, an optional memo, and an optional hint
+from a learned rule.
 
 Choose the SINGLE best category for the transaction. Your `category_id` MUST be
 one of the provided candidate ids — never invent one. Also list up to 2
@@ -89,17 +90,22 @@ _AGENT: Agent[None, EnrichmentSuggestion] = Agent(
 
 
 def _format_request(request: EnrichmentRequest) -> str:
-    """Render the request as the agent's user prompt."""
-    lines = [
-        f"Payee: {request.payee}",
-        f"Amount: {request.amount_display}",
-    ]
+    """Render the request as the agent's user prompt.
+
+    Ordered for KV prefix-cache reuse: the candidate category list is
+    byte-stable across calls (one budget, one category list), so it leads
+    and extends the shared prefix the server can skip re-prefilling; the
+    per-call facts (payee, amount, memo, hint) trail. With dozens of
+    categories the stable block is most of the prompt.
+    """
+    lines = ["Candidate categories:"]
+    lines.extend(f"  - {c.name} (id: {c.id})" for c in request.candidates)
+    lines.append(f"Payee: {request.payee}")
+    lines.append(f"Amount: {request.amount_display}")
     if request.memo:
         lines.append(f"Memo: {request.memo}")
     if request.rule_hint:
         lines.append(f"Rule hint: {request.rule_hint}")
-    lines.append("Candidate categories:")
-    lines.extend(f"  - {c.name} (id: {c.id})" for c in request.candidates)
     return "\n".join(lines)
 
 
