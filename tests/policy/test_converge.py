@@ -79,6 +79,23 @@ def test_classify_verify_outcomes() -> None:
     assert classify_verify(_target("gifts"), target) is VerifyOutcome.DIVERGED
 
 
+def test_verify_ignores_the_memo_when_none_was_intended() -> None:
+    # A bare "Gifts" reply carries no memo intent; the transaction's existing
+    # memo (an Amazon item list) must not read as a divergence — it used to
+    # flag EVERY such write with a baffling "which should win?" email.
+    read_back = _target("dining", memo="Corn Starch, item list")
+    assert classify_verify(read_back, _target("dining")) is VerifyOutcome.MATCH
+    # But a memo the decision DID intend still verifies strictly...
+    assert (
+        classify_verify(read_back, _target("dining", memo="other"))
+        is VerifyOutcome.DIVERGED
+    )
+    # ...and a category mismatch diverges regardless of memos.
+    assert (
+        classify_verify(read_back, _target("gifts")) is VerifyOutcome.DIVERGED
+    )
+
+
 def test_target_of_projects_a_decision() -> None:
     decision = Decision(
         allocation=ResolvedCategory(category=CategoryId("dining")),

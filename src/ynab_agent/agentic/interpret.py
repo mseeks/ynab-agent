@@ -15,6 +15,7 @@ defaulting to a clarifying question whenever a switch arrives without a category
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import TYPE_CHECKING, assert_never
 
@@ -132,6 +133,25 @@ async def interpret(
     )
 
 
+def _supported_memo(memo: str | None, reply_text: str) -> str | None:
+    """Keep a memo only when the reply actually contains its substance.
+
+    The memo is *defined* as context distilled from the reply ("never invent
+    detail"), but the model occasionally fabricates one anyway — e.g. echoing
+    a category name — and a fabricated memo overwrites real YNAB detail (an
+    Amazon item list, gone). Deterministic guard: at least one substantive
+    word of the memo must appear in the reply, else the memo is dropped (the
+    safe loss — a nice-to-have note — over the unsafe write).
+    """
+    if memo is None:
+        return None
+    words = re.findall(r"[A-Za-z0-9']{3,}", memo.lower())
+    if not words:
+        return None
+    reply = reply_text.lower()
+    return memo if any(word in reply for word in words) else None
+
+
 def _human_decision(
     category: CategoryId,
     decided_at: datetime.datetime,
@@ -153,6 +173,7 @@ def to_reply_outcome(
     proposed_category: CategoryId | None,
     decided_at: datetime.datetime,
     candidates: tuple[CandidateCategory, ...],
+    reply_text: str,
 ) -> ReplyOutcome:
     """Map the agent's reading onto a domain ReplyOutcome (SPEC §3, §14.4).
 
@@ -161,9 +182,11 @@ def to_reply_outcome(
     one (or asks, if none was given *or* the model invented an id — a write
     against a hallucinated category would land wrong or 400); ``clarify`` sends
     the question back. Any rationale the reply carried rides along as the
-    decision's ``memo`` (the spine writes it to YNAB). The spine, not the
+    decision's ``memo`` (the spine writes it to YNAB) — but only when the
+    reply actually contains it (:func:`_supported_memo`). The spine, not the
     model, sets decider and time.
     """
+    memo = _supported_memo(interpretation.memo, reply_text)
     match interpretation.intent:
         case ReplyIntent.APPROVE:
             if proposed_category is None:
@@ -175,7 +198,7 @@ def to_reply_outcome(
                 )
             return AnswerOutcome(
                 decision=_human_decision(
-                    proposed_category, decided_at, memo=interpretation.memo
+                    proposed_category, decided_at, memo=memo
                 )
             )
         case ReplyIntent.RECATEGORIZE:
@@ -186,7 +209,7 @@ def to_reply_outcome(
                     decision=_human_decision(
                         CategoryId(interpretation.category_id),
                         decided_at,
-                        memo=interpretation.memo,
+                        memo=memo,
                     )
                 )
             if interpretation.category_id:

@@ -109,6 +109,12 @@ def classify_verify(
     """
     if read_back is None:
         return VerifyOutcome.COULD_NOT_CONFIRM
+    # A target with no memo means "no memo intent — leave it alone" (the agent
+    # never clears a memo), so the read-back's memo must not count against the
+    # match: a bare "Gifts" reply on a transaction carrying an Amazon item
+    # list used to diverge on every single write because None != that memo.
+    if target.memo is None:
+        read_back = read_back.model_copy(update={"memo": None})
     if content_hash(read_back) == content_hash(target):
         return VerifyOutcome.MATCH
     return VerifyOutcome.DIVERGED

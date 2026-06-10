@@ -352,6 +352,7 @@ def _resolve_write_verify(
                 MessagePurpose.POSSIBLY_INCONSISTENT,
                 now=now,
                 policy=policy,
+                decision=decision,
             )
         case VerifyOutcome.DIVERGED:
             return _enter_flagged_awaiting(
@@ -360,6 +361,10 @@ def _resolve_write_verify(
                 MessagePurpose.DIVERGED_READBACK,
                 now=now,
                 policy=policy,
+                # Carry what was written, so the email can name the two sides
+                # ("YNAB now shows X, but I set Y") instead of the generic
+                # which-should-win line.
+                decision=decision,
             )
     assert_never(outcome)
 
@@ -372,12 +377,13 @@ def _enter_flagged_awaiting(
     now: datetime.datetime,
     policy: LifecyclePolicy,
     detail: str | None = None,
+    decision: Decision | None = None,
 ) -> Transition:
     """Route a verify failure to a flagged AWAITING_HUMAN with a read-back."""
     deadline = now + policy.patience_window
     return _advanced(
         AwaitingHuman(core=core, patience_deadline=deadline, flag=flag),
-        SendThreadMessage(purpose=message, detail=detail),
+        SendThreadMessage(purpose=message, detail=detail, decision=decision),
         SetTimer(timer=TimerKind.PATIENCE, deadline=deadline),
     )
 

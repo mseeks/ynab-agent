@@ -302,6 +302,11 @@ def test_verify_diverged_flags_awaiting() -> None:
     out = _step(ap, WriteVerified(outcome=VerifyOutcome.DIVERGED))
     assert isinstance(out.next, AwaitingHuman)
     assert out.next.flag is AwaitingFlag.DIVERGED
+    # The send carries what was written, so the email can name the two sides
+    # ("YNAB now shows X, but I set Y") instead of a generic which-should-win.
+    send = next(e for e in out.effects if isinstance(e, SendThreadMessage))
+    assert send.purpose is MessagePurpose.DIVERGED_READBACK
+    assert send.decision == ap.decision
 
 
 # ── AWAITING_HUMAN ──────────────────────────────────────────────────────────

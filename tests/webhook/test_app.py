@@ -92,6 +92,28 @@ def test_to_inbound_prefers_extracted_text() -> None:
     assert to_inbound(message, verified=True).body == "change to Dining"
 
 
+def test_to_inbound_salvages_an_html_only_reply() -> None:
+    # Apple Mail sometimes sends a reply whose text parts are EMPTY, with the
+    # words only in HTML. That used to arrive as an empty body — the agent
+    # answered "what did you mean?" to a perfectly clear reply. The salvage
+    # drops the quoted history (the blockquote) like extracted_text does.
+    message = _WireMessage.model_validate(
+        {
+            "message_id": "m1",
+            "from": "a@x.com",
+            "text": "",
+            "html": (
+                '<html><head><meta content="x" /></head><body><div></div>'
+                "<div>Uncategorized</div><div><br /><blockquote>On Jun 10, "
+                "2026, at 7:33 AM, YNAB &lt;agent@x.to&gt; wrote:<br />"
+                "the whole quoted proposal</blockquote></div></body></html>"
+            ),
+            "thread_id": "t1",
+        }
+    )
+    assert to_inbound(message, verified=True).body == "Uncategorized"
+
+
 def _wire(headers: dict[str, str] | None) -> _WireMessage:
     return _WireMessage.model_validate(
         {

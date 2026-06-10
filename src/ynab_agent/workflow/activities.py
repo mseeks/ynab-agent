@@ -503,6 +503,7 @@ async def interpret_inbound(
         proposed_category=proposed_id,
         decided_at=datetime.now(UTC),
         candidates=request.candidates,
+        reply_text=signal.text,
     )
 
 

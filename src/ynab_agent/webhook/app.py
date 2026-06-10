@@ -16,7 +16,9 @@ the event type, so only ``message.received`` is acted on — ``*.unauthenticated
 
 from __future__ import annotations
 
+import html
 import os
+import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -50,6 +52,9 @@ class _WireMessage(BaseModel):
     # actually wrote. Preferred over ``text`` so the interpreter isn't fed the
     # whole quoted proposal back.
     extracted_text: str | None = None
+    # The HTML part — the salvage path for HTML-only replies (Apple Mail
+    # sends these), whose text parts arrive empty.
+    html: str | None = None
     thread_id: str | None = None
     # The raw RFC 822 headers AgentMail surfaces (a flat name→value dict). Read
     # only to detect machine-generated mail (see ``_is_auto_reply``); ``None``
@@ -103,13 +108,37 @@ def _is_auto_reply(headers: Mapping[str, str] | None) -> bool:
     return any(header in lowered for header in _AUTO_MARKER_HEADERS)
 
 
+_HTML_BREAKS = re.compile(r"(?i)<br\s*/?>|</p>|</div>|</blockquote>")
+_HTML_TAGS = re.compile(r"<[^>]+>")
+
+
+def _text_from_html(html_part: str | None) -> str:
+    """Plain text salvaged from an HTML-only reply.
+
+    Apple Mail sometimes sends a reply with an empty text part and the words
+    only in HTML; without this fallback such a reply arrived as an empty body
+    and was answered with a baffled clarify question. Quoted history (the
+    first ``<blockquote>`` onward) is dropped, mirroring what AgentMail's
+    ``extracted_text`` does for plain text.
+    """
+    if not html_part:
+        return ""
+    head = re.split(r"(?i)<blockquote", html_part, maxsplit=1)[0]
+    text = _HTML_TAGS.sub(" ", _HTML_BREAKS.sub("\n", head))
+    lines = (line.strip() for line in html.unescape(text).splitlines())
+    return "\n".join(line for line in lines if line).strip()
+
+
 def to_inbound(message: _WireMessage, *, verified: bool) -> InboundMessage:
     """Map a verified webhook message onto the domain InboundMessage."""
+    body = (
+        message.extracted_text or message.text or _text_from_html(message.html)
+    )
     return InboundMessage(
         message_id=MessageId(message.message_id),
         from_address=message.from_address,
         subject=message.subject,
-        body=message.extracted_text or message.text or "",
+        body=body,
         thread_id=ThreadId(message.thread_id) if message.thread_id else None,
         signature_verified=verified,
         is_auto_reply=_is_auto_reply(message.headers),

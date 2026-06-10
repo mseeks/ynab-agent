@@ -39,12 +39,15 @@ _REQUEST = InterpretRequest(
 )
 
 
-def _outcome(interpretation: Interpretation) -> ReplyOutcome:
+def _outcome(
+    interpretation: Interpretation, reply_text: str = "ok"
+) -> ReplyOutcome:
     return to_reply_outcome(
         interpretation,
         proposed_category=_PROPOSED,
         decided_at=_NOW,
         candidates=_REQUEST.candidates,
+        reply_text=reply_text,
     )
 
 
@@ -71,6 +74,7 @@ def test_approve_without_a_proposal_asks_instead() -> None:
         proposed_category=None,
         decided_at=_NOW,
         candidates=_REQUEST.candidates,
+        reply_text="ok",
     )
     assert isinstance(outcome, ClarifyOutcome)
 
@@ -83,6 +87,7 @@ def test_recategorize_without_a_proposal_still_commits() -> None:
         proposed_category=None,
         decided_at=_NOW,
         candidates=_REQUEST.candidates,
+        reply_text="coffee shops please",
     )
     assert isinstance(outcome, AnswerOutcome)
     assert isinstance(outcome.decision.allocation, ResolvedCategory)
@@ -130,10 +135,27 @@ def test_reply_rationale_is_carried_onto_the_decision_memo() -> None:
             intent=ReplyIntent.RECATEGORIZE,
             category_id="coffee",
             memo="Gift for mom's birthday",
-        )
+        ),
+        reply_text="coffee — it was a gift for mom's birthday",
     )
     assert isinstance(outcome, AnswerOutcome)
     assert outcome.decision.memo == "Gift for mom's birthday"
+
+
+def test_fabricated_memo_is_dropped_not_written() -> None:
+    # The model echoed a category name into the memo field — nothing in the
+    # reply supports it. Writing it would overwrite real YNAB detail (the
+    # Amazon item list), so it is dropped.
+    outcome = _outcome(
+        Interpretation(
+            intent=ReplyIntent.RECATEGORIZE,
+            category_id="coffee",
+            memo="Amex Cash",
+        ),
+        reply_text="Groceries",
+    )
+    assert isinstance(outcome, AnswerOutcome)
+    assert outcome.decision.memo is None
 
 
 def test_bare_approval_leaves_the_memo_unset() -> None:
