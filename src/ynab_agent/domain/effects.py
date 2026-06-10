@@ -101,6 +101,18 @@ class FeedRuleLearning(Frozen):
     prior: Decision | None = None
 
 
+class RecordAutoAction(Frozen):
+    """Record a landed auto-action in the circuit-breaker ledger (SPEC §0.6).
+
+    Emitted alongside the commit when a blessed rule auto-applies, so the hard
+    floor's per-run / per-day counts are real and the breaker can trip. Keyed by
+    ``ynab_id`` so a retry or re-enrichment counts the transaction once.
+    """
+
+    kind: Literal["record_auto_action"] = "record_auto_action"
+    ynab_id: str
+
+
 class ReplayBuffered(Frozen):
     """Re-deliver the signals buffered while in DISCOVERED (SPEC §3)."""
 
@@ -121,6 +133,7 @@ Effect = Annotated[
     | SetTimer
     | CancelTimer
     | FeedRuleLearning
+    | RecordAutoAction
     | ReplayBuffered
     | CloseThread,
     Field(discriminator="kind"),

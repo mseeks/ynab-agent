@@ -129,6 +129,7 @@ def _activities(
     converge_outcome: ConvergeOutcome | None = None,
     read_back_seq: list[object] | None = None,
     learning_sink: list[FeedRuleLearning] | None = None,
+    auto_action_sink: list[str] | None = None,
 ) -> list[Callable[..., object]]:
     """Build mock activity implementations for one scenario."""
     committed: dict[str, object] = {}
@@ -185,6 +186,11 @@ def _activities(
         if learning_sink is not None:
             learning_sink.append(feed)
 
+    @activity.defn(name="record_auto_action")
+    async def record_auto_action(ynab_id: str) -> None:
+        if auto_action_sink is not None:
+            auto_action_sink.append(ynab_id)
+
     @activity.defn(name="close_thread")
     async def close_thread(thread_id: str) -> None:
         return None
@@ -199,6 +205,7 @@ def _activities(
         interpret_inbound,
         converge,
         feed_rule_learning,
+        record_auto_action,
         close_thread,
     ]
 
@@ -216,9 +223,11 @@ async def _wait_for_state(
 
 
 async def test_auto_apply_flows_to_open_then_archives() -> None:
+    auto_actions: list[str] = []
     acts = _activities(
         snapshot=_snapshot(reconciled=True),
         enrich_outcome=AutoApply(decision=_decision(DecidedBy.AGENT)),
+        auto_action_sink=auto_actions,
     )
     async with (
         await _start_env() as env,
@@ -237,6 +246,8 @@ async def test_auto_apply_flows_to_open_then_archives() -> None:
         )
         # Reconciled → the archive timer (time-skipped) drives it to done.
         await handle.result()
+    # The auto-apply recorded itself in the circuit-breaker ledger (SPEC §0.6).
+    assert auto_actions == ["t1"]
 
 
 async def test_ask_then_answer_reaches_open_and_archives() -> None:

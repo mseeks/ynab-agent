@@ -95,26 +95,61 @@ async def _load_payee_rules(payee: str) -> list[Rule]:
     return list(rules)
 
 
+async def _load_auto_action_counters(
+    now: datetime.datetime,
+) -> AutoActionCounters:
+    """Read the live circuit-breaker counts from the durable ledger (SPEC §0.6).
+
+    Returns zeros when the ledger has not been started yet (no auto-action has
+    ever happened) or is unreachable — the correct conservative default *here*,
+    since a never-started ledger genuinely means zero auto-actions and the
+    breaker must not trip on its own absence (contrast ``_load_payee_rules``,
+    which fails *closed* to ASK because an unknown rule must never auto-apply).
+    """
+    from temporalio.service import RPCError
+
+    from ynab_agent.policy.floor import AutoActionCounters
+    from ynab_agent.workflow.auto_action_types import (
+        AUTO_ACTION_LEDGER_WORKFLOW_ID,
+        CountersRequest,
+    )
+    from ynab_agent.workflow.temporal_client import client
+
+    temporal = await client()
+    handle = temporal.get_workflow_handle(AUTO_ACTION_LEDGER_WORKFLOW_ID)
+    try:
+        result: AutoActionCounters = await handle.query(
+            "counters",
+            CountersRequest(now=now),
+            result_type=AutoActionCounters,
+        )
+    except RPCError:
+        return AutoActionCounters()
+    return result
+
+
 async def _load_enrichment_inputs(
     snapshot: YnabSnapshot,
+    now: datetime.datetime,
 ) -> tuple[tuple[CandidateCategory, ...], list[Rule], AutoActionCounters]:
-    """Fetch the candidate categories, in-scope rules, and auto counters.
+    """Fetch the candidate categories, in-scope rules, and live auto counters.
 
     The candidates are the budget's live categories, read from YNAB (the source
-    of truth); the rules come from the durable registry, keyed on the payee. The
-    auto-action counters start at zero in v1 (the per-run circuit breaker is a
-    later stage); the gate (SPEC §4.2, §14) decides auto-vs-ask over the loaded
-    rules — and auto-applies only a blessed one.
+    of truth); the rules come from the durable registry, keyed on the payee; the
+    auto-action counters come from the durable circuit-breaker ledger (SPEC
+    §0.6), so the per-run / per-day cap reads real counts and can trip. The gate
+    (SPEC §4.2, §14) decides auto-vs-ask over the loaded rules — auto-applying
+    only a blessed one, still bounded by the floor.
     """
     import asyncio
 
-    from ynab_agent.policy.floor import AutoActionCounters
     from ynab_agent.ynab.client import YnabClient
 
     client = YnabClient.from_env()
     spends = await asyncio.to_thread(client.category_spends)
     rules = await _load_payee_rules(snapshot.payee)
-    return _candidates_from_spends(spends), rules, AutoActionCounters()
+    counters = await _load_auto_action_counters(now)
+    return _candidates_from_spends(spends), rules, counters
 
 
 @activity.defn
@@ -129,9 +164,10 @@ async def enrich(snapshot: YnabSnapshot) -> EnrichmentOutcome:
 
     from ynab_agent.agentic.enrich import decide_enrichment
 
-    candidates, rules, counters = await _load_enrichment_inputs(snapshot)
+    now = datetime.now(UTC)
+    candidates, rules, counters = await _load_enrichment_inputs(snapshot, now)
     return await decide_enrichment(
-        snapshot, candidates, rules, counters, now=datetime.now(UTC)
+        snapshot, candidates, rules, counters, now=now
     )
 
 
@@ -543,6 +579,43 @@ async def feed_rule_learning(feed: FeedRuleLearning) -> None:
         start_signal="record",
         start_signal_args=[feed],
     )
+
+
+@activity.defn
+async def record_auto_action(ynab_id: str) -> None:
+    """Record a landed auto-action in the durable breaker ledger (SPEC §0.6).
+
+    Signal-with-start on the singleton ledger: the first auto-action creates it,
+    every later one just delivers the signal, and the ledger folds it into the
+    counts the hard floor reads (mirrors ``feed_rule_learning`` talking to the
+    registry). Best-effort — a ledger hiccup must never block or fail the
+    categorization it bounds, so any error is logged and swallowed. The breaker
+    tolerates an occasional missed count; the per-txn ceiling still binds, and
+    the ``ynab_id`` key dedups a retry.
+    """
+    from temporalio.common import WorkflowIDConflictPolicy
+
+    from ynab_agent.workflow.auto_action_types import (
+        AUTO_ACTION_LEDGER_WORKFLOW_ID,
+        LedgerParams,
+    )
+    from ynab_agent.workflow.temporal_client import client, task_queue
+
+    try:
+        temporal = await client()
+        await temporal.start_workflow(
+            "AutoActionLedgerWorkflow",
+            LedgerParams(),
+            id=AUTO_ACTION_LEDGER_WORKFLOW_ID,
+            task_queue=task_queue(),
+            id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+            start_signal="record",
+            start_signal_args=[ynab_id],
+        )
+    except Exception:
+        activity.logger.warning(
+            "auto-action ledger record failed (best-effort): %s", ynab_id
+        )
 
 
 @activity.defn

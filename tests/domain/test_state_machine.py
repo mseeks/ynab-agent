@@ -14,6 +14,7 @@ from ynab_agent.domain.effects import (
     FeedRuleLearning,
     MessagePurpose,
     OpenThread,
+    RecordAutoAction,
     ReplayBuffered,
     RuleLearningKind,
     SendThreadMessage,
@@ -234,6 +235,13 @@ def test_enriched_auto_apply_commits() -> None:
     )
     assert isinstance(out.next, AutoApplied)
     assert _of(out, CommitToYnab)
+    # The auto-action is recorded in the circuit-breaker ledger (SPEC §0.6) so
+    # the per-run/per-day floor counts are real and can trip.
+    records = _of(out, RecordAutoAction)
+    assert len(records) == 1
+    record = records[0]
+    assert isinstance(record, RecordAutoAction)
+    assert record.ynab_id == "t1"
 
 
 def test_enriched_ask_human_opens_and_times() -> None:

@@ -49,6 +49,7 @@ with workflow.unsafe.imports_passed_through():
         Effect,
         FeedRuleLearning,
         OpenThread,
+        RecordAutoAction,
         ReplayBuffered,
         SendThreadMessage,
         SetTimer,
@@ -299,6 +300,24 @@ class TransactionWorkflow:
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
+        elif isinstance(effect, RecordAutoAction):
+            # Bound the auto-action in the durable breaker ledger (SPEC §0.6).
+            # Best-effort: a ledger hiccup — even an activity timeout, which the
+            # body's own try/except cannot catch — must never fail the
+            # categorization it counts, so swallow it rather than trip the §13
+            # failure hook. The per-txn ceiling still binds; the next tick
+            # re-counts from the durable ledger.
+            try:
+                await workflow.execute_activity(
+                    activities.record_auto_action,
+                    effect.ynab_id,
+                    start_to_close_timeout=ACTIVITY_TIMEOUT,
+                    retry_policy=ACTIVITY_RETRY,
+                )
+            except ActivityError:
+                workflow.logger.warning(
+                    "auto-action ledger record failed; continuing"
+                )
         elif isinstance(effect, CloseThread):
             if self._thread_id is not None:
                 await workflow.execute_activity(
