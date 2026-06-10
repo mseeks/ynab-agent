@@ -167,14 +167,34 @@ async def signal_transaction(txn_id: str, message: InboundMessage) -> None:
 
 
 @activity.defn
-async def route_receipt(_message: InboundMessage) -> None:
-    """Hand a forwarded receipt to the W4 join (SPEC §5b).
+async def route_receipt(message: InboundMessage) -> None:
+    """Acknowledge a forwarded receipt — the W4 join is not built yet (§5b, §6).
 
-    No-op in v1: the receipt join (W4) is out of the core-triage scope, and the
-    agent does not advertise receipt forwarding, so receipts do not arrive yet.
-    Wired when W4 lands (the message arg is kept for that contract).
+    The dispatcher classifies forwarded receipts, but the receipt⇄transaction
+    join (W4) is a deferred increment (its match/park/ask activities are still
+    stubs). Rather than swallow the forward silently, reply honestly and point
+    the owner at the path that works — replying on the transaction's own thread.
+    Idempotent on the message id (a retry never double-replies); a message with
+    no thread to reply on is a no-op.
     """
-    return None
+    import asyncio
+
+    from ynab_agent.agentic.compose import render_receipt_unsupported
+    from ynab_agent.mail.client import MailClient
+    from ynab_agent.settings import Settings
+
+    if message.thread_id is None:
+        return
+    settings = Settings()
+    mail = MailClient.from_env()
+    await asyncio.to_thread(
+        mail.send_on_thread,
+        inbox_id=settings.inbox,
+        thread_id=str(message.thread_id),
+        body=render_receipt_unsupported(),
+        seq_label=f"yarcpt-{message.message_id}",
+        to=list(settings.owners),
+    )
 
 
 @activity.defn
