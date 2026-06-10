@@ -283,6 +283,14 @@ class MailClient:
                 )
         return existing
 
+    def has_thread(self, *, inbox_id: str, label: str) -> bool:
+        """Whether any message carries ``label`` (a thread's existence probe).
+
+        The W4 disambiguation uses it to only promise a charge's email
+        thread when one actually exists (``yatxn-{txn_id}``).
+        """
+        return self._backend.find_thread(inbox_id, label) is not None
+
     def close(self, *, inbox_id: str, thread_id: str) -> None:
         """Mark the transaction's thread closed."""
         self._backend.archive(inbox_id, thread_id)

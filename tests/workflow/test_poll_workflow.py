@@ -18,8 +18,9 @@ from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from ynab_agent.domain.ids import AccountId, YnabTransactionId
+from ynab_agent.domain.ids import AccountId, ReceiptId, YnabTransactionId
 from ynab_agent.domain.money import Money
+from ynab_agent.domain.receipt import Receipt
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.ingest.plan import AddressTxn
 from ynab_agent.ingest.scope import IngestScope
@@ -51,7 +52,11 @@ def _scope() -> IngestScope:
 
 
 def _poll_activities(
-    *, unapproved: tuple[YnabSnapshot, ...], addressed: list[str]
+    *,
+    unapproved: tuple[YnabSnapshot, ...],
+    addressed: list[str],
+    parked: tuple[Receipt, ...] = (),
+    rechecked: list[str] | None = None,
 ) -> list[Callable[..., object]]:
     @activity.defn(name="fetch_unapproved")
     async def fetch_unapproved() -> tuple[YnabSnapshot, ...]:
@@ -61,14 +66,38 @@ def _poll_activities(
     async def address_transaction(action: AddressTxn) -> None:
         addressed.append(action.snapshot.ynab_id)
 
-    return [fetch_unapproved, address_transaction]
+    @activity.defn(name="list_open_receipts")
+    async def list_open_receipts() -> tuple[Receipt, ...]:
+        return parked
+
+    @activity.defn(name="start_receipt_join")
+    async def start_receipt_join(receipt: Receipt) -> None:
+        if rechecked is not None:
+            rechecked.append(str(receipt.id))
+
+    return [
+        fetch_unapproved,
+        address_transaction,
+        list_open_receipts,
+        start_receipt_join,
+    ]
 
 
 async def _run(
-    *, wf_id: str, unapproved: tuple[YnabSnapshot, ...], params: PollParams
+    *,
+    wf_id: str,
+    unapproved: tuple[YnabSnapshot, ...],
+    params: PollParams,
+    parked: tuple[Receipt, ...] = (),
+    rechecked: list[str] | None = None,
 ) -> tuple[PollResult, list[str]]:
     addressed: list[str] = []
-    acts = _poll_activities(unapproved=unapproved, addressed=addressed)
+    acts = _poll_activities(
+        unapproved=unapproved,
+        addressed=addressed,
+        parked=parked,
+        rechecked=rechecked,
+    )
     async with (
         await WorkflowEnvironment.start_time_skipping(
             data_converter=DATA_CONVERTER
@@ -130,6 +159,14 @@ async def test_continuous_loop_keeps_ticking_via_continue_as_new() -> None:
     async def address_transaction(action: AddressTxn) -> None:
         return None
 
+    @activity.defn(name="list_open_receipts")
+    async def list_open_receipts() -> tuple[Receipt, ...]:
+        return ()
+
+    @activity.defn(name="start_receipt_join")
+    async def start_receipt_join(receipt: Receipt) -> None:
+        return None
+
     async with (
         await WorkflowEnvironment.start_time_skipping(
             data_converter=DATA_CONVERTER
@@ -138,7 +175,12 @@ async def test_continuous_loop_keeps_ticking_via_continue_as_new() -> None:
             env.client,
             task_queue=TASK_QUEUE,
             workflows=[PollWorkflow],
-            activities=[fetch_unapproved, address_transaction],
+            activities=[
+                fetch_unapproved,
+                address_transaction,
+                list_open_receipts,
+                start_receipt_join,
+            ],
         ),
     ):
         with pytest.raises(WorkflowFailureError):
@@ -289,3 +331,29 @@ async def test_one_shot_tick_failure_still_raises() -> None:
                 id="poll-oneshot-fail",
                 task_queue=TASK_QUEUE,
             )
+
+
+async def test_tick_rechecks_parked_receipts() -> None:
+    # Receipt-before-transaction is the common case (SPEC §6): every tick
+    # re-attempts the still-open parked receipts after addressing the new
+    # transactions, so a receipt joins as soon as its transaction posts.
+    parked = (
+        Receipt(
+            id=ReceiptId("r1"),
+            parked_at=datetime.datetime(2026, 5, 1, tzinfo=datetime.UTC),
+        ),
+        Receipt(
+            id=ReceiptId("r2"),
+            parked_at=datetime.datetime(2026, 5, 2, tzinfo=datetime.UTC),
+        ),
+    )
+    rechecked: list[str] = []
+    result, _addressed = await _run(
+        wf_id="poll-recheck",
+        unapproved=(),
+        params=PollParams(scope=_scope()),
+        parked=parked,
+        rechecked=rechecked,
+    )
+    assert result.addressed == 0
+    assert rechecked == ["r1", "r2"]

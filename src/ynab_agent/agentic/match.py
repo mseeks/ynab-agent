@@ -131,22 +131,31 @@ async def match_receipt(
     )
 
 
-def to_match_outcome(verdict: MatchVerdict) -> MatchOutcome:
+def to_match_outcome(
+    verdict: MatchVerdict, request: MatchRequest
+) -> MatchOutcome:
     """Map the agent's verdict onto a domain MatchOutcome (SPEC §6).
 
-    Falls back to ``NoMatch`` for any verdict that does not satisfy the domain
-    invariants (a match without a txn id, an ambiguous with fewer than two
-    candidates) — the spine treats ``NoMatch`` as "keep waiting", never a guess.
+    Every id the model returns is validated against the candidates it was
+    given — the prompt demands it, but a write-adjacent decision never rests
+    on a prompt (a hallucinated id would attach the receipt to a transaction
+    that was never plausible). An invalid match, an ambiguous set that
+    shrinks below two valid ids, a match without a txn id: all fall back to
+    ``NoMatch`` — the spine treats that as "keep waiting", never a guess.
     """
-    if verdict.decision is MatchDecision.MATCH and verdict.txn_id:
-        return ConfidentMatch(txn_id=YnabTransactionId(verdict.txn_id))
+    valid = {c.id for c in request.candidates}
     if (
-        verdict.decision is MatchDecision.AMBIGUOUS
-        and len(verdict.candidate_ids) >= _MIN_CANDIDATES
+        verdict.decision is MatchDecision.MATCH
+        and verdict.txn_id
+        and verdict.txn_id in valid
     ):
-        return Ambiguous(
-            candidates=tuple(
-                YnabTransactionId(c) for c in verdict.candidate_ids
-            )
+        return ConfidentMatch(txn_id=YnabTransactionId(verdict.txn_id))
+    if verdict.decision is MatchDecision.AMBIGUOUS:
+        kept = tuple(
+            dict.fromkeys(c for c in verdict.candidate_ids if c in valid)
         )
+        if len(kept) >= _MIN_CANDIDATES:
+            return Ambiguous(
+                candidates=tuple(YnabTransactionId(c) for c in kept)
+            )
     return NoMatch()

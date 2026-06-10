@@ -14,6 +14,7 @@ from pydantic import Field
 
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.ids import MessageId, ReceiptId, ThreadId
+from ynab_agent.domain.receipt import Receipt
 
 
 class ReplySignal(Frozen):
@@ -27,10 +28,16 @@ class ReplySignal(Frozen):
 
 
 class ReceiptSignal(Frozen):
-    """A receipt the join (W4) matched to this transaction."""
+    """A receipt the join (W4) matched to this transaction.
+
+    Carries the parsed receipt itself (SPEC §6: "receipt_matched + items +
+    split"), so the consumers — the interpret/converge activities — get the
+    facts without a round-trip to the receipt ledger.
+    """
 
     kind: Literal["receipt"] = "receipt"
     receipt_id: ReceiptId
+    receipt: Receipt
 
 
 InboundSignal = Annotated[

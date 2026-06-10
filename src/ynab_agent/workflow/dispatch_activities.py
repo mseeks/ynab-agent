@@ -173,33 +173,73 @@ async def signal_transaction(txn_id: str, message: InboundMessage) -> None:
 
 @activity.defn
 async def route_receipt(message: InboundMessage) -> None:
-    """Acknowledge a forwarded receipt — the W4 join is not built yet (§5b, §6).
+    """Read a forwarded receipt, park it, and start its join (SPEC §5b, §6).
 
-    The dispatcher classifies forwarded receipts, but the receipt⇄transaction
-    join (W4) is a deferred increment (its match/park/ask activities are still
-    stubs). Rather than swallow the forward silently, reply honestly and point
-    the owner at the path that works — replying on the transaction's own thread.
-    Idempotent on the message id (a retry never double-replies); a message with
-    no thread to reply on is a no-op.
+    The W4 entry point: the extraction agent reads the forward into a
+    :class:`~ynab_agent.domain.receipt.Receipt` (deterministically converted —
+    exact money, real dates). A parseable receipt is parked in the durable
+    ledger (idempotent on the message id), acknowledged on its own thread
+    naming what was read, and a first join attempt starts immediately; a
+    forward that cannot be read as a receipt gets an honest "couldn't read
+    this" note instead of parking junk. Every send dedups on the message id,
+    so a webhook retry never double-replies; a message with no thread to
+    reply on is a no-op.
     """
     import asyncio
+    import datetime
 
-    from ynab_agent.agentic.compose import render_receipt_unsupported
+    from ynab_agent.agentic.compose import (
+        render_receipt_ack,
+        render_receipt_unparseable,
+    )
+    from ynab_agent.agentic.receipt_parse import (
+        ReceiptParseRequest,
+        parse_receipt,
+        to_receipt,
+    )
+    from ynab_agent.domain.ids import ReceiptId
+    from ynab_agent.domain.receipt import receipt_summary
     from ynab_agent.mail.client import MailClient
     from ynab_agent.settings import Settings
+    from ynab_agent.workflow import receipt_activities
 
     if message.thread_id is None:
         return
+    parsed = await parse_receipt(
+        ReceiptParseRequest(subject=message.subject, body=message.body)
+    )
+    receipt = to_receipt(
+        parsed,
+        receipt_id=ReceiptId(str(message.message_id)),
+        now=datetime.datetime.now(datetime.UTC),
+        message_id=message.message_id,
+        thread_id=message.thread_id,
+    )
     settings = Settings()
     mail = MailClient.from_env()
+    if receipt is None:
+        # A distinct label from the ack: the model parse re-runs on an
+        # activity retry, and two semantically opposite messages must never
+        # share one dedup key (a flipped verdict would suppress the truth).
+        await asyncio.to_thread(
+            mail.send_on_thread,
+            inbox_id=settings.inbox,
+            thread_id=str(message.thread_id),
+            body=render_receipt_unparseable(),
+            seq_label=f"yarcpt-unread-{message.message_id}",
+            to=list(settings.owners),
+        )
+        return
+    await receipt_activities.park_in_ledger(receipt)
     await asyncio.to_thread(
         mail.send_on_thread,
         inbox_id=settings.inbox,
         thread_id=str(message.thread_id),
-        body=render_receipt_unsupported(),
-        seq_label=f"yarcpt-{message.message_id}",
+        body=render_receipt_ack(receipt_summary(receipt)),
+        seq_label=f"yarcpt-ack-{message.message_id}",
         to=list(settings.owners),
     )
+    await receipt_activities.start_join(receipt)
 
 
 async def _reply(message: InboundMessage, body: str, tag: str) -> None:

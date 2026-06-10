@@ -10,7 +10,11 @@ from ynab_agent.agentic.compose import (
     render_command_confirm,
     render_offer_accepted,
     render_offer_declined,
-    render_receipt_unsupported,
+    render_receipt_ack,
+    render_receipt_disambiguation,
+    render_receipt_matched,
+    render_receipt_no_match,
+    render_receipt_unparseable,
 )
 from ynab_agent.domain.effects import MessagePurpose
 
@@ -255,10 +259,66 @@ def test_command_confirm_echoes_the_command_and_asks_for_yes() -> None:
     assert "YES" in body  # an explicit one-word confirm (SPEC §0.6)
 
 
-def test_receipt_unsupported_is_honest_and_points_to_the_thread() -> None:
-    body = render_receipt_unsupported()
-    assert "receipts" in body.lower()
+def test_receipt_unparseable_is_honest_and_points_to_the_thread() -> None:
+    body = render_receipt_unparseable()
+    assert "didn't look like a purchase receipt" in body
     assert "thread" in body.lower()  # points at the path that works
+
+
+def test_receipt_ack_names_what_was_read() -> None:
+    # Naming the extraction makes a misread visible immediately, and the
+    # promise covers only what every match path actually does.
+    body = render_receipt_ack("Whole Foods — $23.48 (Corn Starch)")
+    assert "Whole Foods — $23.48 (Corn Starch)" in body
+    assert "bring the detail to" in body
+
+
+def test_receipt_matched_names_both_sides() -> None:
+    body = render_receipt_matched(
+        "Whole Foods — $23.48", "Whole Foods — -$23.48 on Jun 8"
+    )
+    assert "Whole Foods — $23.48" in body
+    assert "Whole Foods — -$23.48 on Jun 8" in body
+    assert "Nothing else on the charge was touched" in body
+
+
+def test_receipt_disambiguation_lists_numbered_options() -> None:
+    body = render_receipt_disambiguation(
+        "Blue Bottle — $4.50",
+        (
+            "-$4.50 at Blue Bottle Coffee on May 28",
+            "-$4.50 at Blue Bottle Coffee on May 29",
+        ),
+        with_threads=True,
+    )
+    assert "1. -$4.50 at Blue Bottle Coffee on May 28" in body
+    assert "2. -$4.50 at Blue Bottle Coffee on May 29" in body
+    assert "reply there" in body.lower()
+
+
+def test_receipt_disambiguation_never_promises_missing_threads() -> None:
+    # Hand-approved / pre-install candidates have no email threads; the
+    # instruction must not point at threads that do not exist.
+    body = render_receipt_disambiguation(
+        "Blue Bottle — $4.50",
+        (
+            "-$4.50 at Blue Bottle Coffee on May 28",
+            "-$4.50 at Blue Bottle Coffee on May 29",
+        ),
+        with_threads=False,
+    )
+    assert "email thread from me" not in body
+    assert "directly in YNAB" in body
+
+
+def test_receipt_no_match_explains_the_age_out() -> None:
+    # Worded for both expiry paths (never matched / asked but unresolved),
+    # so it cannot contradict an earlier disambiguation email.
+    body = render_receipt_no_match("Costco — $80.00")
+    assert "Costco — $80.00" in body
+    assert "30 days" in body
+    assert "couldn't pin" in body
+    assert "forward the receipt again" in body
 
 
 def test_offer_unclear_restates_the_yes_no_question() -> None:

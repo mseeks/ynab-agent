@@ -25,7 +25,11 @@ from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from ynab_agent.ingest.plan import plan_ingest
-    from ynab_agent.workflow import alert_activities, poll_activities
+    from ynab_agent.workflow import (
+        alert_activities,
+        poll_activities,
+        receipt_activities,
+    )
     from ynab_agent.workflow.alerting import build_failure_alert
     from ynab_agent.workflow.constants import (
         ACTIVITY_RETRY,
@@ -100,6 +104,22 @@ class PollWorkflow:
             await workflow.execute_activity(
                 poll_activities.address_transaction,
                 action,
+                start_to_close_timeout=_ACTIVITY_TIMEOUT,
+                retry_policy=ACTIVITY_RETRY,
+            )
+        # Receipt-before-transaction is the common case (SPEC §6): re-attempt
+        # every still-open parked receipt now that fresh transactions may
+        # have posted. The ledger bounds the list; an attempt that finds
+        # nothing parks again, and dedup lives in the join's own status.
+        parked = await workflow.execute_activity(
+            receipt_activities.list_open_receipts,
+            start_to_close_timeout=_ACTIVITY_TIMEOUT,
+            retry_policy=ACTIVITY_RETRY,
+        )
+        for receipt in parked:
+            await workflow.execute_activity(
+                receipt_activities.start_receipt_join,
+                receipt,
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )

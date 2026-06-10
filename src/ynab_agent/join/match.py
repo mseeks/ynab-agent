@@ -146,18 +146,24 @@ def plan_join(
         return DoNothing(reason="already matched")
     if receipt.status is ReceiptStatus.EXPIRED:
         return DoNothing(reason="already aged out")
+    expired = now - receipt.parked_at > ttl
 
     match outcome:
         case ConfidentMatch(txn_id=txn_id):
             return SignalTransaction(txn_id=txn_id, receipt_id=receipt.id)
         case Ambiguous(candidates=candidates):
             if receipt.status is ReceiptStatus.ASKED:
+                # Asked once and still ambiguous: age out at the TTL with a
+                # closure note, so the receipt is not re-matched hourly
+                # forever and the owner is not left in permanent silence.
+                if expired:
+                    return AskNoMatch(receipt_id=receipt.id)
                 return DoNothing(reason="disambiguation already asked")
             return AskDisambiguation(
                 receipt_id=receipt.id, candidates=candidates
             )
         case NoMatch():
-            if now - receipt.parked_at > ttl:
+            if expired:
                 return AskNoMatch(receipt_id=receipt.id)
             return Park(reason="no match yet")
     assert_never(outcome)

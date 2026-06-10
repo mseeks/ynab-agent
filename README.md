@@ -89,6 +89,10 @@ these:
   instructions go to its inbox directly: `always categorize X as Y` (it reads
   the command back and waits for a YES), `stop auto-handling X` (immediate),
   `list my rules`, `help`.
+- **Forward receipts.** A forwarded purchase receipt is parsed, matched to
+  its transaction (parking and re-checking until the charge posts), and its
+  items folded into the memo — with a question when several charges
+  plausibly fit, and an honest note when nothing ever matches.
 - **First contact.** Before adding a second owner to `YNAB_AGENT_OWNERS`, tell
   them what the agent's address is and that replying in plain words is the
   whole interface — their first email otherwise arrives from a stranger.

@@ -301,9 +301,29 @@ class YnabClient:
             if not wire.deleted
         )
 
+    def recent(self, since: datetime.date) -> tuple[YnabSnapshot, ...]:
+        """Every transaction on or after ``since`` (the W4 candidate pool).
+
+        The receipt matcher's read: the delta-from-zero list (the same YNAB
+        quirk ``snapshot``'s fallback uses, so unapproved imports are
+        included), deleted rows dropped. Bounded by the caller's window — the
+        join only ever looks weeks back, never the full history.
+        """
+        wires, _ = self._backend.list_transactions(since.isoformat(), 0)
+        return tuple(to_snapshot(wire) for wire in wires if not wire.deleted)
+
     def commit(self, txn_id: str, decision: Decision) -> None:
         """Commit a decision to a transaction (SPEC §3)."""
         self._backend.patch_transaction(txn_id, to_patch(decision))
+
+    def patch_memo(self, txn_id: str, memo: str) -> None:
+        """Write ONLY the memo (the W4 fold for settled charges, SPEC §6).
+
+        A receipt is detail: folding it into a hand-approved or pre-install
+        transaction must not touch the category, the approval, or the flag —
+        a partial PATCH leaves every other field exactly as the owner set it.
+        """
+        self._backend.patch_transaction(txn_id, {"memo": memo})
 
     def read_back(self, txn_id: str) -> TargetState | None:
         """Re-read a transaction's end-state for verification (SPEC §3 r4)."""

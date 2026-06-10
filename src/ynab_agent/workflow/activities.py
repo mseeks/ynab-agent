@@ -460,12 +460,16 @@ async def interpret_inbound(
 
     Free-form: the model reads whether the reply approves the proposal, names a
     different category, or asks a question. The spine — not the model — stamps
-    the human + time into the resulting Decision. A non-reply inbound can't be
-    answered directly, so ask rather than guess a write. A *missing* proposal
+    the human + time into the resulting Decision. A *missing* proposal
     (a flagged verify-failure entry, a NeedsHuman wait) is fine: the owner can
     still name a category outright, and looping the same canned question at
     them made those states unanswerable by email. Names + candidates are
     re-read from YNAB at interpret time.
+
+    A **matched receipt** landing while the transaction awaits the owner is
+    not a reply — it is detail. Deterministically (no model): surface the
+    receipt's facts as the clarifying question, so the owner decides the
+    category with the item list in front of them (SPEC §6).
     """
     import asyncio
     from datetime import UTC, datetime
@@ -475,15 +479,21 @@ async def interpret_inbound(
         interpret,
         to_reply_outcome,
     )
-    from ynab_agent.domain.signals import ReplySignal
+    from ynab_agent.domain.receipt import receipt_summary
+    from ynab_agent.domain.signals import ReceiptSignal, ReplySignal
     from ynab_agent.workflow.types import ClarifyOutcome
     from ynab_agent.ynab.client import YnabClient
 
     proposed_id = _proposed_category_id(proposal)
-    if not isinstance(signal, ReplySignal):
+    if isinstance(signal, ReceiptSignal):
         return ClarifyOutcome(
-            question="Could you say which category this should be?"
+            question=(
+                f"Matched your forwarded receipt to this charge: "
+                f"{receipt_summary(signal.receipt)}. Which category should "
+                "it be? (Reply with any detail you want in the memo, too.)"
+            )
         )
+    assert isinstance(signal, ReplySignal)  # the union's only other member
 
     client = YnabClient.from_env()
     spends = await asyncio.to_thread(client.category_spends)
@@ -534,8 +544,14 @@ async def converge(
     already landed, or surfaces a divergence (a spouse edited it directly) —
     *before* overwriting it — rather than committing blind and only noticing on
     the read-back. Only a genuine change writes, then verifies field-by-field. A
-    reconciled or closed-month transaction, a non-reply instruction, or anything
-    the model under-specifies routes to a human rather than a silent edit.
+    reconciled or closed-month transaction, or anything the model
+    under-specifies, routes to a human rather than a silent edit.
+
+    A **matched receipt** is a revision with no model at all (SPEC §6): the
+    receipt is ground truth for item detail, so its items fold into the memo
+    deterministically (append, never clobber — ``receipt_memo``), the
+    category stays put, and the same precommit / commit / verify tail
+    guarantees nothing is overwritten blind.
     """
     import asyncio
     from datetime import UTC, datetime
@@ -554,7 +570,8 @@ async def converge(
         Reapplied,
         VerifyOutcome,
     )
-    from ynab_agent.domain.signals import ReplySignal
+    from ynab_agent.domain.receipt import receipt_memo, receipt_summary
+    from ynab_agent.domain.signals import ReceiptSignal
     from ynab_agent.policy.converge import (
         PrecommitAction,
         classify_verify,
@@ -568,12 +585,55 @@ async def converge(
         return NeedsHuman(
             reason="reconciled or closed-month — propose, don't silently edit"
         )
-    if not isinstance(instruction, ReplySignal):
-        return NeedsHuman(reason="non-reply revision instruction unsupported")
 
     client = YnabClient.from_env()
     spends = await asyncio.to_thread(client.category_spends)
     names = {str(spend.category): spend.name for spend in spends}
+
+    if isinstance(instruction, ReceiptSignal):
+        # The receipt fold works on the LIVE end-state, never the snapshot
+        # frozen at materialization — by revision time the owner (or the
+        # agent's own apply) has long since categorized and memo'd the
+        # transaction, and a write built from the stale snapshot would
+        # revert it. Approval is preserved, never granted: a receipt is
+        # detail, and detail must not approve a charge the owner declined
+        # to decide (a LAPSED reopen reaches here too).
+        receipt = instruction.receipt
+        live = await asyncio.to_thread(client.read_back, snapshot.ynab_id)
+        if live is None or not isinstance(live.allocation, ResolvedCategory):
+            return NeedsHuman(
+                reason=(
+                    f"your receipt ({receipt_summary(receipt)}) matched "
+                    "this charge, but it isn't filed under a single "
+                    "category yet — reply with the category to use, and "
+                    "the receipt's items above are here for reference"
+                )
+            )
+        merged = receipt_memo(receipt, live.memo)
+        if merged == (live.memo or "").strip():
+            return NoChange()
+        decision = Decision(
+            allocation=live.allocation,
+            memo=merged,
+            approved=live.approved,
+            decided_by=DecidedBy.AGENT,
+            decided_at=datetime.now(UTC),
+        )
+        # Memo-only by construction (the allocation IS the live one), so the
+        # precommit divergence guards have nothing to protect; write + verify.
+        await asyncio.to_thread(client.commit, snapshot.ynab_id, decision)
+        read = await asyncio.to_thread(client.read_back, snapshot.ynab_id)
+        verdict = classify_verify(read, target_of(decision))
+        if verdict is VerifyOutcome.MATCH:
+            return Reapplied(decision=decision)
+        if verdict is VerifyOutcome.COULD_NOT_CONFIRM:
+            return CouldNotConfirm()
+        return Diverged(
+            ynab_summary=_target_summary(read, names),
+            requested_summary=_target_summary(target_of(decision), names),
+        )
+
+    # A ReplySignal — the union's only other member.
     current_name = (
         names.get(str(snapshot.category_id), str(snapshot.category_id))
         if snapshot.category_id is not None
@@ -591,16 +651,16 @@ async def converge(
     plan = to_revision_plan(target, candidates)
     if not plan.changes:
         return NoChange()
-
-    category = (
+    planned = (
         CategoryId(plan.category_id)
         if plan.category_id is not None
         else snapshot.category_id
     )
-    if category is None:
+    if planned is None:
         return NeedsHuman(reason="revision did not resolve a category")
+
     decision = Decision(
-        allocation=ResolvedCategory(category=category),
+        allocation=ResolvedCategory(category=planned),
         memo=plan.memo if plan.memo is not None else snapshot.memo,
         approved=True,
         decided_by=DecidedBy.HUMAN,

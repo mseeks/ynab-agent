@@ -102,3 +102,24 @@ def test_expired_receipt_is_terminal() -> None:
         now=_NOW,
     )
     assert isinstance(action, DoNothing)
+
+
+def test_asked_receipt_ages_out_at_the_ttl() -> None:
+    # Asked once and still ambiguous: closure arrives at the TTL instead of
+    # silent hourly re-matching forever.
+    import datetime as dt
+
+    from ynab_agent.domain.enums import ReceiptStatus
+    from ynab_agent.join.match import AskNoMatch, DoNothing
+
+    asked = _receipt(status=ReceiptStatus.ASKED)
+    fresh_now = asked.parked_at + dt.timedelta(days=1)
+    stale_now = asked.parked_at + dt.timedelta(days=31)
+    still_ambiguous = Ambiguous(
+        candidates=(YnabTransactionId("t1"), YnabTransactionId("t2"))
+    )
+    assert isinstance(
+        plan_join(asked, still_ambiguous, now=fresh_now), DoNothing
+    )
+    aged = plan_join(asked, still_ambiguous, now=stale_now)
+    assert isinstance(aged, AskNoMatch)

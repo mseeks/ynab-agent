@@ -22,6 +22,8 @@ from ynab_agent.workflow import dispatch_activities, temporal_client
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from ynab_agent.domain.receipt import Receipt
+
 
 class _FakeExecution:
     def __init__(self, workflow_id: str) -> None:
@@ -422,23 +424,82 @@ def _stub_mail(monkeypatch: pytest.MonkeyPatch) -> _FakeMail:
     return fake
 
 
-def test_route_receipt_acknowledges_instead_of_dropping(
+def _stub_receipt_pipeline(
+    monkeypatch: pytest.MonkeyPatch, *, parsed: object
+) -> tuple[list[Receipt], list[Receipt]]:
+    """Stub the model parse and the park/start helpers (offline)."""
+    from ynab_agent.agentic import receipt_parse
+    from ynab_agent.workflow import receipt_activities
+
+    async def _parse(request: object, *, model: object = None) -> object:
+        return parsed
+
+    monkeypatch.setattr(receipt_parse, "parse_receipt", _parse)
+    parked: list[Receipt] = []
+    started: list[Receipt] = []
+
+    async def _park(receipt: Receipt) -> None:
+        parked.append(receipt)
+
+    async def _start(receipt: Receipt) -> None:
+        started.append(receipt)
+
+    monkeypatch.setattr(receipt_activities, "park_in_ledger", _park)
+    monkeypatch.setattr(receipt_activities, "start_join", _start)
+    return parked, started
+
+
+def test_route_receipt_parses_parks_acks_and_starts_the_join(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A forwarded receipt is no longer silently swallowed: the owner gets an
-    # honest note pointing at the working path (SPEC §5b, §6).
+    # The W4 entry point (SPEC §6): a parseable forward is parked in the
+    # ledger, acknowledged naming what was read, and a join attempt starts.
+    from ynab_agent.agentic.receipt_parse import ParsedReceipt
+
     fake = _stub_mail(monkeypatch)
+    parked, started = _stub_receipt_pipeline(
+        monkeypatch,
+        parsed=ParsedReceipt(
+            is_receipt=True, merchant="Whole Foods", total="$23.48"
+        ),
+    )
     asyncio.run(dispatch_activities.route_receipt(_message(thread_id="thr-r")))
+    assert len(parked) == 1 and len(started) == 1
+    receipt = parked[0]
+    assert str(receipt.id) == "m1"  # the message id is the dedup key
+    assert str(receipt.source_thread_id) == "thr-r"
     assert len(fake.sends) == 1
     sent = fake.sends[0]
-    assert sent["thread_id"] == "thr-r"
-    assert "receipts" in str(sent["body"])
-    assert sent["seq_label"] == "yarcpt-m1"  # idempotent on the message id
+    assert "Whole Foods — $23.48" in str(sent["body"])  # names what was read
+    assert sent["seq_label"] == "yarcpt-ack-m1"  # deduped on the message id
+
+
+def test_route_receipt_answers_honestly_when_unparseable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A forward that isn't a receipt is never parked as junk: say so, and
+    # point at the path that always works.
+    from ynab_agent.agentic.receipt_parse import ParsedReceipt
+
+    fake = _stub_mail(monkeypatch)
+    parked, started = _stub_receipt_pipeline(
+        monkeypatch, parsed=ParsedReceipt(is_receipt=False)
+    )
+    asyncio.run(dispatch_activities.route_receipt(_message(thread_id="thr-r")))
+    assert parked == [] and started == []
+    assert len(fake.sends) == 1
+    assert "didn't look like a purchase receipt" in str(fake.sends[0]["body"])
+    assert fake.sends[0]["seq_label"] == "yarcpt-unread-m1"
 
 
 def test_route_receipt_no_op_without_a_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from ynab_agent.agentic.receipt_parse import ParsedReceipt
+
     fake = _stub_mail(monkeypatch)
+    _stub_receipt_pipeline(
+        monkeypatch, parsed=ParsedReceipt(is_receipt=True, merchant="X")
+    )
     asyncio.run(dispatch_activities.route_receipt(_message(thread_id=None)))
     assert fake.sends == []

@@ -22,23 +22,31 @@ from ynab_agent.domain.allocations import (
     SplitLine,
 )
 from ynab_agent.domain.enums import Confidence, DecidedBy
-from ynab_agent.domain.events import Diverged, NoChange, Reapplied
+from ynab_agent.domain.events import (
+    Diverged,
+    NeedsHuman,
+    NoChange,
+    Reapplied,
+)
 from ynab_agent.domain.ids import (
     AccountId,
     CategoryId,
     MessageId,
+    ReceiptId,
     ThreadId,
     YnabTransactionId,
 )
 from ynab_agent.domain.money import Money
 from ynab_agent.domain.proposal import Decision, Proposal
-from ynab_agent.domain.signals import ReplySignal
+from ynab_agent.domain.receipt import Receipt, ReceiptLineItem
+from ynab_agent.domain.signals import ReceiptSignal, ReplySignal
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.policy.converge import TargetState, target_of
 from ynab_agent.workflow.activities import (
     _proposed_category_id,
     _target_summary,
     converge,
+    interpret_inbound,
 )
 
 if TYPE_CHECKING:
@@ -252,3 +260,166 @@ async def test_converge_writes_then_verifies_a_real_change(
         category=CategoryId("gifts")
     )
     assert len(fake.commits) == 1
+
+
+# ── the receipt paths: deterministic, no model (SPEC §6) ─────────────────────
+def _receipt() -> Receipt:
+    return Receipt(
+        id=ReceiptId("r1"),
+        parked_at=datetime.datetime(2026, 6, 1, tzinfo=datetime.UTC),
+        merchant="Whole Foods",
+        total=Money.from_currency("4.50"),
+        line_items=(
+            ReceiptLineItem(description="Corn Starch"),
+            ReceiptLineItem(description="Paper Towels"),
+        ),
+    )
+
+
+def _receipt_signal() -> ReceiptSignal:
+    return ReceiptSignal(receipt_id=ReceiptId("r1"), receipt=_receipt())
+
+
+def _no_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A receipt revision must never reach the model — make it explosive."""
+    from ynab_agent.agentic import converge as converge_mod
+
+    async def _boom(request: object, *, model: object = None) -> object:
+        raise AssertionError("the receipt path must not call the model")
+
+    monkeypatch.setattr(converge_mod, "interpret_revision", _boom)
+
+
+async def test_interpret_inbound_surfaces_receipt_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A matched receipt on an awaiting transaction is detail, not a reply:
+    # deterministically ask with the items in front of the owner.
+    outcome = await interpret_inbound(
+        _receipt_signal(), _converge_snapshot(), None
+    )
+    question = outcome.question  # type: ignore[union-attr]
+    assert "Whole Foods — $4.50" in question
+    assert "Corn Starch, Paper Towels" in question
+
+
+async def test_converge_receipt_folds_items_into_an_empty_memo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_model(monkeypatch)
+    from ynab_agent.ynab.client import YnabClient
+
+    prior = _decision("dining")
+    fake = _FakeYnab(target_of(prior))
+    monkeypatch.setattr(YnabClient, "from_env", classmethod(lambda cls: fake))
+    outcome = await converge(_converge_snapshot(), _receipt_signal(), prior)
+    assert isinstance(outcome, Reapplied)
+    assert len(fake.commits) == 1
+    written = fake.commits[0]
+    assert written.memo == "Corn Starch, Paper Towels"
+    assert written.allocation == ResolvedCategory(
+        category=CategoryId("dining")
+    )  # the category never moves on a receipt
+    assert written.decided_by is DecidedBy.AGENT
+
+
+async def test_converge_receipt_appends_to_an_existing_memo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_model(monkeypatch)
+    from ynab_agent.ynab.client import YnabClient
+
+    snapshot = _converge_snapshot().model_copy(
+        update={"memo": "weekly groceries"}
+    )
+    prior = _decision("dining").model_copy(update={"memo": "weekly groceries"})
+    fake = _FakeYnab(target_of(prior))
+    monkeypatch.setattr(YnabClient, "from_env", classmethod(lambda cls: fake))
+    outcome = await converge(snapshot, _receipt_signal(), prior)
+    assert isinstance(outcome, Reapplied)
+    assert fake.commits[0].memo == (
+        "weekly groceries · Corn Starch, Paper Towels"
+    )
+
+
+async def test_converge_receipt_already_folded_is_no_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_model(monkeypatch)
+    from ynab_agent.ynab.client import YnabClient
+
+    live = TargetState(
+        allocation=ResolvedCategory(category=CategoryId("dining")),
+        memo="Corn Starch, Paper Towels",
+        approved=True,
+    )
+    fake = _FakeYnab(live)
+    monkeypatch.setattr(YnabClient, "from_env", classmethod(lambda cls: fake))
+    outcome = await converge(
+        _converge_snapshot(), _receipt_signal(), _decision("dining")
+    )
+    assert isinstance(outcome, NoChange)
+    assert fake.commits == []
+
+
+async def test_converge_receipt_folds_into_the_live_state_not_the_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # THE critical guard: the snapshot is frozen at materialization. By the
+    # time a receipt arrives the owner may have re-chosen the category and
+    # written a memo — the fold must build on the LIVE state, never revert.
+    _no_model(monkeypatch)
+    from ynab_agent.ynab.client import YnabClient
+
+    live = TargetState(
+        allocation=ResolvedCategory(category=CategoryId("gifts")),
+        memo="for the kids",
+        approved=True,
+    )
+    fake = _FakeYnab(live)
+    monkeypatch.setattr(YnabClient, "from_env", classmethod(lambda cls: fake))
+    # The stale snapshot still says "dining" with no memo.
+    outcome = await converge(
+        _converge_snapshot(), _receipt_signal(), _decision("dining")
+    )
+    assert isinstance(outcome, Reapplied)
+    written = fake.commits[0]
+    assert written.allocation == ResolvedCategory(
+        category=CategoryId("gifts")
+    )  # the live category, never the stale one
+    assert written.memo == "for the kids · Corn Starch, Paper Towels"
+
+
+async def test_converge_receipt_never_approves_an_unapproved_charge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A receipt is detail: it must not approve a charge the owner declined
+    # to decide (a LAPSED reopen), bypassing the gate and the floor.
+    _no_model(monkeypatch)
+    from ynab_agent.ynab.client import YnabClient
+
+    live = TargetState(
+        allocation=ResolvedCategory(category=CategoryId("dining")),
+        memo=None,
+        approved=False,
+    )
+    fake = _FakeYnab(live)
+    monkeypatch.setattr(YnabClient, "from_env", classmethod(lambda cls: fake))
+    outcome = await converge(_converge_snapshot(), _receipt_signal(), None)
+    assert isinstance(outcome, Reapplied)
+    assert fake.commits[0].approved is False  # preserved, never granted
+
+
+async def test_converge_receipt_on_uncategorized_asks_a_human(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _no_model(monkeypatch)
+    from ynab_agent.ynab.client import YnabClient
+
+    # The LIVE read shows no single category (uncategorized or a split).
+    fake = _FakeYnab(None)
+    monkeypatch.setattr(YnabClient, "from_env", classmethod(lambda cls: fake))
+    outcome = await converge(_converge_snapshot(), _receipt_signal(), None)
+    assert isinstance(outcome, NeedsHuman)
+    assert "Whole Foods" in outcome.reason
+    assert fake.commits == []

@@ -13,7 +13,7 @@ def test_runtime_registry_is_wired() -> None:
     # dedup ledger + the W7 budget-balance workflow + the auto-action
     # circuit-breaker ledger + the command-confirm workflow) and all ports.
     assert TransactionWorkflow in WORKFLOWS
-    assert len(WORKFLOWS) == 13
+    assert len(WORKFLOWS) == 14
     assert len(ALL_ACTIVITIES) >= 20
     assert callable(run_worker)
     assert DEFAULT_TASK_QUEUE

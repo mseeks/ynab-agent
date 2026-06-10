@@ -40,6 +40,7 @@ from ynab_agent.workflow.overspend_ledger_workflow import (
     OverspendLedgerWorkflow,
 )
 from ynab_agent.workflow.poll_workflow import PollWorkflow
+from ynab_agent.workflow.receipt_ledger_workflow import ReceiptLedgerWorkflow
 from ynab_agent.workflow.receipt_workflow import ReceiptJoinWorkflow
 from ynab_agent.workflow.registry_workflow import RuleRegistryWorkflow
 from ynab_agent.workflow.txn_workflow import TransactionWorkflow
@@ -60,6 +61,7 @@ WORKFLOWS = [
     AutoActionLedgerWorkflow,
     CommandConfirmWorkflow,
     DeadmanWorkflow,
+    ReceiptLedgerWorkflow,
 ]
 
 ALL_ACTIVITIES: list[Callable[..., object]] = [
@@ -100,6 +102,8 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     receipt_activities.ask_disambiguation,
     receipt_activities.ask_no_match,
     receipt_activities.save_receipt_status,
+    receipt_activities.list_open_receipts,
+    receipt_activities.start_receipt_join,
     monitor_activities.current_period,
     monitor_activities.fetch_category_spends,
     monitor_activities.load_prior_alert,

@@ -211,6 +211,8 @@ def render_help() -> str:
         "back for a YES before it takes effect).\n"
         '- "stop auto-handling X" revokes one, effective immediately.\n'
         '- "list my rules" shows everything I auto-handle or am learning.\n'
+        "- Forward a purchase receipt and I'll match it to the charge and "
+        "fold the items into its memo (asking when several charges fit).\n"
         "- When a category is over budget I'll email options to cover it — "
         'reply with the option you want (or your own tweak, like "option 2 '
         'but only $50").\n\n'
@@ -220,20 +222,98 @@ def render_help() -> str:
     )
 
 
-def render_receipt_unsupported() -> str:
-    """The honest note for a forwarded receipt the join can't process yet (§6).
+def render_receipt_unparseable() -> str:
+    """The honest note for a forward the join will not act on (SPEC §6).
 
-    The receipt⇄transaction join (W4) is a deferred increment, so rather than
-    swallow a forwarded receipt silently, the agent acknowledges it and points
-    the owner at the path that does work: replying on the transaction's own
-    email thread.
+    Two cases share it: the extraction said "not a purchase receipt" (a
+    shipping notice, a refund, marketing), or it found neither a merchant
+    nor a total to match on. The copy covers both without inventing a
+    reason, and points at the path that always works.
     """
     return (
-        "Thanks for forwarding this. I can't match forwarded receipts to "
-        "transactions yet, so I haven't filed it.\n\n"
-        "To add detail to a specific charge — an item list, a split, or a note "
-        "— just reply on that transaction's own email thread and I'll fold it "
-        "in."
+        "Thanks for forwarding this — it didn't look like a purchase "
+        "receipt I can match (a completed charge with a merchant or "
+        "total), so I haven't filed anything.\n\n"
+        "To add detail to a specific charge — an item list, a split, or a "
+        "note — just reply on that transaction's own email thread and I'll "
+        "fold it in."
+    )
+
+
+def render_receipt_ack(summary: str) -> str:
+    """The receipt-received acknowledgment (SPEC §6).
+
+    Sent on the forward's own thread once the receipt parses: name what was
+    read (so a misread is visible immediately) and what happens next —
+    promising only what every match path actually does (the detail surfaces
+    on the charge's side; settled charges get it folded into the memo).
+    """
+    return (
+        f"Got it — I read this as: {summary}.\n\n"
+        "I'll match it to the right transaction and bring the detail to "
+        "that charge. If no match has posted yet, I'll keep checking as "
+        "new transactions come in."
+    )
+
+
+def render_receipt_matched(summary: str, charge: str) -> str:
+    """The settled-charge confirmation: matched and memo'd (SPEC §6).
+
+    Sent on the receipt's own thread when the matched charge has no live
+    conversation of its own (hand-approved, pre-install, long archived) —
+    the confirmable statement §6 requires, naming both sides.
+    """
+    return (
+        f"Matched your receipt ({summary}) to {charge} and added the "
+        "items to its memo. Nothing else on the charge was touched — "
+        "reply if that match looks wrong."
+    )
+
+
+def render_receipt_disambiguation(
+    summary: str, options: tuple[str, ...], *, with_threads: bool
+) -> str:
+    """The which-charge-is-this question, asked exactly once (SPEC §6).
+
+    ``with_threads`` keeps the instruction honest: the charges' own email
+    threads are only promised when at least one exists (a hand-approved or
+    pre-install charge was never triaged and has none).
+    """
+    lines = [
+        f"Your receipt ({summary}) plausibly matches more than one charge:",
+        "",
+    ]
+    lines.extend(
+        f"{index}. {option}" for index, option in enumerate(options, start=1)
+    )
+    if with_threads:
+        instruction = (
+            "Where a charge has its own email thread from me, reply there "
+            "with the detail you want filed. For any that don't, add the "
+            "note directly in YNAB — I won't guess between them."
+        )
+    else:
+        instruction = (
+            "None of these are in my email queue (they're already settled "
+            "in YNAB), so I won't guess between them — add the detail to "
+            "the right charge's memo directly in YNAB."
+        )
+    lines += ["", instruction]
+    return "\n".join(lines)
+
+
+def render_receipt_no_match(summary: str) -> str:
+    """The aged-out closure note: the join stopped trying (SPEC §6).
+
+    Worded for both expiry paths — never matched at all, or asked once and
+    never resolved — so it cannot contradict an earlier disambiguation
+    email.
+    """
+    return (
+        f"I couldn't pin your receipt ({summary}) to a single charge "
+        "within 30 days, so I've stopped trying.\n\n"
+        "If you want the detail kept, add it to the charge's memo in YNAB "
+        "— or forward the receipt again and I'll take another look."
     )
 
 
