@@ -234,6 +234,21 @@ def _allocation_display(
     )
 
 
+def _decided_display(
+    decision: Decision | None, names: dict[str, str]
+) -> str | None:
+    """The category name(s) a decision wrote, for naming it in an email."""
+    if decision is None:
+        return None
+    allocation = decision.allocation
+    if isinstance(allocation, ResolvedCategory):
+        return names.get(str(allocation.category), str(allocation.category))
+    return " + ".join(
+        names.get(str(line.category), str(line.category))
+        for line in allocation.lines
+    )
+
+
 async def _read_for_compose(
     ynab_id: str,
 ) -> tuple[YnabSnapshot, dict[str, str]]:
@@ -256,16 +271,43 @@ async def _read_for_compose(
     return snapshot, names
 
 
+def _diverged_detail(
+    snapshot: YnabSnapshot, decision: Decision, names: dict[str, str]
+) -> str:
+    """A which-wins comparison from the live snapshot vs. the intended write.
+
+    The converge path carries its own comparison on the effect; this covers the
+    plain commit→verify path, where only the intended decision is known — the
+    current side comes from the fresh snapshot read at send time.
+    """
+    current = (
+        names.get(str(snapshot.category_id), str(snapshot.category_id))
+        if snapshot.category_id is not None
+        else ("a split" if snapshot.subtransactions else "uncategorized")
+    )
+    intended = _decided_display(decision, names)
+    return (
+        f"YNAB now shows {current}, but I set {intended} — which should "
+        "win? Reply with your choice and I'll sort it out."
+    )
+
+
 def _render_message(
     snapshot: YnabSnapshot,
     proposal: Proposal | None,
     purpose: MessagePurpose,
     names: dict[str, str],
+    *,
+    detail: str | None = None,
+    decision: Decision | None = None,
 ) -> str:
     """Lay out one message body for the thread (deterministic; SPEC §5).
 
     The proposal's category + alternatives (model-chosen upstream) are resolved
     to names here and handed to the template — no model call at send time.
+    ``detail`` and ``decision`` carry the message-specific payload from the
+    state machine (the clarify question, the diverged comparison, what a
+    confirm/FYI/revision actually wrote).
     """
     from ynab_agent.agentic.compose import ComposeRequest, render_body
 
@@ -279,6 +321,12 @@ def _render_message(
         if proposal is not None
         else ()
     )
+    if (
+        detail is None
+        and decision is not None
+        and purpose is MessagePurpose.DIVERGED_READBACK
+    ):
+        detail = _diverged_detail(snapshot, decision, names)
     request = ComposeRequest(
         purpose=purpose.value,
         payee=snapshot.payee,
@@ -288,20 +336,29 @@ def _render_message(
         proposed_category=proposed,
         alternatives=alternatives,
         rationale=proposal.rationale if proposal is not None else None,
+        detail=detail,
+        decided_category=_decided_display(decision, names),
     )
     return render_body(request)
 
 
 @activity.defn
-async def open_thread(ynab_id: str, proposal: Proposal | None) -> str:
-    """Open the AgentMail thread by sending the proposal; returns its id.
+async def open_thread(
+    ynab_id: str,
+    proposal: Proposal | None,
+    purpose: MessagePurpose = MessagePurpose.PROPOSAL,
+    detail: str | None = None,
+    decision: Decision | None = None,
+) -> str:
+    """Open the AgentMail thread with its first message; returns its id.
 
-    A thread starts on its first send (AgentMail has no empty-thread create), so
-    this composes + sends the proposal as the opening email. ``proposal`` is the
-    current best guess (carried from workflow state); the txn facts + category
-    names are re-read from YNAB (the source of truth) at compose time. The open
-    is idempotent on the per-transaction label, so a retry re-finds the thread
-    rather than sending a duplicate.
+    A thread starts on its first send (AgentMail has no empty-thread create).
+    Usually that first message is the proposal, but an auto-applied transaction
+    has no proposal email — its thread opens with the FYI (``purpose``/
+    ``decision``), which is what makes the SPEC §14.5 per-action FYI + one-reply
+    undo possible at all. The txn facts + category names are re-read from YNAB
+    at compose time, and the open is idempotent on the per-transaction label, so
+    a retry re-finds the thread rather than sending a duplicate.
     """
     import asyncio
 
@@ -310,8 +367,10 @@ async def open_thread(ynab_id: str, proposal: Proposal | None) -> str:
 
     settings = Settings()
     snapshot, names = await _read_for_compose(ynab_id)
-    body = _render_message(snapshot, proposal, MessagePurpose.PROPOSAL, names)
-    proposed = (
+    body = _render_message(
+        snapshot, proposal, purpose, names, detail=detail, decision=decision
+    )
+    headline = _decided_display(decision, names) or (
         _allocation_display(proposal.allocation, names)
         if proposal is not None
         else None
@@ -321,7 +380,7 @@ async def open_thread(ynab_id: str, proposal: Proposal | None) -> str:
         mail.open_thread,
         inbox_id=settings.inbox,
         to=list(settings.owners),
-        subject=_subject(snapshot, proposed),
+        subject=_subject(snapshot, headline),
         body=body,
         txn_label=_txn_label(ynab_id),
     )
@@ -334,13 +393,19 @@ async def send_thread_message(
     purpose: MessagePurpose,
     action_seq: int,
     proposal: Proposal | None,
+    detail: str | None = None,
+    decision: Decision | None = None,
 ) -> None:
     """Send a follow-up message on the transaction's thread.
 
     ``action_seq`` is the per-transaction idempotency key: the send dedups on it
     so a retry never double-sends (SPEC §3). ``proposal`` is the current best
-    guess where the purpose needs it (re-proposal); other purposes derive their
-    content from a re-read of the YNAB snapshot.
+    guess where the purpose needs it (re-proposal); ``detail``/``decision``
+    carry the message's specific payload (clarify question, diverged
+    comparison, what was written). Recipients are set to the owners explicitly:
+    when the agent was the last speaker on the thread, AgentMail would
+    otherwise address the reply back to the agent's own inbox and the owners
+    would never see it (the same fix the W7 balancer needed, #17).
     """
     import asyncio
 
@@ -352,7 +417,9 @@ async def send_thread_message(
         raise RuntimeError(msg)
     settings = Settings()
     snapshot, names = await _read_for_compose(ynab_id)
-    body = _render_message(snapshot, proposal, purpose, names)
+    body = _render_message(
+        snapshot, proposal, purpose, names, detail=detail, decision=decision
+    )
     mail = MailClient.from_env()
     await asyncio.to_thread(
         mail.send_on_thread,
@@ -360,6 +427,7 @@ async def send_thread_message(
         thread_id=thread_id,
         body=body,
         seq_label=_seq_label(ynab_id, action_seq),
+        to=list(settings.owners),
     )
 
 
@@ -383,9 +451,12 @@ async def interpret_inbound(
 
     Free-form: the model reads whether the reply approves the proposal, names a
     different category, or asks a question. The spine — not the model — stamps
-    the human + time into the resulting Decision. A non-reply inbound, or a
-    missing/split proposal, can't be answered directly, so ask rather than guess
-    a write. Names + candidates are re-read from YNAB at interpret time.
+    the human + time into the resulting Decision. A non-reply inbound can't be
+    answered directly, so ask rather than guess a write. A *missing* proposal
+    (a flagged verify-failure entry, a NeedsHuman wait) is fine: the owner can
+    still name a category outright, and looping the same canned question at
+    them made those states unanswerable by email. Names + candidates are
+    re-read from YNAB at interpret time.
     """
     import asyncio
     from datetime import UTC, datetime
@@ -400,7 +471,7 @@ async def interpret_inbound(
     from ynab_agent.ynab.client import YnabClient
 
     proposed_id = _proposed_category_id(proposal)
-    if not isinstance(signal, ReplySignal) or proposed_id is None:
+    if not isinstance(signal, ReplySignal):
         return ClarifyOutcome(
             question="Could you say which category this should be?"
         )
@@ -412,7 +483,9 @@ async def interpret_inbound(
         reply_text=signal.text,
         payee=snapshot.payee,
         amount_display=str(snapshot.amount),
-        proposed_category_name=names.get(str(proposed_id), str(proposed_id)),
+        proposed_category_name=names.get(str(proposed_id), str(proposed_id))
+        if proposed_id is not None
+        else None,
         candidates=_candidates_from_spends(spends),
     )
     interpretation = await interpret(request)

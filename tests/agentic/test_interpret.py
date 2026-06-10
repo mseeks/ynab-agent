@@ -60,6 +60,37 @@ def test_approve_commits_the_proposed_category() -> None:
     assert outcome.decision.decided_at == _NOW
 
 
+def test_approve_without_a_proposal_asks_instead() -> None:
+    # A flagged/NeedsHuman wait has no proposal: a bare "ok" has nothing to
+    # approve, so the safe move is to ask — never to guess a write.
+    outcome = to_reply_outcome(
+        Interpretation(intent=ReplyIntent.APPROVE),
+        proposed_category=None,
+        decided_at=_NOW,
+    )
+    assert isinstance(outcome, ClarifyOutcome)
+
+
+def test_recategorize_without_a_proposal_still_commits() -> None:
+    # The owner can name a category outright even when nothing was proposed —
+    # this is what makes flagged entries answerable by email at all.
+    outcome = to_reply_outcome(
+        Interpretation(intent=ReplyIntent.RECATEGORIZE, category_id="coffee"),
+        proposed_category=None,
+        decided_at=_NOW,
+    )
+    assert isinstance(outcome, AnswerOutcome)
+    assert isinstance(outcome.decision.allocation, ResolvedCategory)
+    assert outcome.decision.allocation.category == "coffee"
+
+
+def test_request_renders_a_missing_proposal_as_none() -> None:
+    request = _REQUEST.model_copy(update={"proposed_category_name": None})
+    from ynab_agent.agentic.interpret import _format_request
+
+    assert "Currently proposed: (none)" in _format_request(request)
+
+
 def test_recategorize_commits_the_named_category() -> None:
     outcome = _outcome(
         Interpretation(intent=ReplyIntent.RECATEGORIZE, category_id="coffee")

@@ -48,6 +48,7 @@ with workflow.unsafe.imports_passed_through():
         CommitToYnab,
         Effect,
         FeedRuleLearning,
+        MessagePurpose,
         OpenThread,
         RecordAutoAction,
         ReplayBuffered,
@@ -271,16 +272,18 @@ class TransactionWorkflow:
                 outcome=classify_verify(read, target_of(effect.decision))
             )
         if isinstance(effect, OpenThread):
-            tid = await workflow.execute_activity(
-                activities.open_thread,
-                args=[self._ynab_id, self._proposal()],
-                start_to_close_timeout=ACTIVITY_TIMEOUT,
-                retry_policy=ACTIVITY_RETRY,
-            )
-            self._set_thread_id(tid)
-            # Index this workflow by its thread for reply routing (§5a).
-            workflow.upsert_search_attributes([_TXN_THREAD_ID.value_set(tid)])
+            await self._open_thread(MessagePurpose.PROPOSAL, None, None)
         elif isinstance(effect, SendThreadMessage):
+            if self._thread_id is None:
+                # No thread yet — an auto-applied transaction reaches its FYI
+                # (or a verify-failure note) without ever proposing. Open the
+                # thread with THIS message as its first email instead of
+                # crashing the send (SPEC §14.5: the FYI must exist for the
+                # one-reply undo to exist).
+                await self._open_thread(
+                    effect.purpose, effect.detail, effect.decision
+                )
+                return None
             self._action_seq += 1
             await workflow.execute_activity(
                 activities.send_thread_message,
@@ -290,6 +293,8 @@ class TransactionWorkflow:
                     effect.purpose,
                     self._action_seq,
                     self._proposal(),
+                    effect.detail,
+                    effect.decision,
                 ],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
@@ -334,6 +339,23 @@ class TransactionWorkflow:
         elif isinstance(effect, ReplayBuffered):
             self._inbound.extendleft(reversed(effect.signals))
         return None
+
+    async def _open_thread(
+        self,
+        purpose: MessagePurpose,
+        detail: str | None,
+        decision: Decision | None,
+    ) -> None:
+        """Open the AgentMail thread with ``purpose`` as its first message."""
+        tid = await workflow.execute_activity(
+            activities.open_thread,
+            args=[self._ynab_id, self._proposal(), purpose, detail, decision],
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=ACTIVITY_RETRY,
+        )
+        self._set_thread_id(tid)
+        # Index this workflow by its thread for reply routing (§5a).
+        workflow.upsert_search_attributes([_TXN_THREAD_ID.value_set(tid)])
 
     def _set_thread_id(self, tid: str) -> None:
         self._thread_id = tid

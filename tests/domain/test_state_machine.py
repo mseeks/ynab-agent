@@ -523,6 +523,78 @@ def test_revising_needs_human_asks() -> None:
     rev = _revising(RevisingOrigin.APPLIED, prior=True)
     out = _step(rev, Converged(outcome=NeedsHuman(reason="reconciled")))
     assert isinstance(out.next, AwaitingHuman)
+    # A question carrying the reason — not a bare PROPOSAL shell with no
+    # proposal behind it ("Suggested: (needs a category)").
+    assert MessagePurpose.CLARIFY in _purposes(out)
+    sends = [e for e in out.effects if isinstance(e, SendThreadMessage)]
+    assert sends[0].detail == "reconciled"
+
+
+# ── message payloads ride the effects (the placeholder-copy fix) ────────────
+def _send_effects(out: Transition) -> list[SendThreadMessage]:
+    return [e for e in out.effects if isinstance(e, SendThreadMessage)]
+
+
+def test_clarify_carries_the_models_question() -> None:
+    waiting = AwaitingHuman(
+        core=_core(), patience_deadline=NOW, proposal=_proposal()
+    )
+    out = _step(
+        waiting, ClarifyRequested(question="Was this the annual renewal?")
+    )
+    send = _send_effects(out)[0]
+    assert send.purpose is MessagePurpose.CLARIFY
+    assert send.detail == "Was this the annual renewal?"
+
+
+def test_confirm_carries_the_decision_it_names() -> None:
+    decision = _decision(DecidedBy.HUMAN)
+    applied = Applied(core=_core(), decision=decision)
+    out = _step(applied, WriteVerified(outcome=VerifyOutcome.MATCH))
+    send = next(
+        e for e in _send_effects(out) if e.purpose is MessagePurpose.CONFIRM
+    )
+    assert send.decision == decision
+
+
+def test_fyi_carries_the_decision_it_names() -> None:
+    decision = _decision(DecidedBy.AGENT)
+    auto = AutoApplied(core=_core(), decision=decision)
+    out = _step(auto, WriteVerified(outcome=VerifyOutcome.MATCH))
+    send = next(
+        e for e in _send_effects(out) if e.purpose is MessagePurpose.FYI
+    )
+    assert send.decision == decision
+
+
+def test_revise_summary_carries_the_new_decision() -> None:
+    rev = _revising(RevisingOrigin.APPLIED, prior=True)
+    new_decision = _decision(DecidedBy.HUMAN, category="gifts")
+    out = _step(rev, Converged(outcome=Reapplied(decision=new_decision)))
+    send = next(
+        e
+        for e in _send_effects(out)
+        if e.purpose is MessagePurpose.REVISE_SUMMARY
+    )
+    assert send.decision == new_decision
+
+
+def test_diverged_readback_carries_the_which_wins_comparison() -> None:
+    rev = _revising(RevisingOrigin.APPLIED, prior=True)
+    out = _step(
+        rev,
+        Converged(
+            outcome=Diverged(
+                ynab_summary="Groceries", requested_summary="Gifts"
+            )
+        ),
+    )
+    send = _send_effects(out)[0]
+    assert send.purpose is MessagePurpose.DIVERGED_READBACK
+    assert send.detail is not None
+    assert "Groceries" in send.detail
+    assert "Gifts" in send.detail
+    assert "which should win" in send.detail
 
 
 # ── ARCHIVED + rejections ───────────────────────────────────────────────────

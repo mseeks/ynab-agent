@@ -49,12 +49,17 @@ class ReplyIntent(StrEnum):
 
 
 class InterpretRequest(Frozen):
-    """A human reply and the context needed to read its intent."""
+    """A human reply and the context needed to read its intent.
+
+    ``proposed_category_name`` is ``None`` when there is no live proposal (a
+    flagged verify-failure entry, a NeedsHuman wait). The owner can still name
+    a category outright; only a bare "approve" has nothing to approve then.
+    """
 
     reply_text: str
     payee: str
     amount_display: str
-    proposed_category_name: str
+    proposed_category_name: str | None = None
     candidates: tuple[CandidateCategory, ...] = Field(min_length=1)
 
 
@@ -73,10 +78,14 @@ are given the reply text, the payee and amount, the category currently proposed,
 and the candidate categories (id + name).
 
 Classify the reply's intent: `approve` if they accept the current proposal (e.g.
-"ok", "yes", "sounds good"); `recategorize` if they want a different category —
-then set `category_id` to the matching candidate id; or `clarify` if the reply
+"ok", "yes", "sounds good"); `recategorize` if they name or describe a category
+— then set `category_id` to the matching candidate id; or `clarify` if the reply
 is ambiguous or asks a question — then set a short `question` to send back. When
 in doubt, prefer `clarify`: asking again is safe, a wrong write is not.
+
+There may be NO current proposal (shown as "(none)"): the agent asked an open
+question rather than proposing. A bare yes/ok then has nothing to approve —
+classify it `clarify`; a reply that names a category is still `recategorize`.
 
 Also set `memo`: if the reply gives any *context or reasoning* beyond the bare
 category — what it was for, who it was for, an occasion ("gift for mom", "kids'
@@ -96,7 +105,7 @@ def _format_request(request: InterpretRequest) -> str:
         f"Reply: {request.reply_text}",
         f"Payee: {request.payee}",
         f"Amount: {request.amount_display}",
-        f"Currently proposed: {request.proposed_category_name}",
+        f"Currently proposed: {request.proposed_category_name or '(none)'}",
         "Candidate categories:",
     ]
     lines.extend(f"  - {c.name} (id: {c.id})" for c in request.candidates)
@@ -141,18 +150,26 @@ def _human_decision(
 def to_reply_outcome(
     interpretation: Interpretation,
     *,
-    proposed_category: CategoryId,
+    proposed_category: CategoryId | None,
     decided_at: datetime.datetime,
 ) -> ReplyOutcome:
     """Map the agent's reading onto a domain ReplyOutcome (SPEC §3, §14.4).
 
-    ``approve`` commits the proposed category; ``recategorize`` commits the
-    named one (or asks, if none was given); ``clarify`` sends the question back.
-    Any rationale the reply carried rides along as the decision's ``memo`` (the
+    ``approve`` commits the proposed category (or asks, when nothing was
+    proposed — there is nothing to approve); ``recategorize`` commits the named
+    one (or asks, if none was given); ``clarify`` sends the question back. Any
+    rationale the reply carried rides along as the decision's ``memo`` (the
     spine writes it to YNAB). The spine, not the model, sets decider and time.
     """
     match interpretation.intent:
         case ReplyIntent.APPROVE:
+            if proposed_category is None:
+                return ClarifyOutcome(
+                    question=(
+                        "There's no pending suggestion to approve here — "
+                        "which category should this be?"
+                    )
+                )
             return AnswerOutcome(
                 decision=_human_decision(
                     proposed_category, decided_at, memo=interpretation.memo
