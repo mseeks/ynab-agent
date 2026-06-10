@@ -21,7 +21,12 @@ from pydantic_ai import Agent
 from ynab_agent.agentic.model import run_structured
 from ynab_agent.domain.allocations import ProposedCategory
 from ynab_agent.domain.base import Frozen
-from ynab_agent.domain.enums import Confidence, ReviewVerdict, SourceKind
+from ynab_agent.domain.enums import (
+    Confidence,
+    ReviewVerdict,
+    SourceKind,
+    TrustState,
+)
 from ynab_agent.domain.events import AskHuman, AutoApply
 from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.proposal import Proposal, ProposalSource
@@ -207,6 +212,42 @@ def _rule_hint(
     return None
 
 
+def _proposal_from_rule(
+    snapshot: YnabSnapshot,
+    rules: tuple[Rule, ...],
+    candidates: tuple[CandidateCategory, ...],
+) -> Proposal | None:
+    """A deterministic ASK proposal from a trusted matching rule, or None.
+
+    A rule that reached ``trusted`` by consistency already encodes the
+    owner's repeated answer for this payee; re-deriving it with a model call
+    adds latency, not information — and the owner still decides, since the
+    deterministic gate alone grants autonomy (SPEC §14). Only a
+    single-category rule whose category is still a live candidate
+    qualifies; splits, lower trust, and stale category ids fall through to
+    the model. Confidence is framing only, and a consistency-proven rule is
+    exactly the high-confidence case.
+    """
+    names = {c.id: c.name for c in candidates}
+    for rule in matching_rules(rules, snapshot):
+        if rule.trust is not TrustState.TRUSTED:
+            continue
+        category_id = _blessed_category_id(rule)
+        if category_id is None or category_id not in names:
+            continue
+        return Proposal(
+            allocation=ProposedCategory(category=CategoryId(category_id)),
+            confidence=Confidence.HIGH,
+            rationale=(
+                f"past transactions from this payee were filed under "
+                f"'{names[category_id]}'"
+            ),
+            sources=(ProposalSource(kind=SourceKind.RULE),),
+            alternatives=(),
+        )
+    return None
+
+
 def review_auto_apply(
     blessed_category_id: str, suggestion: EnrichmentSuggestion
 ) -> ReviewVerdict:
@@ -320,7 +361,15 @@ async def decide_enrichment(
                 proposal=_escalation_proposal(suggestion, blessed_category_id)
             )
 
-    # The ASK-path proposal gets every fact available: the memo and any
+    # A consistency-proven rule answers the ASK without a model call: the
+    # owner has repeatedly confirmed this payee's category, so the model
+    # would only re-derive what the rule already knows (SPEC §14 keeps the
+    # human deciding either way). Anything weaker falls through.
+    rule_proposal = _proposal_from_rule(snapshot, rules, candidates)
+    if rule_proposal is not None:
+        return AskHuman(proposal=rule_proposal)
+
+    # The model ASK-path proposal gets every fact available: the memo and any
     # matching rule's history (the clean-context review above never does).
     suggestion = validate_suggestion(
         await propose(

@@ -365,6 +365,99 @@ async def test_decide_enrichment_asks_when_no_trusted_rule() -> None:
     assert outcome.proposal.allocation.category == "dining"
 
 
+def _trusted_rule() -> Rule:
+    # Consistency-proven but NOT blessed (source=learned): the gate still
+    # routes it to ASK; the proposal itself may now come from the rule.
+    return Rule(
+        id=RuleId("r3"),
+        match=RuleMatch(payee_pattern="Blue Bottle"),
+        action=RuleAction(
+            allocation=ProposedCategory(category=CategoryId("dining"))
+        ),
+        trust=TrustState.TRUSTED,
+        source=RuleSource.LEARNED,
+    )
+
+
+def _no_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A trusted-rule ASK must never reach the model — make it explosive."""
+    from ynab_agent.agentic import enrich as enrich_mod
+
+    async def _boom(request: object, *, model: object = None) -> object:
+        msg = "the model must not be called for a trusted-rule ASK"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(enrich_mod, "propose", _boom)
+
+
+async def test_trusted_rule_answers_the_ask_without_a_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fewer-calls contract: a trusted matching rule already encodes the
+    # owner's repeated answer, so the ASK proposal is built from it
+    # deterministically — the model (explosive here) is never consulted.
+    _no_model(monkeypatch)
+    outcome = await decide_enrichment(
+        _snapshot(),
+        _REQUEST.candidates,
+        [_trusted_rule()],
+        AutoActionCounters(),
+        now=_NOW,
+    )
+    assert isinstance(outcome, AskHuman)
+    assert isinstance(outcome.proposal.allocation, ProposedCategory)
+    assert outcome.proposal.allocation.category == "dining"
+    assert outcome.proposal.sources[0].kind is SourceKind.RULE
+    assert "Dining Out" in outcome.proposal.rationale
+
+
+async def test_trusted_rule_with_a_stale_category_falls_back() -> None:
+    # The category was deleted from the budget since the rule learned it —
+    # proposing it would render a raw id and 400 on write. Fall back to the
+    # model instead of trusting the stale answer.
+    stale = _trusted_rule().model_copy(
+        update={
+            "action": RuleAction(
+                allocation=ProposedCategory(category=CategoryId("deleted"))
+            )
+        }
+    )
+    model = TestModel(
+        custom_output_args={
+            "category_id": "dining",
+            "confidence": "medium",
+            "rationale": "fallback",
+        }
+    )
+    outcome = await decide_enrichment(
+        _snapshot(),
+        _REQUEST.candidates,
+        [stale],
+        AutoActionCounters(),
+        now=_NOW,
+        model=model,
+    )
+    assert isinstance(outcome, AskHuman)
+    assert outcome.proposal.sources[0].kind is SourceKind.MODEL
+
+
+async def test_confirmed_rule_still_consults_the_model() -> None:
+    # Below trusted, the rule is a hypothesis, not an answer: it biases the
+    # model as a hint (the existing behavior) rather than replacing it.
+    prompts: list[str] = []
+    outcome = await decide_enrichment(
+        _snapshot(),
+        _REQUEST.candidates,
+        [_learned_rule()],
+        AutoActionCounters(),
+        now=_NOW,
+        model=_capturing_model(prompts),
+    )
+    assert isinstance(outcome, AskHuman)
+    assert len(prompts) == 1
+    assert outcome.proposal.sources[0].kind is SourceKind.MODEL
+
+
 @pytest.mark.skipif(
     not os.environ.get("YNAB_AGENT_LIVE_OLLAMA"),
     reason="set YNAB_AGENT_LIVE_OLLAMA=1 to run the live Gemma smoke",
