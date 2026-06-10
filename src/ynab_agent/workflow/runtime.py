@@ -32,6 +32,7 @@ from ynab_agent.workflow.auto_action_ledger_workflow import (
 )
 from ynab_agent.workflow.balance_workflow import BudgetBalanceWorkflow
 from ynab_agent.workflow.command_workflow import CommandConfirmWorkflow
+from ynab_agent.workflow.deadman_workflow import DeadmanWorkflow
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
 from ynab_agent.workflow.monitor_workflow import OverspendMonitorWorkflow
 from ynab_agent.workflow.offer_workflow import AutonomyOfferWorkflow
@@ -58,6 +59,7 @@ WORKFLOWS = [
     BudgetBalanceWorkflow,
     AutoActionLedgerWorkflow,
     CommandConfirmWorkflow,
+    DeadmanWorkflow,
 ]
 
 ALL_ACTIVITIES: list[Callable[..., object]] = [
@@ -74,6 +76,7 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     activities.close_thread,
     poll_activities.fetch_unapproved,
     poll_activities.address_transaction,
+    poll_activities.check_poll_liveness,
     dispatch_activities.resolve_thread,
     dispatch_activities.resolve_offer_thread,
     dispatch_activities.resolve_balance_thread,

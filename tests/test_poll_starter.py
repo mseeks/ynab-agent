@@ -17,14 +17,14 @@ def test_install_date_uses_configured_iso_date() -> None:
     )
 
 
-def test_install_date_defaults_to_about_ninety_days_back() -> None:
-    assert _resolve_install_date(None, today=_TODAY) == datetime.date(
-        2026, 3, 2
-    )
+def test_install_date_defaults_to_today_no_backlog_flood() -> None:
+    # SPEC §13 cold-start: an unset cutover ingests nothing before install —
+    # backfill is opt-in via an explicit date, never a surprise flood.
+    assert _resolve_install_date(None, today=_TODAY) == _TODAY
 
 
 def test_install_date_empty_string_falls_back_to_default() -> None:
-    assert _resolve_install_date("", today=_TODAY) == datetime.date(2026, 3, 2)
+    assert _resolve_install_date("", today=_TODAY) == _TODAY
 
 
 def test_install_date_rejects_garbage() -> None:

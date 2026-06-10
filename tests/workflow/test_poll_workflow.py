@@ -23,6 +23,7 @@ from ynab_agent.domain.money import Money
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.ingest.plan import AddressTxn
 from ynab_agent.ingest.scope import IngestScope
+from ynab_agent.workflow.alert_types import FailureAlert
 from ynab_agent.workflow.poll_types import PollParams, PollResult
 from ynab_agent.workflow.poll_workflow import PollWorkflow
 from ynab_agent.workflow.runtime import DATA_CONVERTER
@@ -207,3 +208,84 @@ async def test_address_transaction_signals_amazon_backfill_when_running(
         AddressTxn(snapshot=snap, notify_existing=False)
     )
     assert plain.handle.signals == []
+
+
+async def test_continuous_loop_survives_a_failed_tick_and_pages() -> None:
+    # A tick whose activity fails terminally must NOT kill the loop (the §13
+    # silent stop): it pages (deduped, best-effort) and the next tick runs.
+    # Every tick here fails; the loop survives tick 1 (its page succeeds) and
+    # is ended by the test on tick 2, whose page raises non-retryably.
+    ticks: list[int] = []
+    alerts: list[str] = []
+
+    @activity.defn(name="fetch_unapproved")
+    async def fetch_unapproved() -> tuple[YnabSnapshot, ...]:
+        ticks.append(1)
+        raise ApplicationError("YNAB unreachable", non_retryable=True)
+
+    @activity.defn(name="address_transaction")
+    async def address_transaction(action: AddressTxn) -> None:
+        return None
+
+    @activity.defn(name="alert_failure")
+    async def alert_failure(alert: FailureAlert) -> None:
+        alerts.append(alert.key)
+        if len(alerts) >= 2:
+            raise ApplicationError("end the test", non_retryable=True)
+
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[PollWorkflow],
+            activities=[fetch_unapproved, address_transaction, alert_failure],
+        ),
+    ):
+        with pytest.raises(WorkflowFailureError):
+            await env.client.execute_workflow(
+                PollWorkflow.run,
+                PollParams(scope=_scope(), continuous=True),
+                id="poll-survive",
+                task_queue=TASK_QUEUE,
+            )
+    # Tick 1 failed and PAGED, then the loop slept and ran tick 2 — it
+    # outlived the outage instead of dying with it.
+    assert len(ticks) == 2
+    assert alerts.count("w1-poll-tick") == 2
+
+
+async def test_one_shot_tick_failure_still_raises() -> None:
+    # A manual/one-shot run must surface the real error, not swallow it.
+    @activity.defn(name="fetch_unapproved")
+    async def fetch_unapproved() -> tuple[YnabSnapshot, ...]:
+        raise ApplicationError("boom", non_retryable=True)
+
+    @activity.defn(name="address_transaction")
+    async def address_transaction(action: AddressTxn) -> None:
+        return None
+
+    @activity.defn(name="alert_failure")
+    async def alert_failure(alert: object) -> None:
+        raise AssertionError("a one-shot failure must not page")
+
+    async with (
+        await WorkflowEnvironment.start_time_skipping(
+            data_converter=DATA_CONVERTER
+        ) as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[PollWorkflow],
+            activities=[fetch_unapproved, address_transaction, alert_failure],
+        ),
+    ):
+        with pytest.raises(WorkflowFailureError):
+            await env.client.execute_workflow(
+                PollWorkflow.run,
+                PollParams(scope=_scope()),
+                id="poll-oneshot-fail",
+                task_queue=TASK_QUEUE,
+            )

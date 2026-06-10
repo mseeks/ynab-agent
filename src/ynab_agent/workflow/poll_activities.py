@@ -9,10 +9,19 @@ imported lazily inside the bodies so they never enter the workflow sandbox.
 
 from __future__ import annotations
 
+import datetime
+
 from temporalio import activity
 
 from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.ingest.plan import AddressTxn
+
+# The singleton W1 poll loop's workflow id (started by ``poll_starter``).
+POLL_WORKFLOW_ID = "ynab-poll"
+# How long without a tick before the deadman calls the loop wedged. The loop
+# continues-as-new each tick, so the current run's start time ≈ the last tick;
+# at the default hourly interval, three hours of no fresh run means trouble.
+POLL_STALE_AFTER = datetime.timedelta(hours=3)
 
 
 @activity.defn
@@ -78,3 +87,50 @@ async def address_transaction(action: AddressTxn) -> None:
         handle = temporal.get_workflow_handle(str(ynab_id))
         with contextlib.suppress(RPCError):
             await handle.signal("notify_snapshot", action.snapshot)
+
+
+@activity.defn
+async def check_poll_liveness() -> str | None:
+    """The §13 deadman's probe: is the W1 poll loop alive and ticking?
+
+    Positive liveness, not failure-hooking: a loop that was terminated, that
+    failed before the survival guard shipped, or that is silently wedged emits
+    no error to hook — the most dangerous failure for a money agent is the
+    silent stop. Returns a human-readable problem description, or ``None``
+    when the loop looks healthy. Runs from the schedule-fired
+    ``DeadmanWorkflow``, so it fires even when the loop itself cannot.
+    """
+    from temporalio.client import WorkflowExecutionStatus
+    from temporalio.service import RPCError
+
+    from ynab_agent.workflow.temporal_client import client
+
+    temporal = await client()
+    handle = temporal.get_workflow_handle(POLL_WORKFLOW_ID)
+    try:
+        description = await handle.describe()
+    except RPCError:
+        return (
+            "the W1 poll loop (ynab-poll) does not exist — ingestion is not "
+            "running. Re-apply manage/start-poll.yaml."
+        )
+    status = description.status
+    if (
+        status is not None
+        and status is not WorkflowExecutionStatus.RUNNING
+        and status is not WorkflowExecutionStatus.CONTINUED_AS_NEW
+    ):
+        return (
+            f"the W1 poll loop is {status.name} — ingestion has stopped. "
+            "Re-apply manage/start-poll.yaml."
+        )
+    started = description.start_time
+    if started is not None:
+        age = datetime.datetime.now(datetime.UTC) - started
+        if age > POLL_STALE_AFTER:
+            hours = int(age.total_seconds() // 3600)
+            return (
+                f"the W1 poll loop hasn't started a fresh tick in ~{hours}h "
+                "(it continues-as-new each tick) — it may be wedged."
+            )
+    return None

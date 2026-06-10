@@ -21,11 +21,18 @@ from __future__ import annotations
 from datetime import timedelta
 
 from temporalio import workflow
+from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from ynab_agent.ingest.plan import plan_ingest
-    from ynab_agent.workflow import poll_activities
-    from ynab_agent.workflow.constants import ACTIVITY_RETRY
+    from ynab_agent.workflow import alert_activities, poll_activities
+    from ynab_agent.workflow.alerting import build_failure_alert
+    from ynab_agent.workflow.constants import (
+        ACTIVITY_RETRY,
+        ALERT_BUDGET,
+        ALERT_RETRY,
+        ALERT_TIMEOUT,
+    )
     from ynab_agent.workflow.poll_types import PollParams, PollResult
 
 _ACTIVITY_TIMEOUT = timedelta(seconds=60)
@@ -37,7 +44,49 @@ class PollWorkflow:
 
     @workflow.run
     async def run(self, params: PollParams) -> PollResult:
-        """Read the unapproved set, address it, then loop or return."""
+        """Read the unapproved set, address it, then loop or return.
+
+        The continuous loop must outlive any outage: a tick whose activities
+        exhaust their retries (~15 min of YNAB/Temporal being unreachable) used
+        to fail the whole workflow — permanently and silently ending ingestion,
+        the exact "silent stop" SPEC §13 calls the most dangerous failure. Now a
+        failed tick pages the operator (deduped, best-effort) and is skipped;
+        the loop sleeps and re-fires, and nothing is lost — the unapproved set
+        is re-derived from YNAB on every tick. A one-shot run still raises, so
+        tests and manual kicks see the real error.
+        """
+        try:
+            result = await self._tick(params)
+        except ActivityError as exc:
+            if not params.continuous:
+                raise
+            await workflow.execute_activity(
+                alert_activities.alert_failure,
+                build_failure_alert(
+                    key="w1-poll-tick",
+                    context="W1 poll tick",
+                    exc=exc,
+                ),
+                start_to_close_timeout=ALERT_TIMEOUT,
+                schedule_to_close_timeout=ALERT_BUDGET,
+                retry_policy=ALERT_RETRY,
+            )
+            result = PollResult(addressed=0, routed_to_human=0)
+        if not params.continuous:
+            return result
+        # Durable loop: sleep, then restart fresh. continue_as_new raises, so
+        # nothing runs after it and history stays bounded to one tick.
+        await workflow.sleep(timedelta(seconds=params.interval_seconds))
+        workflow.continue_as_new(
+            PollParams(
+                scope=params.scope,
+                interval_seconds=params.interval_seconds,
+                continuous=True,
+            )
+        )
+
+    async def _tick(self, params: PollParams) -> PollResult:
+        """One poll pass: read the unapproved set and address each txn."""
         snapshots = await workflow.execute_activity(
             poll_activities.fetch_unapproved,
             start_to_close_timeout=_ACTIVITY_TIMEOUT,
@@ -54,19 +103,7 @@ class PollWorkflow:
                 start_to_close_timeout=_ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
-        result = PollResult(
+        return PollResult(
             addressed=len(actions),
             routed_to_human=sum(1 for a in actions if a.route_to_human),
-        )
-        if not params.continuous:
-            return result
-        # Durable loop: sleep, then restart fresh. continue_as_new raises, so
-        # nothing runs after it and history stays bounded to one tick.
-        await workflow.sleep(timedelta(seconds=params.interval_seconds))
-        workflow.continue_as_new(
-            PollParams(
-                scope=params.scope,
-                interval_seconds=params.interval_seconds,
-                continuous=True,
-            )
         )

@@ -10,9 +10,11 @@ continues-as-new (no cursor — the set is derived from YNAB, SPEC §0.5).
 Config from the environment: ``TEMPORAL_HOST`` / ``TEMPORAL_NAMESPACE`` /
 ``TEMPORAL_TASK_QUEUE``, the ``YNAB_BUDGET_ID``, an optional
 ``YNAB_AGENT_INSTALL_DATE`` (ISO date — the ingest cutover that bounds the scope
-by date; defaults to ~90 days back) and ``YNAB_AGENT_POLL_INTERVAL_SECONDS``
-(seconds between ticks; default 3600). Re-running is safe: an already-started
-loop is left untouched.
+by date; defaults to TODAY, per SPEC §13's "default ignore everything before
+install": an unset cutover must never flood both owners with months of
+backlog. Set it explicitly to backfill on purpose) and
+``YNAB_AGENT_POLL_INTERVAL_SECONDS`` (seconds between ticks; default 3600).
+Re-running is safe: an already-started loop is left untouched.
 """
 
 from __future__ import annotations
@@ -22,16 +24,20 @@ import datetime
 import os
 
 _POLL_ID = "ynab-poll"
-_DEFAULT_WINDOW_DAYS = 90
 
 
 def _resolve_install_date(
     value: str | None, *, today: datetime.date
 ) -> datetime.date:
-    """The ingest cutover: the configured ISO date, else ~90 days back."""
+    """The ingest cutover: the configured ISO date, else today (SPEC §13).
+
+    The old default reached ~90 days back, so a first run with no explicit
+    cutover emailed one thread per outstanding transaction across three months
+    — the cold-start flood §13 exists to prevent. Backfill is now opt-in.
+    """
     if value:
         return datetime.date.fromisoformat(value)
-    return today - datetime.timedelta(days=_DEFAULT_WINDOW_DAYS)
+    return today
 
 
 async def _start() -> None:
