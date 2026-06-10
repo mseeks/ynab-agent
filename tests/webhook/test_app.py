@@ -286,3 +286,29 @@ def test_allowlist_includes_allowed_senders(
     assert _allowlist_from_env() == frozenset(
         {"matthew@mseeks.me", "matthew.a.sullivan@icloud.com"}
     )
+
+
+def test_to_inbound_salvages_an_html_only_forward_whole() -> None:
+    # A FORWARD is the inverse of a reply: the content (the receipt) lives
+    # INSIDE the blockquote, with only a "Begin forwarded message:" preamble
+    # above it. Cutting at the blockquote left 24 chars of preamble and lost
+    # the receipt — a forward-marker preamble salvages the whole document.
+    message = _WireMessage.model_validate(
+        {
+            "message_id": "m1",
+            "from": "a@icloud.com",
+            "subject": "Fwd: Your receipt from Apple.",
+            "text": "",
+            "html": (
+                "<html><body><div></div><div>Begin forwarded message:"
+                "</div><blockquote><div>From: Apple</div>"
+                "<div>Receipt</div><div>iCloud+ with 2 TB (Monthly)</div>"
+                "<div>Subtotal</div><div>$9.99</div></blockquote>"
+                "</body></html>"
+            ),
+            "thread_id": "t1",
+        }
+    )
+    body = to_inbound(message, verified=True).body
+    assert "iCloud+ with 2 TB (Monthly)" in body
+    assert "$9.99" in body

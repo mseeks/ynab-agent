@@ -108,25 +108,40 @@ def _is_auto_reply(headers: Mapping[str, str] | None) -> bool:
     return any(header in lowered for header in _AUTO_MARKER_HEADERS)
 
 
-_HTML_BREAKS = re.compile(r"(?i)<br\s*/?>|</p>|</div>|</blockquote>")
+_HTML_BREAKS = re.compile(r"(?i)<br\s*/?>|</p>|</div>|</blockquote>|</tr>")
 _HTML_TAGS = re.compile(r"<[^>]+>")
+_HTML_INVISIBLE = re.compile(r"(?is)<(style|script|head)[^>]*>.*?</\1>")
+# A forward's preamble (Apple Mail / Gmail / Outlook) — when the words before
+# the first blockquote are just this, the content IS the blockquote.
+_FORWARD_MARKER = re.compile(r"(?i)forwarded message|original message")
+
+
+def _plain_text(fragment: str) -> str:
+    """An HTML fragment reduced to readable lines."""
+    fragment = _HTML_INVISIBLE.sub(" ", fragment)
+    text = _HTML_TAGS.sub(" ", _HTML_BREAKS.sub("\n", fragment))
+    lines = (line.strip() for line in html.unescape(text).splitlines())
+    return "\n".join(line for line in lines if line).strip()
 
 
 def _text_from_html(html_part: str | None) -> str:
-    """Plain text salvaged from an HTML-only reply.
+    """Plain text salvaged from an HTML-only message.
 
-    Apple Mail sometimes sends a reply with an empty text part and the words
-    only in HTML; without this fallback such a reply arrived as an empty body
-    and was answered with a baffled clarify question. Quoted history (the
-    first ``<blockquote>`` onward) is dropped, mirroring what AgentMail's
-    ``extracted_text`` does for plain text.
+    Apple Mail sends both replies and forwards with empty text parts and the
+    words only in HTML. The two need opposite treatment: a REPLY's new words
+    come before the first ``<blockquote>`` (the quoted history below is
+    dropped, mirroring AgentMail's ``extracted_text``), while a FORWARD's
+    whole content — the receipt — lives *inside* the blockquote, with only a
+    "Begin forwarded message:" preamble above it. A forward-marker (or
+    empty) preamble therefore salvages the entire document.
     """
     if not html_part:
         return ""
     head = re.split(r"(?i)<blockquote", html_part, maxsplit=1)[0]
-    text = _HTML_TAGS.sub(" ", _HTML_BREAKS.sub("\n", head))
-    lines = (line.strip() for line in html.unescape(text).splitlines())
-    return "\n".join(line for line in lines if line).strip()
+    head_text = _plain_text(head)
+    if not head_text or _FORWARD_MARKER.search(head_text):
+        return _plain_text(html_part)
+    return head_text
 
 
 def to_inbound(message: _WireMessage, *, verified: bool) -> InboundMessage:
