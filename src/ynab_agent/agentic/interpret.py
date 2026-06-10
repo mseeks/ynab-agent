@@ -152,14 +152,17 @@ def to_reply_outcome(
     *,
     proposed_category: CategoryId | None,
     decided_at: datetime.datetime,
+    candidates: tuple[CandidateCategory, ...],
 ) -> ReplyOutcome:
     """Map the agent's reading onto a domain ReplyOutcome (SPEC §3, §14.4).
 
     ``approve`` commits the proposed category (or asks, when nothing was
     proposed — there is nothing to approve); ``recategorize`` commits the named
-    one (or asks, if none was given); ``clarify`` sends the question back. Any
-    rationale the reply carried rides along as the decision's ``memo`` (the
-    spine writes it to YNAB). The spine, not the model, sets decider and time.
+    one (or asks, if none was given *or* the model invented an id — a write
+    against a hallucinated category would land wrong or 400); ``clarify`` sends
+    the question back. Any rationale the reply carried rides along as the
+    decision's ``memo`` (the spine writes it to YNAB). The spine, not the
+    model, sets decider and time.
     """
     match interpretation.intent:
         case ReplyIntent.APPROVE:
@@ -176,12 +179,22 @@ def to_reply_outcome(
                 )
             )
         case ReplyIntent.RECATEGORIZE:
-            if interpretation.category_id:
+            if interpretation.category_id and any(
+                c.id == interpretation.category_id for c in candidates
+            ):
                 return AnswerOutcome(
                     decision=_human_decision(
                         CategoryId(interpretation.category_id),
                         decided_at,
                         memo=interpretation.memo,
+                    )
+                )
+            if interpretation.category_id:
+                return ClarifyOutcome(
+                    question=(
+                        "I couldn't match that to one of the budget's "
+                        "categories — could you give the category name as "
+                        "it appears in YNAB?"
                     )
                 )
             return ClarifyOutcome(question="Which category should this be?")

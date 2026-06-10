@@ -113,13 +113,21 @@ async def interpret_revision(
     )
 
 
-def to_revision_plan(target: RevisionTarget) -> RevisionPlan:
+def to_revision_plan(
+    target: RevisionTarget, candidates: tuple[CandidateCategory, ...]
+) -> RevisionPlan:
     """Reconcile the target into a plan, defaulting to no-change (SPEC §3).
 
-    A ``retarget`` with no category, or any unrecognized shape, collapses to
-    "no change" — the spine never commits a write the model under-specified.
+    A ``retarget`` with no category — or with an id that is not a real
+    candidate (a hallucination; the write would land wrong or 400) — collapses
+    to "no change", as does any unrecognized shape: the spine never commits a
+    write the model under-specified.
     """
-    if target.decision is RevisionDecision.RETARGET and target.category_id:
+    if (
+        target.decision is RevisionDecision.RETARGET
+        and target.category_id
+        and any(c.id == target.category_id for c in candidates)
+    ):
         return RevisionPlan(
             changes=True, category_id=target.category_id, memo=target.memo
         )

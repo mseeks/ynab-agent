@@ -493,6 +493,7 @@ async def interpret_inbound(
         interpretation,
         proposed_category=proposed_id,
         decided_at=datetime.now(UTC),
+        candidates=request.candidates,
     )
 
 
@@ -568,15 +569,16 @@ async def converge(
         if snapshot.category_id is not None
         else "(uncategorized)"
     )
+    candidates = _candidates_from_spends(spends)
     target = await interpret_revision(
         RevisionRequest(
             instruction=instruction.text,
             current_category_name=current_name,
-            candidates=_candidates_from_spends(spends),
+            candidates=candidates,
             current_memo=snapshot.memo,
         )
     )
-    plan = to_revision_plan(target)
+    plan = to_revision_plan(target, candidates)
     if not plan.changes:
         return NoChange()
 

@@ -241,7 +241,7 @@ async def handle_command(message: InboundMessage) -> None:
     reading = await parse_command(
         CommandRequest(command_text=message.body, candidates=candidates)
     )
-    command = to_explicit_command(reading)
+    command = to_explicit_command(reading, candidates)
     if command is None:
         return
     temporal = await client()

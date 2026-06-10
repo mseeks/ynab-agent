@@ -98,15 +98,22 @@ async def parse_command(
     )
 
 
-def to_explicit_command(reading: CommandReading) -> ExplicitCommand | None:
+def to_explicit_command(
+    reading: CommandReading, candidates: tuple[CandidateCategory, ...]
+) -> ExplicitCommand | None:
     """Turn a ``bless`` reading into an ExplicitCommand, or ``None`` (SPEC §14).
 
-    Declines anything that is not a clear bless with both a payee and a resolved
-    category — the conservative move, since blessing grants standing autonomy.
+    Declines anything that is not a clear bless with both a payee and a
+    *resolved* category — the id must be a real candidate, since a standing
+    rule against a hallucinated id would auto-file every future match into a
+    category that does not exist. The conservative move, always: blessing
+    grants standing autonomy.
     """
     if reading.kind is not CommandKind.BLESS:
         return None
     if not reading.payee_pattern or not reading.category_id:
+        return None
+    if not any(c.id == reading.category_id for c in candidates):
         return None
     return ExplicitCommand(
         match=RuleMatch(payee_pattern=reading.payee_pattern),

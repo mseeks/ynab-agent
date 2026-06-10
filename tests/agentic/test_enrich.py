@@ -23,6 +23,7 @@ from ynab_agent.agentic.enrich import (
     propose,
     review_auto_apply,
     to_proposal,
+    validate_suggestion,
 )
 from ynab_agent.agentic.model import build_model
 from ynab_agent.domain.allocations import ProposedCategory
@@ -104,6 +105,29 @@ def test_to_proposal_carries_alternatives_filtering_the_chosen() -> None:
 
 def test_build_model_constructs_an_ollama_model() -> None:
     assert isinstance(build_model(model_name="gemma4:e4b"), Model)
+
+
+def test_validate_suggestion_rejects_a_hallucinated_id() -> None:
+    # An invented id would surface as a raw id in the email subject and 400 on
+    # write — raising lets the activity retry with a fresh model run.
+    bogus = EnrichmentSuggestion(
+        category_id="10683d916894", confidence=Confidence.HIGH, rationale="x"
+    )
+    with pytest.raises(ValueError, match="unknown category id"):
+        validate_suggestion(bogus, _REQUEST.candidates)
+
+
+def test_validate_suggestion_drops_hallucinated_alternatives() -> None:
+    # Alternatives are framing only — invalid ones are dropped, not fatal.
+    mixed = EnrichmentSuggestion(
+        category_id="dining",
+        confidence=Confidence.HIGH,
+        rationale="x",
+        alternatives=("groceries", "10683d916894"),
+    )
+    assert validate_suggestion(mixed, _REQUEST.candidates).alternatives == (
+        "groceries",
+    )
 
 
 def test_review_auto_apply_proceeds_when_blessed_is_plausible() -> None:
@@ -212,6 +236,112 @@ async def test_decide_enrichment_review_escalates_on_disagreement() -> None:
     # Leads with the model's independent pick; offers the usual auto category.
     assert outcome.proposal.allocation.category == "groceries"
     assert CategoryId("dining") in outcome.proposal.alternatives
+
+
+def _learned_rule() -> Rule:
+    # Matches the snapshot's payee but is NOT blessed — it cannot gate an
+    # auto-apply, only inform the ASK proposal.
+    return Rule(
+        id=RuleId("r2"),
+        match=RuleMatch(payee_pattern="Blue Bottle"),
+        action=RuleAction(
+            allocation=ProposedCategory(category=CategoryId("dining"))
+        ),
+        trust=TrustState.CONFIRMED,
+        source=RuleSource.LEARNED,
+    )
+
+
+def _capturing_model(prompts: list[str]) -> Model:
+    """A FunctionModel that records the user prompt and answers 'dining'."""
+    from pydantic_ai.messages import (
+        ModelMessage,
+        ModelResponse,
+        ToolCallPart,
+        UserPromptPart,
+    )
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    def call(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        for message in messages:
+            for part in message.parts:
+                if isinstance(part, UserPromptPart):
+                    prompts.append(str(part.content))
+        assert info.output_tools
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name=info.output_tools[0].name,
+                    args={
+                        "category_id": "dining",
+                        "confidence": "high",
+                        "rationale": "x",
+                    },
+                )
+            ]
+        )
+
+    return FunctionModel(call)
+
+
+async def test_ask_prompt_carries_the_memo_and_the_rule_hint() -> None:
+    # The model finally *sees* the memo and the payee's prior handling — the
+    # context that turns "10683d916894?" guesses into informed proposals.
+    prompts: list[str] = []
+    snapshot = _snapshot().model_copy(update={"memo": "oat latte"})
+    outcome = await decide_enrichment(
+        snapshot,
+        _REQUEST.candidates,
+        [_learned_rule()],
+        AutoActionCounters(),
+        now=_NOW,
+        model=_capturing_model(prompts),
+    )
+    assert isinstance(outcome, AskHuman)
+    (prompt,) = prompts
+    assert "Memo: oat latte" in prompt
+    assert "Rule hint:" in prompt
+    assert "Dining Out" in prompt
+
+
+async def test_clean_context_review_never_sees_the_rule_hint() -> None:
+    # §0.6: the independent judge must stay blind to the rule's choice — the
+    # memo (a transaction fact) rides along, the hint never does.
+    prompts: list[str] = []
+    snapshot = _snapshot().model_copy(update={"memo": "oat latte"})
+    outcome = await decide_enrichment(
+        snapshot,
+        _REQUEST.candidates,
+        [_blessed_rule()],
+        AutoActionCounters(),
+        now=_NOW,
+        model=_capturing_model(prompts),
+    )
+    assert isinstance(outcome, AutoApply)
+    (prompt,) = prompts
+    assert "Memo: oat latte" in prompt
+    assert "Rule hint:" not in prompt
+
+
+async def test_decide_enrichment_raises_on_a_hallucinated_id() -> None:
+    # The raw-id-in-subject bug at its source: a hallucinated id never becomes
+    # a proposal — the activity fails and retries instead.
+    model = TestModel(
+        custom_output_args={
+            "category_id": "10683d916894",
+            "confidence": "high",
+            "rationale": "??",
+        }
+    )
+    with pytest.raises(ValueError, match="unknown category id"):
+        await decide_enrichment(
+            _snapshot(),
+            _REQUEST.candidates,
+            [],
+            AutoActionCounters(),
+            now=_NOW,
+            model=model,
+        )
 
 
 async def test_decide_enrichment_asks_when_no_trusted_rule() -> None:

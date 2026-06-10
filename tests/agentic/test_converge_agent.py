@@ -33,14 +33,15 @@ async def test_retarget_round_trips_and_plans_a_change() -> None:
     )
     target = await interpret_revision(_REQUEST, model=model)
     assert target.decision is RevisionDecision.RETARGET
-    plan = to_revision_plan(target)
+    plan = to_revision_plan(target, _REQUEST.candidates)
     assert plan.changes is True
     assert plan.category_id == "groceries"
 
 
 def test_memo_only_plans_a_memo_change() -> None:
     plan = to_revision_plan(
-        RevisionTarget(decision=RevisionDecision.MEMO_ONLY, memo="HDMI cable")
+        RevisionTarget(decision=RevisionDecision.MEMO_ONLY, memo="HDMI cable"),
+        _REQUEST.candidates,
     )
     assert plan.changes is True
     assert plan.memo == "HDMI cable"
@@ -48,13 +49,31 @@ def test_memo_only_plans_a_memo_change() -> None:
 
 
 def test_no_change_plans_nothing() -> None:
-    plan = to_revision_plan(RevisionTarget(decision=RevisionDecision.NO_CHANGE))
+    plan = to_revision_plan(
+        RevisionTarget(decision=RevisionDecision.NO_CHANGE),
+        _REQUEST.candidates,
+    )
     assert plan.changes is False
 
 
 def test_retarget_without_a_category_collapses_to_no_change() -> None:
     # The spine must never commit a write the model under-specified.
-    plan = to_revision_plan(RevisionTarget(decision=RevisionDecision.RETARGET))
+    plan = to_revision_plan(
+        RevisionTarget(decision=RevisionDecision.RETARGET),
+        _REQUEST.candidates,
+    )
+    assert plan.changes is False
+
+
+def test_retarget_to_a_hallucinated_id_collapses_to_no_change() -> None:
+    # An id that is not a real candidate would land wrong or 400 — never
+    # commit it.
+    plan = to_revision_plan(
+        RevisionTarget(
+            decision=RevisionDecision.RETARGET, category_id="10683d916894"
+        ),
+        _REQUEST.candidates,
+    )
     assert plan.changes is False
 
 

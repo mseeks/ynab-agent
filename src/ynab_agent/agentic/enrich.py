@@ -29,6 +29,7 @@ from ynab_agent.policy.gate import (
     GateVerdict,
     build_auto_decision,
     evaluate_gate,
+    matching_rules,
 )
 
 if TYPE_CHECKING:
@@ -122,6 +123,31 @@ async def propose(
     )
 
 
+def validate_suggestion(
+    suggestion: EnrichmentSuggestion,
+    candidates: tuple[CandidateCategory, ...],
+) -> EnrichmentSuggestion:
+    """Reject a hallucinated category id; drop hallucinated alternatives.
+
+    The model's ``category_id`` MUST be a candidate id — an invented one would
+    flow into the proposal and surface as a raw id in the email subject (and a
+    write against it would 400). Raising lets the enclosing activity retry,
+    which re-runs the model. Alternatives are framing only, so invalid ones are
+    silently dropped rather than failing the run.
+    """
+    valid = {c.id for c in candidates}
+    if suggestion.category_id not in valid:
+        msg = (
+            f"model proposed unknown category id "
+            f"{suggestion.category_id!r} (not a candidate)"
+        )
+        raise ValueError(msg)
+    kept = tuple(a for a in suggestion.alternatives if a in valid)
+    if kept == suggestion.alternatives:
+        return suggestion
+    return suggestion.model_copy(update={"alternatives": kept})
+
+
 def to_proposal(suggestion: EnrichmentSuggestion) -> Proposal:
     """Map the agent's suggestion onto a domain Proposal (SPEC §4.1).
 
@@ -155,6 +181,29 @@ def _blessed_category_id(rule: Rule) -> str | None:
     allocation = rule.action.allocation
     if isinstance(allocation, ProposedCategory):
         return str(allocation.category)
+    return None
+
+
+def _rule_hint(
+    snapshot: YnabSnapshot,
+    rules: tuple[Rule, ...],
+    candidates: tuple[CandidateCategory, ...],
+) -> str | None:
+    """A one-line hint from the first matching rule, for the ASK proposal.
+
+    A matching-but-not-blessed rule (learned, or eligible-awaiting-blessing)
+    still encodes how this payee was handled before — exactly the context the
+    proposing model should weigh. Only the ASK-path prompt gets it; the §0.6
+    clean-context review must stay blind to the rule's choice.
+    """
+    names = {c.id: c.name for c in candidates}
+    for rule in matching_rules(rules, snapshot):
+        category_id = _blessed_category_id(rule)
+        if category_id is not None and category_id in names:
+            return (
+                f"past transactions from this payee were filed under "
+                f"'{names[category_id]}'"
+            )
     return None
 
 
@@ -248,14 +297,19 @@ async def decide_enrichment(
             blessed_category_id = _blessed_category_id(rule)
             if blessed_category_id is None:
                 return AutoApply(decision=decision)
-            # Clean context: the independent judge never sees the rule's choice.
-            suggestion = await propose(
-                EnrichmentRequest(
-                    payee=snapshot.payee,
-                    amount_display=str(snapshot.amount),
-                    candidates=candidates,
+            # Clean context: the independent judge never sees the rule's
+            # choice — the memo is a transaction fact, so it rides along.
+            suggestion = validate_suggestion(
+                await propose(
+                    EnrichmentRequest(
+                        payee=snapshot.payee,
+                        amount_display=str(snapshot.amount),
+                        candidates=candidates,
+                        memo=snapshot.memo,
+                    ),
+                    model=model,
                 ),
-                model=model,
+                candidates,
             )
             if (
                 review_auto_apply(blessed_category_id, suggestion)
@@ -266,12 +320,19 @@ async def decide_enrichment(
                 proposal=_escalation_proposal(suggestion, blessed_category_id)
             )
 
-    suggestion = await propose(
-        EnrichmentRequest(
-            payee=snapshot.payee,
-            amount_display=str(snapshot.amount),
-            candidates=candidates,
+    # The ASK-path proposal gets every fact available: the memo and any
+    # matching rule's history (the clean-context review above never does).
+    suggestion = validate_suggestion(
+        await propose(
+            EnrichmentRequest(
+                payee=snapshot.payee,
+                amount_display=str(snapshot.amount),
+                candidates=candidates,
+                memo=snapshot.memo,
+                rule_hint=_rule_hint(snapshot, rules, candidates),
+            ),
+            model=model,
         ),
-        model=model,
+        candidates,
     )
     return AskHuman(proposal=to_proposal(suggestion))

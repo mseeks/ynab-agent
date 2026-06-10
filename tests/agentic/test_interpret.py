@@ -41,7 +41,10 @@ _REQUEST = InterpretRequest(
 
 def _outcome(interpretation: Interpretation) -> ReplyOutcome:
     return to_reply_outcome(
-        interpretation, proposed_category=_PROPOSED, decided_at=_NOW
+        interpretation,
+        proposed_category=_PROPOSED,
+        decided_at=_NOW,
+        candidates=_REQUEST.candidates,
     )
 
 
@@ -67,6 +70,7 @@ def test_approve_without_a_proposal_asks_instead() -> None:
         Interpretation(intent=ReplyIntent.APPROVE),
         proposed_category=None,
         decided_at=_NOW,
+        candidates=_REQUEST.candidates,
     )
     assert isinstance(outcome, ClarifyOutcome)
 
@@ -78,10 +82,23 @@ def test_recategorize_without_a_proposal_still_commits() -> None:
         Interpretation(intent=ReplyIntent.RECATEGORIZE, category_id="coffee"),
         proposed_category=None,
         decided_at=_NOW,
+        candidates=_REQUEST.candidates,
     )
     assert isinstance(outcome, AnswerOutcome)
     assert isinstance(outcome.decision.allocation, ResolvedCategory)
     assert outcome.decision.allocation.category == "coffee"
+
+
+def test_recategorize_with_a_hallucinated_id_asks_instead() -> None:
+    # The model mapped the reply onto an id that is not a real candidate — a
+    # write against it would land wrong or 400, so ask for the name instead.
+    outcome = _outcome(
+        Interpretation(
+            intent=ReplyIntent.RECATEGORIZE, category_id="10683d916894"
+        )
+    )
+    assert isinstance(outcome, ClarifyOutcome)
+    assert "couldn't match" in outcome.question
 
 
 def test_request_renders_a_missing_proposal_as_none() -> None:
