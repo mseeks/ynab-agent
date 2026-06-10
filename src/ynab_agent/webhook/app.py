@@ -186,9 +186,18 @@ async def start_dispatch(
 
 
 def _allowlist_from_env() -> frozenset[str]:
+    """Who may act by email: the owners plus their extra sender addresses.
+
+    ``allowed_senders`` covers an owner's secondary address (an iCloud alias
+    forwarding receipts) — allow-listed to act, but never mailed.
+    """
     from ynab_agent.settings import Settings
 
-    return frozenset(address.lower() for address in Settings().owners)
+    settings = Settings()
+    return frozenset(
+        address.lower()
+        for address in (*settings.owners, *settings.allowed_senders)
+    )
 
 
 async def _connect() -> Client:

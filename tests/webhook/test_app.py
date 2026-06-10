@@ -269,3 +269,20 @@ async def test_start_dispatch_is_idempotent_on_retry() -> None:
         )
     assert first is True
     assert second is False  # REJECT_DUPLICATE dedups the webhook retry
+
+
+def test_allowlist_includes_allowed_senders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The iCloud-forward case: an owner's secondary address is allow-listed
+    # to act, while owners alone stay the outbound recipient list.
+    from ynab_agent.webhook.app import _allowlist_from_env
+
+    monkeypatch.setenv("YNAB_AGENT_INBOX", "inbox-1")
+    monkeypatch.setenv("YNAB_AGENT_OWNERS", "Matthew@mseeks.me")
+    monkeypatch.setenv(
+        "YNAB_AGENT_ALLOWED_SENDERS", "Matthew.A.Sullivan@icloud.com"
+    )
+    assert _allowlist_from_env() == frozenset(
+        {"matthew@mseeks.me", "matthew.a.sullivan@icloud.com"}
+    )

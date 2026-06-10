@@ -32,11 +32,16 @@ class Settings(BaseSettings):
 
     inbox: str = Field(min_length=1)
     owners: Annotated[tuple[str, ...], NoDecode] = Field(min_length=1)
+    # Extra addresses allowed to ACT (the inbound allow-list) without being
+    # mailed: an owner's secondary address (an iCloud alias forwarding
+    # receipts) belongs here, not in ``owners`` — owners is also the outbound
+    # recipient list, and a second address there would double every email.
+    allowed_senders: Annotated[tuple[str, ...], NoDecode] = ()
 
-    @field_validator("owners", mode="before")
+    @field_validator("owners", "allowed_senders", mode="before")
     @classmethod
-    def _split_owners(cls, value: object) -> object:
-        """Accept ``YNAB_AGENT_OWNERS`` as a comma-separated address list."""
+    def _split_addresses(cls, value: object) -> object:
+        """Accept the env vars as comma-separated address lists."""
         if isinstance(value, str):
             return tuple(
                 address.strip()
