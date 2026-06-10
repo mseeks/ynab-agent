@@ -523,7 +523,7 @@ class TransactionWorkflow:
     async def _on_revising(self, st: Revising) -> None:
         outcome = await workflow.execute_activity(
             activities.converge,
-            args=[st.core.snapshot, st.instruction],
+            args=[st.core.snapshot, st.instruction, st.prior],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
         )

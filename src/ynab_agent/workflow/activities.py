@@ -401,12 +401,19 @@ def _target_summary(target: TargetState | None, names: dict[str, str]) -> str:
 
 @activity.defn
 async def converge(
-    snapshot: YnabSnapshot, instruction: InboundSignal
+    snapshot: YnabSnapshot,
+    instruction: InboundSignal,
+    prior: Decision | None,
 ) -> ConvergeOutcome:
-    """Converge a REVISING run to its target and verify it (SPEC §3).
+    """Converge a REVISING run to its target and verify it (SPEC §3 rules 3-4).
 
     The agent reads the revision instruction into a target (retarget / memo /
-    no-change); the spine commits, then reads back and classifies the result. A
+    no-change). The spine then converges to it: it reads the *current* YNAB
+    end-state first and, comparing against the agent's last-applied decision
+    (``prior``), skips a needless write (the no-op exit), adopts a write that
+    already landed, or surfaces a divergence (a spouse edited it directly) —
+    *before* overwriting it — rather than committing blind and only noticing on
+    the read-back. Only a genuine change writes, then verifies field-by-field. A
     reconciled or closed-month transaction, a non-reply instruction, or anything
     the model under-specifies routes to a human rather than a silent edit.
     """
@@ -429,7 +436,9 @@ async def converge(
     )
     from ynab_agent.domain.signals import ReplySignal
     from ynab_agent.policy.converge import (
+        PrecommitAction,
         classify_verify,
+        precommit_action,
         reconciliation_blocks,
         target_of,
     )
@@ -476,16 +485,33 @@ async def converge(
         decided_by=DecidedBy.HUMAN,
         decided_at=datetime.now(UTC),
     )
+    end_state = target_of(decision)
+    prior_state = target_of(prior) if prior is not None else None
+
+    # SPEC §3 r3-4: read the current end-state *before* writing, then decide.
+    current = await asyncio.to_thread(client.read_back, snapshot.ynab_id)
+    action = precommit_action(current, end_state, prior_state)
+    if action is PrecommitAction.NO_CHANGE:
+        return NoChange()
+    if action is PrecommitAction.ALREADY_TARGET:
+        return Reapplied(decision=decision)
+    if action is PrecommitAction.DIVERGED:
+        return Diverged(
+            ynab_summary=_target_summary(current, names),
+            requested_summary=_target_summary(end_state, names),
+        )
+
+    # PrecommitAction.WRITE: converge to the target, then verify (SPEC §3 r3-4).
     await asyncio.to_thread(client.commit, snapshot.ynab_id, decision)
     read = await asyncio.to_thread(client.read_back, snapshot.ynab_id)
-    verdict = classify_verify(read, target_of(decision))
+    verdict = classify_verify(read, end_state)
     if verdict is VerifyOutcome.MATCH:
         return Reapplied(decision=decision)
     if verdict is VerifyOutcome.COULD_NOT_CONFIRM:
         return CouldNotConfirm()
     return Diverged(
         ynab_summary=_target_summary(read, names),
-        requested_summary=_target_summary(target_of(decision), names),
+        requested_summary=_target_summary(end_state, names),
     )
 
 

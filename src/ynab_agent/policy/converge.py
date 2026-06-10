@@ -10,6 +10,7 @@ how a read-after-write compares to the target.
 from __future__ import annotations
 
 import hashlib
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ynab_agent.domain.allocations import ResolvedAllocation
@@ -90,3 +91,66 @@ def reconciliation_blocks(snapshot: YnabSnapshot) -> bool:
     correction) instead.
     """
     return snapshot.reconciled or snapshot.month_closed
+
+
+class PrecommitAction(StrEnum):
+    """The pre-write decision for a converge run (SPEC §3 rules 3-4)."""
+
+    WRITE = "write"
+    NO_CHANGE = "no_change"
+    ALREADY_TARGET = "already_target"
+    DIVERGED = "diverged"
+
+
+def precommit_action(
+    current: TargetState | None,
+    target: TargetState,
+    prior: TargetState | None,
+) -> PrecommitAction:
+    """Decide what to do *before* writing, from a fresh read of current state.
+
+    This is SPEC §3 rule 3 (converge-to-target: read current YNAB state, write
+    only if it differs) plus the *pre-write* half of rule 4 (a spouse edited it
+    directly → don't clobber). Reading current state before the commit is what
+    lets the spine skip a needless write — and surface a divergence — instead of
+    overwriting it first and only noticing on the read-back.
+
+    Args:
+        current: The freshly-read current end-state, or ``None`` when there
+            is no single category to read (a split, or uncategorized).
+        target: The end-state the instruction asks for.
+        prior: The end-state the agent last applied — the divergence baseline —
+            or ``None`` when the txn was never applied (a revision from LAPSED).
+
+    Returns:
+        ``NO_CHANGE`` when YNAB already holds exactly the prior state and the
+        instruction asks for nothing new (no write, return to rest);
+        ``ALREADY_TARGET`` when the target is already in place but differs from
+        the prior — a retried converge whose write landed, or an edit that
+        happens to match — so adopt it as re-applied without rewriting;
+        ``DIVERGED`` when YNAB drifted to a different non-empty category
+        than the agent last applied (don't clobber, ask which wins);
+        otherwise ``WRITE``.
+    """
+    if not needs_write(current, target):
+        # YNAB already holds the target. A genuine no-op (unchanged from the
+        # prior) returns to rest; a target that differs from the prior is a
+        # write that already landed — adopt it rather than re-applying.
+        if (
+            current is not None
+            and prior is not None
+            and content_hash(current) == content_hash(prior)
+        ):
+            return PrecommitAction.NO_CHANGE
+        return PrecommitAction.ALREADY_TARGET
+    # A write is needed. Divergence is judged on the *allocation* (matching the
+    # silent-edit guard, §14.2): a spouse recategorising out of band leaves a
+    # different non-empty category than the agent last applied — surface it,
+    # don't overwrite. A memo-only drift is not a divergence.
+    if (
+        current is not None
+        and prior is not None
+        and current.allocation != prior.allocation
+    ):
+        return PrecommitAction.DIVERGED
+    return PrecommitAction.WRITE

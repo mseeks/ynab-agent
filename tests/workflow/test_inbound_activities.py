@@ -1,14 +1,19 @@
-"""Tests for the pure helpers behind the W2 inbound activities (SPEC §3, §5).
+"""Tests for the W2 inbound activities (SPEC §3, §5).
 
 ``interpret_inbound`` and ``converge`` are thin glue over the interpret/converge
-agents (``tests/agentic``) and the verify policy (``tests/policy``), driven
-end-to-end by the workflow's mocks. The logic unique to the activity layer is
-extracting the single proposed category and summarising an end-state for a
-divergence note — covered here.
+agents (``tests/agentic``) and the verify policy (``tests/policy``). Their pure
+helpers (the single proposed category, an end-state summary) are covered here.
+The ``converge`` *orchestration* is also covered directly: it reads the current
+YNAB state and decides before writing (SPEC §3 r3-4), so a no-op and a
+divergence never issue a clobbering write.
 """
 
 from __future__ import annotations
 
+import datetime
+from typing import TYPE_CHECKING
+
+from ynab_agent.budget.overspend import CategorySpend
 from ynab_agent.domain.allocations import (
     PercentShare,
     ProposedCategory,
@@ -16,14 +21,28 @@ from ynab_agent.domain.allocations import (
     ResolvedCategory,
     SplitLine,
 )
-from ynab_agent.domain.enums import Confidence
-from ynab_agent.domain.ids import CategoryId
-from ynab_agent.domain.proposal import Proposal
-from ynab_agent.policy.converge import TargetState
+from ynab_agent.domain.enums import Confidence, DecidedBy
+from ynab_agent.domain.events import Diverged, NoChange, Reapplied
+from ynab_agent.domain.ids import (
+    AccountId,
+    CategoryId,
+    MessageId,
+    ThreadId,
+    YnabTransactionId,
+)
+from ynab_agent.domain.money import Money
+from ynab_agent.domain.proposal import Decision, Proposal
+from ynab_agent.domain.signals import ReplySignal
+from ynab_agent.domain.transaction import YnabSnapshot
+from ynab_agent.policy.converge import TargetState, target_of
 from ynab_agent.workflow.activities import (
     _proposed_category_id,
     _target_summary,
+    converge,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 _NAMES = {"dining": "Dining Out", "coffee": "Coffee"}
 
@@ -83,3 +102,153 @@ def test_target_summary_falls_back_to_id() -> None:
         allocation=ResolvedCategory(category=CategoryId("mystery"))
     )
     assert _target_summary(target, _NAMES) == "mystery"
+
+
+# ── converge orchestration: read current state before writing (SPEC §3 r3-4) ──
+class _FakeYnab:
+    """A YNAB client stub that records commits and serves a current state.
+
+    ``read_back`` returns the current end-state; a ``commit`` lands the write so
+    a subsequent ``read_back`` (the post-write verify) returns the target.
+    """
+
+    def __init__(self, current: TargetState | None) -> None:
+        self._state = current
+        self.commits: list[Decision] = []
+
+    def category_spends(self) -> tuple[CategorySpend, ...]:
+        zero = Money.from_milliunits(0)
+        return tuple(
+            CategorySpend(
+                category=CategoryId(name),
+                name=name.title(),
+                budgeted=zero,
+                activity=zero,
+                balance=zero,
+            )
+            for name in ("dining", "gifts", "groceries")
+        )
+
+    def read_back(self, ynab_id: str) -> TargetState | None:
+        return self._state
+
+    def commit(self, ynab_id: str, decision: Decision) -> None:
+        self.commits.append(decision)
+        self._state = target_of(decision)
+
+
+def _converge_snapshot() -> YnabSnapshot:
+    return YnabSnapshot(
+        ynab_id=YnabTransactionId("t-1"),
+        account=AccountId("a1"),
+        payee="Blue Bottle",
+        amount=Money.from_currency("-4.50"),
+        txn_date=datetime.date(2026, 5, 30),
+        category_id=CategoryId("dining"),
+    )
+
+
+def _reply(text: str) -> ReplySignal:
+    return ReplySignal(
+        thread_id=ThreadId("thread-1"),
+        message_id=MessageId("m-1"),
+        from_address="matthew@example.com",
+        text=text,
+    )
+
+
+def _decision(category: str) -> Decision:
+    return Decision(
+        allocation=ResolvedCategory(category=CategoryId(category)),
+        approved=True,
+        decided_by=DecidedBy.HUMAN,
+        decided_at=datetime.datetime(2026, 5, 28, tzinfo=datetime.UTC),
+    )
+
+
+async def _run_converge(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    current: TargetState | None,
+    prior: Decision | None,
+    retarget_to: str = "gifts",
+) -> tuple[object, _FakeYnab]:
+    """Drive the converge activity with a stub client and a stubbed agent."""
+    from ynab_agent.agentic import converge as converge_mod
+    from ynab_agent.ynab.client import YnabClient
+
+    fake = _FakeYnab(current)
+
+    async def _fake_interpret(
+        request: object, *, model: object = None
+    ) -> converge_mod.RevisionTarget:
+        return converge_mod.RevisionTarget(
+            decision=converge_mod.RevisionDecision.RETARGET,
+            category_id=retarget_to,
+        )
+
+    monkeypatch.setattr(converge_mod, "interpret_revision", _fake_interpret)
+    monkeypatch.setattr(YnabClient, "from_env", classmethod(lambda cls: fake))
+    outcome = await converge(
+        _converge_snapshot(), _reply("make it gifts"), prior
+    )
+    return outcome, fake
+
+
+async def test_converge_no_op_skips_the_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The target already equals what the agent last applied: no write at all.
+    outcome, fake = await _run_converge(
+        monkeypatch,
+        current=target_of(_decision("gifts")),
+        prior=_decision("gifts"),
+    )
+    assert isinstance(outcome, NoChange)
+    assert fake.commits == []
+
+
+async def test_converge_adopts_a_landed_write_without_rewriting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The target is already in YNAB but differs from the prior (a retried
+    # converge whose write landed): re-applied, not NoChange, and not rewritten.
+    outcome, fake = await _run_converge(
+        monkeypatch,
+        current=target_of(_decision("gifts")),
+        prior=_decision("dining"),
+    )
+    assert isinstance(outcome, Reapplied)
+    assert fake.commits == []
+
+
+async def test_converge_surfaces_divergence_without_clobbering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A spouse recategorised the txn out of band: surface it, never overwrite.
+    outcome, fake = await _run_converge(
+        monkeypatch,
+        current=target_of(_decision("groceries")),
+        prior=_decision("dining"),
+    )
+    assert isinstance(outcome, Diverged)
+    assert outcome.ynab_summary == "Groceries"
+    assert outcome.requested_summary == "Gifts"
+    assert fake.commits == []
+
+
+async def test_converge_writes_then_verifies_a_real_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # YNAB still shows what the agent last applied and the target differs:
+    # converge (one write), then verify the read-back.
+    outcome, fake = await _run_converge(
+        monkeypatch,
+        current=target_of(_decision("dining")),
+        prior=_decision("dining"),
+    )
+    assert isinstance(outcome, Reapplied)
+    assert outcome.decision.allocation == ResolvedCategory(
+        category=CategoryId("gifts")
+    )
+    assert len(fake.commits) == 1

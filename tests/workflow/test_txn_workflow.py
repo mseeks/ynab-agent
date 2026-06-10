@@ -174,7 +174,9 @@ def _activities(
         return interpret
 
     @activity.defn(name="converge")
-    async def converge(snap: object, instruction: object) -> ConvergeOutcome:
+    async def converge(
+        snap: object, instruction: object, prior: object
+    ) -> ConvergeOutcome:
         assert converge_outcome is not None
         return converge_outcome
 
