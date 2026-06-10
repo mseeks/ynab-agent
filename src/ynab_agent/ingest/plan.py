@@ -42,8 +42,12 @@ class AddressTxn(Frozen):
 
 
 def is_duplicate_import(snapshot: YnabSnapshot) -> bool:
-    """Whether YNAB matched this import to an existing txn (SPEC §13)."""
-    return snapshot.matched_transaction_id is not None
+    """Whether YNAB matched this import to an existing txn (SPEC §13).
+
+    Delegates to the snapshot's own predicate so W1's observability flag and the
+    gate's auto-apply guard read the *same* definition (no drift).
+    """
+    return snapshot.is_matched_import
 
 
 def is_amazon(payee: str) -> bool:

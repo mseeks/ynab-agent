@@ -155,6 +155,18 @@ def test_floor_overrides_a_blessed_rule() -> None:
     assert "floor" in out.reason
 
 
+def test_matched_import_overrides_a_blessed_rule() -> None:
+    # A YNAB-matched/duplicate import is accepted by hand, never auto-approved —
+    # even a single blessed rule must ASK (SPEC §13 import lifecycle).
+    out = evaluate_gate(
+        _snapshot(matched_transaction_id=YnabTransactionId("t9")),
+        [_rule(TrustState.TRUSTED, source=_BLESSED)],
+        AutoActionCounters(),
+    )
+    assert out.verdict is GateVerdict.ASK
+    assert "import" in out.reason
+
+
 def test_build_auto_decision() -> None:
     rule = _rule(TrustState.TRUSTED)
     decision = build_auto_decision(rule, _snapshot(), _EPOCH)
