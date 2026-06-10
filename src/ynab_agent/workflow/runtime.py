@@ -89,6 +89,7 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     offer_activities.start_autonomy_offer,
     offer_activities.open_offer_thread,
     offer_activities.interpret_offer_reply,
+    offer_activities.clarify_offer,
     offer_activities.accept_offer,
     offer_activities.decline_offer,
     command_activities.open_command_thread,

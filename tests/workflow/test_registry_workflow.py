@@ -161,3 +161,19 @@ async def test_bless_existing_grants_autonomy_by_id() -> None:
         # Past eligibility now: the on-ramp view no longer lists it.
         view = await handle.query(RuleRegistryWorkflow.view)
         assert view.eligible == ()
+
+        # "Stop auto-handling Spotify": the revoke signal strips autonomy in
+        # place — back to learned/confirmed, no instant re-offer (SPEC §14.5).
+        await handle.signal(RuleRegistryWorkflow.revoke, "Spotify")
+
+        async def _revoked() -> bool:
+            current = await handle.query(RuleRegistryWorkflow.rules)
+            return current[0].source is RuleSource.LEARNED
+
+        for _ in range(60):
+            if await _revoked():
+                break
+            await asyncio.sleep(0.05)
+        rules = await handle.query(RuleRegistryWorkflow.rules)
+        assert rules[0].source is RuleSource.LEARNED
+        assert rules[0].trust is TrustState.CONFIRMED

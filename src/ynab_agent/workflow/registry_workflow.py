@@ -35,6 +35,7 @@ with workflow.unsafe.imports_passed_through():
         mark_offered,
         pending_offers,
         record_learning,
+        revoke_payee,
         rules_for_payee,
     )
     from ynab_agent.workflow import alert_activities, offer_activities
@@ -144,6 +145,16 @@ class RuleRegistryWorkflow:
         self._state = bless_by_id(
             self._state, RuleId(rule_id), now=workflow.now()
         )
+
+    @workflow.signal
+    def revoke(self, payee: str) -> None:
+        """Strip autonomy from the payee's blessed rules — "stop" (SPEC §14.5).
+
+        The one-reply undo promise: revoking is the safe direction, so it
+        takes effect immediately (no read-back). The rule drops back to
+        learned/confirmed and the agent asks again from now on.
+        """
+        self._state = revoke_payee(self._state, payee, now=workflow.now())
 
     @workflow.query
     def rules(self) -> tuple[Rule, ...]:

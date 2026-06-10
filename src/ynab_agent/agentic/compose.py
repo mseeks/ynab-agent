@@ -128,6 +128,98 @@ def render_offer_declined(payee: str) -> str:
     )
 
 
+def render_offer_unclear(payee: str) -> str:
+    """The ack for an unreadable offer/confirm reply (SPEC §14.7 3b).
+
+    The owner spoke; silence back reads as a black hole. Acknowledge, restate
+    the question, and name the two words that resolve it.
+    """
+    return (
+        f"Sorry — I couldn't tell from that whether to go ahead. Reply YES "
+        f"to let me auto-handle {payee}, or NO to keep approving each one "
+        "yourself."
+    )
+
+
+def render_revoked(payee: str) -> str:
+    """The confirmation after a "stop auto-handling X" command (SPEC §14.5)."""
+    return (
+        f"Done — I've stopped auto-handling {payee}. I'll go back to asking "
+        "you about each one; if you keep confirming the same category, I may "
+        "offer to take it over again later."
+    )
+
+
+def render_revoke_nothing(payee: str) -> str:
+    """The honest note when there is no blessed rule to revoke."""
+    return (
+        f"I'm not auto-handling {payee} right now, so nothing changed. If "
+        "you meant a specific charge, reply on that transaction's own email "
+        "thread and I'll fix it there."
+    )
+
+
+def render_rules_list(
+    blessed: tuple[tuple[str, str], ...],
+    eligible: tuple[tuple[str, str], ...],
+    observing: int,
+) -> str:
+    """The "list my rules" reply: the autonomy ladder in plain words (§14).
+
+    ``blessed``/``eligible`` are (payee, category-name) pairs; ``observing``
+    is the count of payees still earning consistency.
+    """
+    lines: list[str] = []
+    if blessed:
+        lines.append("Auto-handled (you've approved these):")
+        lines.extend(f"  - {payee} → {category}" for payee, category in blessed)
+    if eligible:
+        if lines:
+            lines.append("")
+        lines.append("Earned trust, awaiting your go-ahead:")
+        lines.extend(
+            f"  - {payee} → {category}" for payee, category in eligible
+        )
+    if observing:
+        if lines:
+            lines.append("")
+        lines.append(
+            f"Plus {observing} payee{'' if observing == 1 else 's'} I'm "
+            "still observing."
+        )
+    if not lines:
+        lines.append(
+            "No standing rules yet — I'm still learning your habits from "
+            "the categories you confirm."
+        )
+    lines += [
+        "",
+        'Say "always categorize X as Y" to add a rule, or "stop '
+        'auto-handling X" to revoke one.',
+    ]
+    return "\n".join(lines)
+
+
+def render_help() -> str:
+    """The capability sheet for a "help" / "what can you do?" message."""
+    return (
+        "Here's what I do and how to talk to me:\n\n"
+        "- I email you each new transaction with a suggested category. Just "
+        "reply in your own words — confirm it, name a different category, "
+        "or add context (it becomes the memo).\n"
+        '- "always categorize X as Y" sets a standing rule (I\'ll read it '
+        "back for a YES before it takes effect).\n"
+        '- "stop auto-handling X" revokes one, effective immediately.\n'
+        '- "list my rules" shows everything I auto-handle or am learning.\n'
+        "- When a category is over budget I'll email options to cover it — "
+        'reply with the option you want (or your own tweak, like "option 2 '
+        'but only $50").\n\n'
+        "I never change anything without either your reply or a rule you've "
+        "explicitly approved, and every automatic move is flagged in YNAB "
+        "and undoable with a one-word reply."
+    )
+
+
 def render_receipt_unsupported() -> str:
     """The honest note for a forwarded receipt the join can't process yet (§6).
 

@@ -9,11 +9,16 @@ enter the workflow sandbox.
 from __future__ import annotations
 
 import contextlib
+from typing import TYPE_CHECKING
 
 from temporalio import activity
 
 from ynab_agent.dispatch.classify import InboundKind, InboundMessage
 from ynab_agent.workflow.temporal_client import client, task_queue
+
+if TYPE_CHECKING:
+    from ynab_agent.domain.rule import Rule
+    from ynab_agent.workflow.registry_types import RegistryView
 
 
 @activity.defn
@@ -197,20 +202,153 @@ async def route_receipt(message: InboundMessage) -> None:
     )
 
 
+async def _reply(message: InboundMessage, body: str, tag: str) -> None:
+    """Reply on the message's own thread, deduped on the inbound message id."""
+    import asyncio
+
+    from ynab_agent.mail.client import MailClient
+    from ynab_agent.settings import Settings
+
+    if message.thread_id is None:
+        return
+    settings = Settings()
+    mail = MailClient.from_env()
+    await asyncio.to_thread(
+        mail.send_on_thread,
+        inbox_id=settings.inbox,
+        thread_id=str(message.thread_id),
+        body=body,
+        seq_label=f"yacmd-{tag}-{message.message_id}",
+        to=list(settings.owners),
+    )
+
+
+async def _registry_view() -> RegistryView | None:
+    """The registry's current view, or ``None`` before its first signal."""
+    from temporalio.service import RPCError
+
+    from ynab_agent.workflow.registry_types import (
+        REGISTRY_WORKFLOW_ID,
+        RegistryView,
+    )
+
+    temporal = await client()
+    handle = temporal.get_workflow_handle(REGISTRY_WORKFLOW_ID)
+    try:
+        view: RegistryView = await handle.query(
+            "view", result_type=RegistryView
+        )
+    except RPCError:
+        return None
+    return view
+
+
+def _category_display(rule: Rule, names: dict[str, str]) -> str:
+    """A rule's target category by name (best effort; splits stay 'a split')."""
+    from ynab_agent.domain.allocations import ProposedCategory
+
+    allocation = rule.action.allocation
+    if isinstance(allocation, ProposedCategory):
+        cid = str(allocation.category)
+        return names.get(cid, cid)
+    return "a split"
+
+
+async def _revoke_and_reply(message: InboundMessage, payee: str) -> None:
+    """Strip a payee's standing autonomy and confirm by reply (SPEC §14.5).
+
+    Revoking is the safe direction, so unlike a bless it takes effect with no
+    read-back. The registry is consulted first so the reply is honest: a
+    payee with no blessed rule gets "nothing changed", not a fake "done".
+    """
+    from temporalio.common import WorkflowIDConflictPolicy
+
+    from ynab_agent.agentic.compose import (
+        render_revoke_nothing,
+        render_revoked,
+    )
+    from ynab_agent.domain.enums import RuleSource
+    from ynab_agent.workflow.registry_types import (
+        REGISTRY_WORKFLOW_ID,
+        RegistryParams,
+    )
+
+    view = await _registry_view()
+    rules = view.rules if view is not None else ()
+    lowered = payee.lower()
+    blessed = [
+        rule
+        for rule in rules
+        if rule.source is RuleSource.HUMAN_EXPLICIT
+        and rule.match.payee_pattern.lower() in lowered
+    ]
+    if not blessed:
+        await _reply(message, render_revoke_nothing(payee), "revoke")
+        return
+    temporal = await client()
+    await temporal.start_workflow(
+        "RuleRegistryWorkflow",
+        RegistryParams(),
+        id=REGISTRY_WORKFLOW_ID,
+        task_queue=task_queue(),
+        id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+        start_signal="revoke",
+        start_signal_args=[payee],
+    )
+    await _reply(message, render_revoked(payee), "revoke")
+
+
+async def _reply_rules_list(
+    message: InboundMessage, names: dict[str, str]
+) -> None:
+    """Answer "list my rules" with the autonomy ladder in plain words (§14)."""
+    from ynab_agent.agentic.compose import render_rules_list
+    from ynab_agent.domain.enums import RuleSource, TrustState
+
+    view = await _registry_view()
+    rules = view.rules if view is not None else ()
+    blessed = tuple(
+        (rule.match.payee_pattern, _category_display(rule, names))
+        for rule in rules
+        if rule.source is RuleSource.HUMAN_EXPLICIT
+    )
+    eligible = tuple(
+        (rule.match.payee_pattern, _category_display(rule, names))
+        for rule in rules
+        if rule.source is RuleSource.LEARNED
+        and rule.trust is TrustState.TRUSTED
+    )
+    observing = sum(
+        1
+        for rule in rules
+        if rule.source is RuleSource.LEARNED
+        and rule.trust is not TrustState.TRUSTED
+    )
+    await _reply(
+        message, render_rules_list(blessed, eligible, observing), "rules"
+    )
+
+
 @activity.defn
 async def handle_command(message: InboundMessage) -> None:
-    """Parse a standing command and open a read-back to confirm it (SPEC §5c).
+    """Act on a standing-instruction message (SPEC §5c, §14.5).
 
-    The owner's direct opt-in: "always categorize X as Y" becomes an
-    ``ExplicitCommand``. Because a standing command grants autonomy — and can
-    arrive on a brand-new thread where the allow-list is the only gate — it is
-    *not* blessed inline (SPEC §0.6). Instead a one-shot
-    ``CommandConfirmWorkflow`` opens a read-back ("Auto-handle X as Y? reply
-    yes") and blesses only on a one-word confirm. The confirm is keyed by
-    (payee, category): a resend while one is pending is a no-op; a later command
-    after it closed re-opens a fresh one. Anything not a clear bless — a
-    question or comment — is a deliberate no-op (the parser declines it), so a
-    stray message never starts one.
+    The verbs of the autonomy journey, parsed by the model and acted on
+    deterministically:
+
+      - **bless** ("always categorize X as Y") grants autonomy, so it is
+        *not* blessed inline (SPEC §0.6) — a one-shot
+        ``CommandConfirmWorkflow`` opens a read-back and blesses only on a
+        one-word confirm. Keyed by (payee, category): a resend while one is
+        pending is a no-op.
+      - **revoke** ("stop auto-handling X") removes autonomy — the safe
+        direction, so it takes effect immediately, with an honest reply
+        either way.
+      - **list_rules** / **help** answer with the rule ladder / the
+        capability sheet on the message's own thread.
+
+    Anything else is a deliberate no-op (the parser declines it), so a stray
+    message never grants or changes anything.
     """
     import asyncio
 
@@ -218,16 +356,17 @@ async def handle_command(message: InboundMessage) -> None:
     from temporalio.exceptions import WorkflowAlreadyStartedError
 
     from ynab_agent.agentic.command import (
+        CommandKind,
         CommandRequest,
         parse_command,
         to_explicit_command,
     )
+    from ynab_agent.agentic.compose import render_help
     from ynab_agent.agentic.enrich import CandidateCategory
     from ynab_agent.workflow.command_types import (
         CommandConfirmParams,
         command_confirm_id,
     )
-    from ynab_agent.workflow.temporal_client import client, task_queue
     from ynab_agent.ynab.client import YnabClient
 
     ynab = YnabClient.from_env()
@@ -241,6 +380,15 @@ async def handle_command(message: InboundMessage) -> None:
     reading = await parse_command(
         CommandRequest(command_text=message.body, candidates=candidates)
     )
+    if reading.kind is CommandKind.REVOKE and reading.payee_pattern:
+        await _revoke_and_reply(message, reading.payee_pattern)
+        return
+    if reading.kind is CommandKind.LIST_RULES:
+        await _reply_rules_list(message, {c.id: c.name for c in candidates})
+        return
+    if reading.kind is CommandKind.HELP:
+        await _reply(message, render_help(), "help")
+        return
     command = to_explicit_command(reading, candidates)
     if command is None:
         return

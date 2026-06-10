@@ -207,6 +207,52 @@ def bless_by_id(
     )
 
 
+def revoke_payee(
+    state: RegistryState, payee: str, *, now: datetime.datetime
+) -> RegistryState:
+    """Strip autonomy from every blessed rule matching ``payee``. Pure (§14.5).
+
+    The owner's "stop auto-handling X": each matching ``human_explicit`` rule
+    drops back to ``learned``/``confirmed`` — the agent asks again from now
+    on, the rule's history survives, and it may re-earn eligibility (and a
+    fresh opt-in offer) through later consistent confirms. Revoking is the
+    safe direction, so unlike blessing it takes effect without a read-back.
+    No matching blessed rule → the state is unchanged.
+    """
+    targets = {
+        rule.id
+        for rule in rules_for_payee(state, payee)
+        if rule.source is RuleSource.HUMAN_EXPLICIT
+    }
+    if not targets:
+        return state
+    new_rules = tuple(
+        rule.model_copy(
+            update={
+                "source": RuleSource.LEARNED,
+                "trust": TrustState.CONFIRMED,
+            }
+        )
+        if rule.id in targets
+        else rule
+        for rule in state.rules
+    )
+    entries = tuple(
+        RegistryAuditEntry(
+            at=now,
+            payee=payee,
+            change=RuleChange(
+                kind=RuleChangeKind.REVOKED,
+                rule_id=rule_id,
+                trust=TrustState.CONFIRMED,
+            ),
+        )
+        for rule_id in sorted(targets)
+    )
+    audit = (*state.audit, *entries)[-AUDIT_CAP:]
+    return state.model_copy(update={"rules": new_rules, "audit": audit})
+
+
 def rules_for_payee(state: RegistryState, payee: str) -> tuple[Rule, ...]:
     """The rules whose payee pattern matches ``payee`` (case-insensitive).
 

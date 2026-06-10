@@ -123,6 +123,33 @@ async def interpret_offer_reply(reply_text: str, payee: str) -> OfferVerdict:
 
 
 @activity.defn
+async def clarify_offer(payee: str, thread_id: str, message_id: str) -> None:
+    """Acknowledge an unreadable offer/confirm reply (SPEC §14.7 3b).
+
+    The owner spoke; staying silent reads as a black hole, so restate the
+    YES/NO question. Shared by the offer and command-confirm workflows.
+    Deduped per inbound message id, so a retry never double-sends but each
+    distinct unclear reply gets exactly one ack.
+    """
+    import asyncio
+
+    from ynab_agent.agentic.compose import render_offer_unclear
+    from ynab_agent.mail.client import MailClient
+    from ynab_agent.settings import Settings
+
+    settings = Settings()
+    mail = MailClient.from_env()
+    await asyncio.to_thread(
+        mail.send_on_thread,
+        inbox_id=settings.inbox,
+        thread_id=thread_id,
+        body=render_offer_unclear(payee),
+        seq_label=f"yaoffer-unclear-{message_id}",
+        to=list(settings.owners),
+    )
+
+
+@activity.defn
 async def accept_offer(rule: Rule, thread_id: str) -> None:
     """Bless the rule and confirm — the owner accepted the offer (SPEC §14.7).
 

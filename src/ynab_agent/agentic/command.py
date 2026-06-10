@@ -34,6 +34,9 @@ class CommandKind(StrEnum):
     """What a standing command asked for."""
 
     BLESS = "bless"
+    REVOKE = "revoke"
+    LIST_RULES = "list_rules"
+    HELP = "help"
     OTHER = "other"
 
 
@@ -61,17 +64,26 @@ _SYSTEM_PROMPT = """\
 You read one standing-instruction message an account owner sent to a budgeting
 agent. You are given the message text and the candidate categories (id + name).
 
-Decide if it is a `bless` — a request to ALWAYS / automatically categorize a
-named merchant a certain way from now on (e.g. "always categorize Spotify as
-Subscriptions", "auto-handle Costco as Groceries", "you can always file Netflix
-under TV"). If so:
-  - set `payee_pattern` to the merchant name to match (a short substring, as it
-    appears in transactions — e.g. "Spotify", "Costco");
-  - set `category_id` to the matching candidate id.
-Otherwise (a question, a one-off correction, a comment, anything you are unsure
-about) return `other` with no fields. When in doubt, prefer `other`: granting
-standing autonomy is consequential, so only do it on a clear, explicit request
-that also names a category you can match to a candidate."""
+Classify it as one of:
+  - `bless` — a request to ALWAYS / automatically categorize a named merchant
+    a certain way from now on (e.g. "always categorize Spotify as
+    Subscriptions", "auto-handle Costco as Groceries", "you can always file
+    Netflix under TV"). Set `payee_pattern` to the merchant name to match (a
+    short substring, as it appears in transactions — e.g. "Spotify",
+    "Costco") and `category_id` to the matching candidate id.
+  - `revoke` — a request to STOP auto-handling a named merchant (e.g. "stop
+    auto-approving Spotify", "don't auto-handle Costco anymore", "turn off
+    the Netflix rule", "go back to asking me about Amazon"). Set
+    `payee_pattern` to the merchant; leave `category_id` null.
+  - `list_rules` — asking what standing rules exist (e.g. "list my rules",
+    "what do you auto-handle?", "what have you learned?").
+  - `help` — asking what the agent can do or how to talk to it (e.g. "help",
+    "what can you do?", "how does this work?").
+  - `other` — anything else: a question about a specific charge, a one-off
+    correction, a comment, anything you are unsure about.
+When in doubt, prefer `other` over `bless` and `revoke`: standing autonomy is
+consequential, so only act on a clear, explicit request (and for a bless, one
+that names a category you can match to a candidate)."""
 
 _AGENT: Agent[None, CommandReading] = Agent(
     output_type=CommandReading,

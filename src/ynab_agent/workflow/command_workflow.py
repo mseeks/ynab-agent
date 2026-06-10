@@ -132,4 +132,15 @@ class CommandConfirmWorkflow:
                     retry_policy=ACTIVITY_RETRY,
                 )
                 return
-            # UNCLEAR: keep waiting for a clearer reply until the deadline.
+            # UNCLEAR: acknowledge (the owner spoke — silence reads as a
+            # black hole) and keep waiting for a clearer reply.
+            await workflow.execute_activity(
+                offer_activities.clarify_offer,
+                args=[
+                    command.match.payee_pattern,
+                    thread_id,
+                    str(message.message_id),
+                ],
+                start_to_close_timeout=ACTIVITY_TIMEOUT,
+                retry_policy=ACTIVITY_RETRY,
+            )

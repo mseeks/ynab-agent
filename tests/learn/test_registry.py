@@ -20,6 +20,7 @@ from ynab_agent.learn.registry import (
     mark_offered,
     pending_offers,
     record_learning,
+    revoke_payee,
     rules_for_payee,
 )
 from ynab_agent.learn.transitions import K_DEFAULT
@@ -207,6 +208,27 @@ def test_blessed_rule_corrected_demotes_all_the_way_to_observe() -> None:
     assert state.rules[0].source is RuleSource.LEARNED
     assert state.rules[0].trust is TrustState.SUGGESTED
     assert eligible_for_bless(state) == ()
+
+
+def test_revoke_strips_autonomy_but_keeps_the_rule() -> None:
+    # "Stop auto-handling Spotify": the blessed rule drops to learned/confirmed
+    # — the agent asks again — and the history survives for re-earning.
+    state = _to_eligible()
+    state = bless_by_id(state, state.rules[0].id, now=_NOW)
+    assert state.rules[0].source is RuleSource.HUMAN_EXPLICIT
+    revoked = revoke_payee(state, "Spotify", now=_NOW)
+    assert revoked.rules[0].source is RuleSource.LEARNED
+    assert revoked.rules[0].trust is TrustState.CONFIRMED
+    assert eligible_for_bless(revoked) == ()  # no instant re-offer
+    assert revoked.audit[-1].change.kind.value == "revoked"
+
+
+def test_revoke_without_a_blessed_match_is_a_noop() -> None:
+    # A merely-learned rule is untouched (nothing to revoke), as is a payee
+    # with no rule at all.
+    state = _to_eligible()
+    assert revoke_payee(state, "Spotify", now=_NOW) is state
+    assert revoke_payee(state, "Netflix", now=_NOW) is state
 
 
 def test_rules_for_payee_matches_on_substring() -> None:

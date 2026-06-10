@@ -255,6 +255,143 @@ def test_handle_command_ignores_a_non_bless(
     assert fake.started == []
 
 
+# ── handle_command: revoke / list rules / help (SPEC §14.5) ──────────────────
+def _stub_parse(monkeypatch: pytest.MonkeyPatch, reading: object) -> None:
+    """Stub the YNAB read and the model parse with a fixed reading."""
+    from ynab_agent.agentic import command as command_mod
+    from ynab_agent.ynab.client import YnabClient
+
+    monkeypatch.setattr(
+        YnabClient, "from_env", classmethod(lambda cls: _FakeYnab())
+    )
+
+    async def _parse(request: object) -> object:
+        return reading
+
+    monkeypatch.setattr(command_mod, "parse_command", _parse)
+
+
+def _blessed_view(payee: str, category_id: str) -> object:
+    from ynab_agent.domain.allocations import ProposedCategory
+    from ynab_agent.domain.enums import RuleSource, TrustState
+    from ynab_agent.domain.ids import CategoryId, RuleId
+    from ynab_agent.domain.rule import Rule, RuleAction, RuleMatch
+    from ynab_agent.workflow.registry_types import RegistryView
+
+    rule = Rule(
+        id=RuleId("r1"),
+        match=RuleMatch(payee_pattern=payee),
+        action=RuleAction(
+            allocation=ProposedCategory(category=CategoryId(category_id))
+        ),
+        trust=TrustState.TRUSTED,
+        source=RuleSource.HUMAN_EXPLICIT,
+    )
+    return RegistryView(rules=(rule,), eligible=())
+
+
+class _FakeRegistryHandle:
+    """A registry handle whose ``view`` query returns a view or 'not found'."""
+
+    def __init__(self, view: object | None) -> None:
+        self._view = view
+
+    async def query(self, name: str, result_type: object = None) -> object:
+        from temporalio.service import RPCError, RPCStatusCode
+
+        if self._view is None:
+            raise RPCError("not found", RPCStatusCode.NOT_FOUND, b"")
+        return self._view
+
+
+class _FakeRegistryClient(_FakeStartClient):
+    """start_workflow capture + a registry handle for the view query."""
+
+    def __init__(self, view: object | None) -> None:
+        super().__init__()
+        self._handle = _FakeRegistryHandle(view)
+
+    def get_workflow_handle(self, workflow_id: str) -> _FakeRegistryHandle:
+        return self._handle
+
+
+def _kind(name: str) -> object:
+    from ynab_agent.agentic.command import CommandKind, CommandReading
+
+    return CommandReading(
+        kind=CommandKind(name),
+        payee_pattern="Costco" if name == "revoke" else None,
+    )
+
+
+def test_revoke_signals_the_registry_and_confirms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_parse(monkeypatch, _kind("revoke"))
+    mail = _stub_mail(monkeypatch)
+    fake = _FakeRegistryClient(view=_blessed_view("Costco", "groceries"))
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
+
+    asyncio.run(dispatch_activities.handle_command(_message(thread_id="t")))
+
+    assert len(fake.started) == 1
+    workflow, _arg, kwargs = fake.started[0]
+    assert workflow == "RuleRegistryWorkflow"
+    assert kwargs["start_signal"] == "revoke"
+    assert kwargs["start_signal_args"] == ["Costco"]
+    assert len(mail.sends) == 1
+    assert "stopped auto-handling Costco" in str(mail.sends[0]["body"])
+
+
+def test_revoke_with_nothing_blessed_replies_honestly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No registry yet (or no blessed rule for the payee): say so, signal
+    # nothing — never a fake "done".
+    _stub_parse(monkeypatch, _kind("revoke"))
+    mail = _stub_mail(monkeypatch)
+    fake = _FakeRegistryClient(view=None)
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
+
+    asyncio.run(dispatch_activities.handle_command(_message(thread_id="t")))
+
+    assert fake.started == []
+    assert len(mail.sends) == 1
+    assert "not auto-handling Costco" in str(mail.sends[0]["body"])
+
+
+def test_list_rules_replies_with_the_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_parse(monkeypatch, _kind("list_rules"))
+    mail = _stub_mail(monkeypatch)
+    fake = _FakeRegistryClient(view=_blessed_view("Costco", "groceries"))
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
+
+    asyncio.run(dispatch_activities.handle_command(_message(thread_id="t")))
+
+    assert fake.started == []  # a read, never a write
+    body = str(mail.sends[0]["body"])
+    assert "Costco → Groceries" in body  # the category by NAME, not id
+    assert "Auto-handled" in body
+
+
+def test_help_replies_with_the_capability_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_parse(monkeypatch, _kind("help"))
+    mail = _stub_mail(monkeypatch)
+    fake = _FakeRegistryClient(view=None)
+    monkeypatch.setattr(temporal_client, "_CLIENT", fake)
+
+    asyncio.run(dispatch_activities.handle_command(_message(thread_id="t")))
+
+    assert fake.started == []
+    body = str(mail.sends[0]["body"])
+    assert "always categorize" in body
+    assert "stop auto-handling" in body
+
+
 # ── route_receipt: acknowledge instead of swallowing (SPEC §5b, §6) ──────────
 class _FakeMail:
     def __init__(self) -> None:

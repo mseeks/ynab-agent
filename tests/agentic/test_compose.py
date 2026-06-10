@@ -259,3 +259,58 @@ def test_receipt_unsupported_is_honest_and_points_to_the_thread() -> None:
     body = render_receipt_unsupported()
     assert "receipts" in body.lower()
     assert "thread" in body.lower()  # points at the path that works
+
+
+def test_offer_unclear_restates_the_yes_no_question() -> None:
+    from ynab_agent.agentic.compose import render_offer_unclear
+
+    body = render_offer_unclear("Spotify")
+    assert "Spotify" in body
+    assert "YES" in body and "NO" in body
+
+
+def test_revoked_confirms_and_explains_what_changes() -> None:
+    from ynab_agent.agentic.compose import render_revoked
+
+    body = render_revoked("Costco")
+    assert "stopped auto-handling Costco" in body
+    assert "asking" in body
+
+
+def test_revoke_nothing_is_honest_and_redirects() -> None:
+    from ynab_agent.agentic.compose import render_revoke_nothing
+
+    body = render_revoke_nothing("Costco")
+    assert "not auto-handling Costco" in body
+    assert "nothing changed" in body
+
+
+def test_rules_list_names_each_tier_and_the_verbs() -> None:
+    from ynab_agent.agentic.compose import render_rules_list
+
+    body = render_rules_list(
+        blessed=(("Spotify", "Subscriptions"),),
+        eligible=(("Costco", "Groceries"),),
+        observing=3,
+    )
+    assert "Spotify → Subscriptions" in body
+    assert "Costco → Groceries" in body
+    assert "3 payees" in body
+    assert "stop auto-handling" in body  # teaches the undo verb
+
+
+def test_rules_list_empty_is_friendly() -> None:
+    from ynab_agent.agentic.compose import render_rules_list
+
+    body = render_rules_list(blessed=(), eligible=(), observing=0)
+    assert "No standing rules yet" in body
+
+
+def test_help_covers_the_verbs_and_the_safety_promise() -> None:
+    from ynab_agent.agentic.compose import render_help
+
+    body = render_help()
+    assert "always categorize" in body
+    assert "stop auto-handling" in body
+    assert "list my rules" in body
+    assert "never change anything" in body

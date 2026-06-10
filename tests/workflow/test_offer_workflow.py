@@ -78,6 +78,12 @@ def _activities(
     async def decline_offer(rule: Rule, thread_id: str) -> None:
         calls.append(f"decline:{thread_id}")
 
+    @activity.defn(name="clarify_offer")
+    async def clarify_offer(
+        payee: str, thread_id: str, message_id: str
+    ) -> None:
+        calls.append(f"clarify:{thread_id}:{message_id}")
+
     @activity.defn(name="alert_failure")
     async def alert_failure(alert: object) -> None:
         return None
@@ -87,6 +93,7 @@ def _activities(
         interpret_offer_reply,
         accept_offer,
         decline_offer,
+        clarify_offer,
         alert_failure,
     ]
 
@@ -143,10 +150,13 @@ async def test_decline_sends_the_keep_proposing_note() -> None:
 
 
 async def test_unclear_keeps_waiting_then_a_clear_yes_accepts() -> None:
-    # First reply is unclear (no bless), a later clear yes accepts.
+    # First reply is unclear (no bless), a later clear yes accepts. The
+    # unclear reply is ACKNOWLEDGED — the owner spoke; silence reads as a
+    # black hole — keyed to that reply's message id.
     calls = await _run(
         verdicts=[OfferVerdict.UNCLEAR, OfferVerdict.ACCEPT], replies=2
     )
+    assert "clarify:thr-offer:m1" in calls
     assert "accept:thr-offer" in calls
     assert not any(c.startswith("decline") for c in calls)
 

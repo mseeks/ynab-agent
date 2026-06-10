@@ -62,6 +62,7 @@ class RuleChangeKind(StrEnum):
     STRENGTHENED = "strengthened"
     REWRITTEN = "rewritten"
     BLESSED = "blessed"
+    REVOKED = "revoked"
 
 
 class RuleChange(Frozen):

@@ -77,6 +77,12 @@ def _activities(
     async def decline_command(command: ExplicitCommand, thread_id: str) -> None:
         calls.append(f"decline:{thread_id}")
 
+    @activity.defn(name="clarify_offer")
+    async def clarify_offer(
+        payee: str, thread_id: str, message_id: str
+    ) -> None:
+        calls.append(f"clarify:{thread_id}:{message_id}")
+
     @activity.defn(name="alert_failure")
     async def alert_failure(alert: object) -> None:
         return None
@@ -86,6 +92,7 @@ def _activities(
         interpret_offer_reply,
         accept_command,
         decline_command,
+        clarify_offer,
         alert_failure,
     ]
 
@@ -144,9 +151,12 @@ async def test_decline_does_not_bless() -> None:
 
 
 async def test_unclear_keeps_waiting_then_a_clear_yes_blesses() -> None:
+    # The unclear reply is acknowledged (a YES/NO restatement), then the
+    # clear yes blesses.
     calls = await _run(
         verdicts=[OfferVerdict.UNCLEAR, OfferVerdict.ACCEPT], replies=2
     )
+    assert any(c.startswith("clarify:thr-cmd") for c in calls)
     assert "accept:thr-cmd" in calls
     assert not any(c.startswith("decline") for c in calls)
 
