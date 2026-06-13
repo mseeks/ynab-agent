@@ -149,20 +149,20 @@ wheels = [
 
 [[package]]
 name = "claude-agent-sdk"
-version = "0.2.95"
+version = "0.2.99"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "mcp" },
     { name = "sniffio" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/35/f4/c7210c402c92f97f1edfdb0d6eb7f015c64259e8744fcfbeb7d8214919a2/claude_agent_sdk-0.2.95.tar.gz", hash = "sha256:0e01537bd3c7d1a43329f1aa4914f0b8d24cfdd12cb58dc4bc67ee57d72cf725", size = 253648, upload-time = "2026-06-09T17:39:02.9Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/42/76/6d4d26e0c88684ad468f00d03b6b5fa90ae01e7d49cfa962e2a3d50be26c/claude_agent_sdk-0.2.99.tar.gz", hash = "sha256:1f24642020b374fa54020d4ba642fab8abe8afdee881b97d011a984f5a06cb72", size = 253656, upload-time = "2026-06-12T04:35:32.056Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/c7/b047f3519ef299807ce2ec3f2a76e3a6f8a0c0a58f909115d8f6fdef6faf/claude_agent_sdk-0.2.95-py3-none-macosx_11_0_arm64.whl", hash = "sha256:b0d0f213718428208c5e4243e7b7378e0d6bbc0ddc505bff7bff8497bc757f28", size = 65392907, upload-time = "2026-06-09T17:39:05.962Z" },
-    { url = "https://files.pythonhosted.org/packages/b9/15/5e8b6c305237a8fc45569e1cb0f8acde198ad9fa34f1bd6371e913a60c9d/claude_agent_sdk-0.2.95-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:e88118e59fe92620d8b87ce4e5b01d8a04fa052160a6cc6b0c177899091a2e54", size = 67454378, upload-time = "2026-06-09T17:39:09.388Z" },
-    { url = "https://files.pythonhosted.org/packages/b0/07/69a32db678a2fd2ef7bfa9c74de7a42f55d4628855ec92e6bc5b4c57f0fe/claude_agent_sdk-0.2.95-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:85694dbc7210a28ff6c1512e8964af8c27b4d1cd6494352a32a43f3bfaeabd75", size = 75007681, upload-time = "2026-06-09T17:39:14.063Z" },
-    { url = "https://files.pythonhosted.org/packages/35/ec/1382bf990e0e3799397969e8e717d90130103840ea8a5a6daccb7eee3be0/claude_agent_sdk-0.2.95-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:eb3e1f38200888f9ed83d1dcf407853084743de23883187a41cf8181f389a3cb", size = 75167303, upload-time = "2026-06-09T17:39:17.778Z" },
-    { url = "https://files.pythonhosted.org/packages/96/00/5b9b5bd9f035aac70787fb9acaee90e426ff662a637c542ccdc17bbcfed0/claude_agent_sdk-0.2.95-py3-none-win_amd64.whl", hash = "sha256:6a608635a4609da00109a478726319692991c28bd057fa66abb120a21ed88142", size = 75791421, upload-time = "2026-06-09T17:39:21.935Z" },
+    { url = "https://files.pythonhosted.org/packages/01/a9/baf9b1bcd6530c05efdcd48d7c26c431e5503ff2dc6339c3ee5d2853bbd7/claude_agent_sdk-0.2.99-py3-none-macosx_11_0_arm64.whl", hash = "sha256:41ffbcfe068beab97430faef1712fffcd9776c81c3ba26adf4c3474dd35ae208", size = 65967353, upload-time = "2026-06-12T04:35:35.543Z" },
+    { url = "https://files.pythonhosted.org/packages/db/ca/cc2feec2a7771ddd87fae8bbc388d806cf8d6221419f4977263d681e595b/claude_agent_sdk-0.2.99-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:acccd38dd31a3341ac1ccf28fa4e44832930c7d7146e28e9a69880bc76fdd9e5", size = 68028895, upload-time = "2026-06-12T04:35:39.066Z" },
+    { url = "https://files.pythonhosted.org/packages/99/7e/ab2d2beaed83b4812c4f4db8d1f73d61c9596b794ffd7bb281108407061f/claude_agent_sdk-0.2.99-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:cf14927e24b740011540979a2ffc04cb7d9020fe247dbb4e333836b86e9d0adb", size = 75561258, upload-time = "2026-06-12T04:35:42.968Z" },
+    { url = "https://files.pythonhosted.org/packages/64/70/1ba0ad670e32203a0db656e2260b5fee6c6f49ccf090fe17adcd4eba1b48/claude_agent_sdk-0.2.99-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:bdc0e7d90389da47c1bbbcd82d4e03e63bb532d1bd6fa6476ac8c5e731735e64", size = 75739375, upload-time = "2026-06-12T04:35:46.838Z" },
+    { url = "https://files.pythonhosted.org/packages/74/59/c840bfd9bb505cd12ca41d240c26a21ee5ee6441abbfcc53d9513ff6ef98/claude_agent_sdk-0.2.99-py3-none-win_amd64.whl", hash = "sha256:c62075d7db003b38cfb88e8f84ec622069ae014db64dd2d1ba27fc0262546c2a", size = 76350900, upload-time = "2026-06-12T04:35:51.018Z" },
 ]
 
 [[package]]
