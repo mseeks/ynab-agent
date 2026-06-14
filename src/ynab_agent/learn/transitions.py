@@ -41,9 +41,9 @@ if TYPE_CHECKING:
     from ynab_agent.learn.events import LearningEvent
 
 # Consistent confirmations a learned rule needs to reach `trusted` (SPEC §4.2).
-# Kept deliberately high (§14.6): autonomy is consequential, so eligibility is
-# only earned after many same-way confirmations of a payee.
-K_DEFAULT = 5
+# Set to 3 (§14.6): a few same-way confirmations earn eligibility, only ever
+# *offered*, never auto-granted — the owner still blesses (§14.2).
+K_DEFAULT = 3
 
 
 def trust_for_hits(hits: int, k_threshold: int) -> TrustState:

@@ -74,7 +74,7 @@ it inside-out: the pure core exhaustively, the agents offline via `TestModel`,
 the workflows on Temporal's time-skipping server (plus opt-in live smokes).
 
 The **autonomy lifecycle is complete** (SPEC §14.7 3b / §14.8): a learned rule
-*earns* eligibility (a deliberately high `K`), the agent *proactively offers* to
+*earns* eligibility (`K` same-way confirmations), the agent *proactively offers* to
 auto-handle the payee (a one-time email; a yes blesses it), a clean-context model
 *safety review* vetoes any auto-apply it finds doubtful, and autonomy is *revoked*
 — the rule demoted back to Observe — on an explicit correction, a silent manual

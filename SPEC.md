@@ -819,9 +819,10 @@ Auto-actions must be *seeable* and *reversible*:
 ### 14.6 Resolved open decisions
 
 - **§11.1** person-tag channel → structured token (flags reserved for auto-action visibility, §14.5).
-- **§11.2** K is kept deliberately high (default **5**, was 3) so eligibility is
-  earned only after many same-way confirmations; `confirmed→trusted` now means
-  *eligible*, not auto (§14.2).
+- **§11.2** K is a modest **3** (was 5) — eligibility is earned after a few
+  same-way confirmations, kept low because trust only makes a rule *eligible* to
+  be offered, never auto-granted; `confirmed→trusted` means *eligible*, not auto
+  (§14.2).
 - **§11.12** bake-in → the per-action-loud stage *is* the bake-in: real writes, full visibility, easy
   undo, before any quiet/silent stage.
 - **Store** (was implicit) → the registry workflow; no external DB (§14.1).
@@ -854,7 +855,7 @@ Each landed additive and green (the autonomy path is live, but inert until a rul
 
 ### 14.8 Guarding & revoking autonomy (the backward path)
 
-Earned autonomy must also degrade gracefully. Three mechanisms, plus the high K above as the front gate:
+Earned autonomy must also degrade gracefully. Three mechanisms, plus the K bar above as the front gate:
 
 - **Layer-2 safety review (§0.6) ✅** — before an auto-apply lands, an *independent, clean-context*
   model categorization (blind to the rule's choice, to stay unbiased) judges it (`enrich.review_auto_
