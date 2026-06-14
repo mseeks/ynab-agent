@@ -94,6 +94,24 @@ def _name_rule_categories(
     return tuple(named)
 
 
+def _rule_order_key(r: RuleRow) -> tuple[int, int, str]:
+    """Order the rule table: highest autonomy first, then most matches.
+
+    Blessed (auto-applying) rules lead, then eligible (trusted), then
+    confirmed, then suggested; ties break by hit count, then payee, so the
+    table is stable and the render's top-N cap keeps the rules that matter.
+    """
+    if r.source == "human_explicit":
+        rank = 3  # blessed — auto-applies
+    elif r.trust == "trusted":
+        rank = 2  # eligible — trusted, awaiting the owner's yes
+    elif r.trust == "confirmed":
+        rank = 1
+    else:
+        rank = 0  # suggested
+    return (-rank, -r.hits, r.payee.lower())
+
+
 def _age_phrase(seconds: float) -> str:
     """A coarse, friendly age ('4 days', '3 hours', 'moments')."""
     if seconds < 90:
@@ -396,11 +414,12 @@ def assemble(
         archived=t.archived,
         terminated=t.terminated,
     )
+    rules = _name_rule_categories(t.rules, budget.categories)
     autonomy = Autonomy(
         observe=t.observe,
         eligible=t.eligible,
         blessed=t.blessed,
-        rules=_name_rule_categories(t.rules, budget.categories),
+        rules=tuple(sorted(rules, key=_rule_order_key)),
         offers=t.offers,
     )
     health = _rollup(

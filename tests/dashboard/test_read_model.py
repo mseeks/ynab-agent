@@ -149,6 +149,36 @@ def test_rule_categories_show_names_not_ids() -> None:
     assert cats["Mystery"] == "99999999"  # unknown id → short stub, not a UUID
 
 
+def test_rule_table_sorts_by_autonomy_then_matches() -> None:
+    def _rule(payee: str, trust: str, source: str, hits: int) -> RuleRow:
+        return RuleRow(
+            payee=payee,
+            category="split",
+            trust=trust,
+            source=source,
+            hits=hits,
+            offered=False,
+        )
+
+    readout = TemporalReadout(
+        rules=(
+            _rule("low", "suggested", "learned", 9),
+            _rule("blessed-a", "trusted", "human_explicit", 1),
+            _rule("confirmed-hi", "confirmed", "learned", 5),
+            _rule("eligible", "trusted", "learned", 2),
+            _rule("confirmed-lo", "confirmed", "learned", 1),
+        ),
+    )
+    model = _assemble(temporal=(readout, None))
+    assert [r.payee for r in model.autonomy.rules] == [
+        "blessed-a",  # blessed (human_explicit) leads
+        "eligible",  # then trusted / learned
+        "confirmed-hi",  # confirmed, more matches first...
+        "confirmed-lo",  # ...then fewer
+        "low",  # suggested last, despite the most hits
+    ]
+
+
 def test_proposal_borrows_its_thread_subject_as_the_label() -> None:
     readout = TemporalReadout(
         awaiting=(QueueItem(kind="proposal", label="t1", ident="t1"),),
