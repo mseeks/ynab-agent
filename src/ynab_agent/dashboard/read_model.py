@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         Conversation,
         Deploy,
         Failure,
+        RuleRow,
         RunTelemetry,
         TxnFacts,
     )
@@ -72,6 +73,25 @@ def _s(n: int) -> str:
 def _short(ident: str) -> str:
     """A short, readable stand-in when an id can't be humanized."""
     return ident[:8] if len(ident) > 8 else ident
+
+
+def _name_rule_categories(
+    rules: tuple[RuleRow, ...], categories: dict[str, str]
+) -> tuple[RuleRow, ...]:
+    """Show each rule's category by name, not its raw YNAB id.
+
+    ``categories`` is YNAB's id→name directory. A ``split`` target is left
+    as-is, and an id YNAB didn't return is shortened so the table degrades to a
+    readable stub, never a 32-char UUID.
+    """
+    named: list[RuleRow] = []
+    for r in rules:
+        if r.category == "split":
+            named.append(r)
+            continue
+        name = categories.get(r.category) or _short(r.category)
+        named.append(r.model_copy(update={"category": name}))
+    return tuple(named)
 
 
 def _age_phrase(seconds: float) -> str:
@@ -380,7 +400,7 @@ def assemble(
         observe=t.observe,
         eligible=t.eligible,
         blessed=t.blessed,
-        rules=t.rules,
+        rules=_name_rule_categories(t.rules, budget.categories),
         offers=t.offers,
     )
     health = _rollup(

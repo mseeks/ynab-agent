@@ -59,6 +59,7 @@ def _read() -> Budget:
         unapproved=len(unapproved),
         unapproved_sample=sample,
         overspent=overspent,
+        categories={str(s.category): s.name for s in spends},
     )
 
 

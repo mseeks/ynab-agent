@@ -14,6 +14,7 @@ from ynab_agent.dashboard.model import (
     Failure,
     OfferRow,
     QueueItem,
+    RuleRow,
     RunTelemetry,
     StateCount,
     TxnFacts,
@@ -109,6 +110,43 @@ def test_queue_splits_needs_you_from_already_handled() -> None:
     row = next(q for q in model.needs_you if q.ident == "t1")
     assert row.payee == "Amazon"
     assert row.amount == "-$5.00"
+
+
+def test_rule_categories_show_names_not_ids() -> None:
+    readout = TemporalReadout(
+        rules=(
+            RuleRow(
+                payee="Spotify",
+                category="11111111-aaaa",
+                trust="trusted",
+                source="learned",
+                hits=3,
+                offered=False,
+            ),
+            RuleRow(
+                payee="Costco",
+                category="split",
+                trust="confirmed",
+                source="learned",
+                hits=2,
+                offered=False,
+            ),
+            RuleRow(
+                payee="Mystery",
+                category="99999999-bbbb",
+                trust="confirmed",
+                source="learned",
+                hits=1,
+                offered=False,
+            ),
+        ),
+    )
+    budget = Budget(available=True, categories={"11111111-aaaa": "Music"})
+    model = _assemble(temporal=(readout, None), ynab=(budget, None))
+    cats = {r.payee: r.category for r in model.autonomy.rules}
+    assert cats["Spotify"] == "Music"  # id resolved to its YNAB name
+    assert cats["Costco"] == "split"  # split target left as-is
+    assert cats["Mystery"] == "99999999"  # unknown id → short stub, not a UUID
 
 
 def test_proposal_borrows_its_thread_subject_as_the_label() -> None:

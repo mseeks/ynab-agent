@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from pydantic import Field
+
 from ynab_agent.domain.base import Frozen
 
 
@@ -177,6 +179,9 @@ class Budget(Frozen):
     unapproved: int = 0
     unapproved_sample: tuple[TxnRow, ...] = ()
     overspent: tuple[CategoryRow, ...] = ()
+    # YNAB category id → name: the directory used to humanize category
+    # references (e.g. learned-rule targets). Empty when YNAB is off.
+    categories: dict[str, str] = Field(default_factory=dict)
 
 
 # ── Conversations (AgentMail) ────────────────────────────────────────────────
