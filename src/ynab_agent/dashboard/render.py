@@ -128,8 +128,9 @@ font-weight:700;letter-spacing:-.015em;line-height:1.15;margin:2px 0 6px}}
 max-width:86ch}}
 .pipe{{display:flex;align-items:stretch;margin:18px 0 0;
 border-top:1px solid var(--line);flex-wrap:wrap}}
-.stage{{flex:1 1 0;min-width:120px;padding:14px 16px 2px 0;
+.stage{{flex:1 1 0;min-width:120px;padding:14px 16px 2px 16px;
 border-right:1px solid var(--line)}}
+.stage:first-child{{padding-left:0}}
 .stage:last-child{{border-right:0}}
 .stage .sv{{font-family:var(--disp);font-size:38px;font-weight:650;
 line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}}
@@ -200,8 +201,9 @@ font-family:var(--mono)}}
 /* Autonomy ladder — three cells, then the rule table. */
 .rungs{{display:flex;align-items:stretch;margin:0 0 14px;
 border-top:1px solid var(--line)}}
-.rung{{flex:1 1 0;min-width:0;padding:12px 12px 0 0;
+.rung{{flex:1 1 0;min-width:0;padding:12px 12px 0 12px;
 border-right:1px solid var(--line)}}
+.rung:first-child{{padding-left:0}}
 .rung:last-child{{border-right:0}}
 .rung .rv{{font-family:var(--disp);font-size:26px;font-weight:650;
 line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}}
