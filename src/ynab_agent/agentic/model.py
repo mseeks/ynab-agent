@@ -6,18 +6,28 @@ the model and the endpoint are env-overridable so a deployment can point at a
 different Ollama host or model without code changes; tests pass their own
 ``TestModel``/``FunctionModel`` and never touch this.
 
+Every request carries an ``X-Model-Client`` header naming the caller
+(``ynab-agent/<activity>`` when built inside an activity, else ``ynab-agent``)
+so the cluster's model proxy can attribute traffic per caller. One process-wide
+httpx client is shared (no per-call connection-pool leak); an async event hook
+stamps the header from a :class:`~contextvars.ContextVar` set in
+:func:`build_model`, which keeps it correct when activities run concurrently.
+
 This module lives outside the pure core and the workflow modules — the model
 stack must never be imported into a Temporal workflow sandbox.
 """
 
 from __future__ import annotations
 
+import contextvars
 import os
 from typing import TYPE_CHECKING
 
+import httpx
 from pydantic_ai import NativeOutput
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from temporalio import activity
 
 if TYPE_CHECKING:
     from pydantic_ai import Agent
@@ -55,6 +65,33 @@ _OLLAMA_SETTINGS: ModelSettings = {
     "timeout": _REASONED_GENERATION_TIMEOUT_S,
 }
 
+_caller: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "model_caller", default="ynab-agent"
+)
+_clients: dict[str, httpx.AsyncClient] = {}
+
+
+async def _stamp_caller(request: httpx.Request) -> None:
+    """Tag each outbound model request with the current caller."""
+    request.headers["X-Model-Client"] = _caller.get()
+
+
+def _http_client() -> httpx.AsyncClient:
+    """The one process-wide client; the event hook tags each request."""
+    client = _clients.get("default")
+    if client is None:
+        client = httpx.AsyncClient(event_hooks={"request": [_stamp_caller]})
+        _clients["default"] = client
+    return client
+
+
+def _caller_tag() -> str:
+    """``ynab-agent/<activity>`` inside an activity, else ``ynab-agent``."""
+    try:
+        return f"ynab-agent/{activity.info().activity_type}"
+    except RuntimeError:
+        return "ynab-agent"
+
 
 def build_model(
     *, model_name: str | None = None, base_url: str | None = None
@@ -68,15 +105,20 @@ def build_model(
             or the local Ollama ``/v1``.
 
     Returns:
-        A Pydantic AI model ready to pass to an agent run.
+        A Pydantic AI model ready to pass to an agent run. Requests carry an
+        ``X-Model-Client`` header naming the caller for proxy-side attribution.
     """
     name = model_name or os.environ.get("YNAB_AGENT_MODEL", _DEFAULT_MODEL)
     url = base_url or os.environ.get(
         "YNAB_AGENT_OLLAMA_URL", _DEFAULT_OLLAMA_URL
     )
+    _caller.set(_caller_tag())
     # Ollama ignores the key but the OpenAI client requires a non-empty one.
     return OpenAIChatModel(
-        name, provider=OpenAIProvider(base_url=url, api_key="ollama")
+        name,
+        provider=OpenAIProvider(
+            base_url=url, api_key="ollama", http_client=_http_client()
+        ),
     )
 
 
