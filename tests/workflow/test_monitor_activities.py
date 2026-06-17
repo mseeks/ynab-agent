@@ -13,11 +13,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from temporalio.testing import WorkflowEnvironment
+from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 from temporalio.worker import Worker
 
 import ynab_agent.workflow.temporal_client as temporal_client
-from ynab_agent.budget.overspend import OverspendVerdict, PriorAlert
+from ynab_agent.budget.overspend import (
+    CategorySpend,
+    MonthClock,
+    OverspendVerdict,
+    PriorAlert,
+)
+from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.money import Money
 from ynab_agent.workflow import monitor_activities
 from ynab_agent.workflow.overspend_ledger_types import (
@@ -28,8 +34,11 @@ from ynab_agent.workflow.overspend_ledger_workflow import (
     OverspendLedgerWorkflow,
 )
 from ynab_agent.workflow.runtime import DATA_CONVERTER
+from ynab_agent.ynab.client import YnabClient
 
 if TYPE_CHECKING:
+    import datetime
+
     import pytest
 
 _TASK_QUEUE = "overspend-activities-test"
@@ -132,3 +141,71 @@ async def test_load_prior_alert_none_when_ledger_absent(
         assert (
             await monitor_activities.load_prior_alert("dining", _PERIOD) is None
         )
+
+
+class _FakeClient:
+    """A stand-in YNAB client for the fetch activity (no real API)."""
+
+    def __init__(
+        self,
+        spends: list[CategorySpend],
+        scheduled: dict[CategoryId, Money] | None = None,
+        *,
+        scheduled_error: bool = False,
+    ) -> None:
+        self._spends = spends
+        self._scheduled = scheduled or {}
+        self._scheduled_error = scheduled_error
+
+    def category_spends(self) -> tuple[CategorySpend, ...]:
+        return tuple(self._spends)
+
+    def scheduled_outflows(
+        self, today: datetime.date, month_end: datetime.date
+    ) -> dict[CategoryId, Money]:
+        if self._scheduled_error:
+            msg = "scheduled fetch failed"
+            raise RuntimeError(msg)
+        return self._scheduled
+
+
+def _bare_spend(name: str) -> CategorySpend:
+    return CategorySpend(
+        category=CategoryId(name),
+        name=name.title(),
+        budgeted=Money.from_currency("400"),
+        activity=Money.from_currency("-100"),
+        balance=Money.from_currency("300"),
+    )
+
+
+_FETCH_CLOCK = MonthClock(day_of_month=17, days_in_month=30)
+
+
+async def test_fetch_category_spends_merges_scheduled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeClient(
+        [_bare_spend("rent"), _bare_spend("dining")],
+        {CategoryId("rent"): Money.from_currency("1200")},
+    )
+    monkeypatch.setattr(YnabClient, "from_env", staticmethod(lambda: fake))
+    spends = await ActivityEnvironment().run(
+        monitor_activities.fetch_category_spends, "2026-06", _FETCH_CLOCK
+    )
+    by_id = {str(s.category): s for s in spends}
+    assert by_id["rent"].scheduled_remaining == Money.from_currency("1200")
+    assert by_id["dining"].scheduled_remaining.is_zero  # nothing scheduled
+
+
+async def test_fetch_category_spends_degrades_when_scheduled_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A scheduled-transactions outage must not crash the pass: every category
+    # falls back to scheduled_remaining = 0 (the plain run-rate projection).
+    fake = _FakeClient([_bare_spend("rent")], scheduled_error=True)
+    monkeypatch.setattr(YnabClient, "from_env", staticmethod(lambda: fake))
+    spends = await ActivityEnvironment().run(
+        monitor_activities.fetch_category_spends, "2026-06", _FETCH_CLOCK
+    )
+    assert spends[0].scheduled_remaining.is_zero

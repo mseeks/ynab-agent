@@ -276,10 +276,13 @@ READY_TO_ASSIGN_SOURCE = CategoryId("@ready-to-assign")
 def need_from_assessment(assessment: OverspendAssessment) -> Need:
     """The coverage need from an overspend assessment (SPEC §7 → §8). Pure.
 
-    The shortfall is how far the month-end projection runs past budget, floored
-    at zero (an alert always implies a positive gap).
+    Sized to keep *available* from going negative: the projected remaining spend
+    (``projected - spent``) less the funds on hand (``available``, rollover
+    included), floored at zero. Measuring against available rather than budgeted
+    means a category sitting on carryover is never asked to cover a phantom gap.
     """
-    shortfall = assessment.projected - assessment.budgeted
+    projected_remaining = assessment.projected - assessment.spent
+    shortfall = projected_remaining - assessment.available
     if shortfall < Money.zero():
         shortfall = Money.zero()
     return Need(category=assessment.category, shortfall=shortfall)

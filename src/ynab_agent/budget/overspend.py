@@ -33,13 +33,20 @@ _MAX_MONTH_DAYS = 31
 
 
 class CategorySpend(Frozen):
-    """A category's month-to-date budget figures (YNAB-native signs)."""
+    """A category's month-to-date budget figures (YNAB-native signs).
+
+    ``balance`` is YNAB's *available* (``budgeted + carryover + activity``), so
+    rollover is already baked in. ``scheduled_remaining`` is the known future
+    outflow due this month (from the scheduled-transactions read), added to the
+    projection at full size; it is 0 when nothing is scheduled.
+    """
 
     category: CategoryId
     name: str
     budgeted: Money
     activity: Money
     balance: Money
+    scheduled_remaining: Money = Field(default_factory=Money.zero)
 
 
 class MonthClock(Frozen):
@@ -83,7 +90,12 @@ DEFAULT_OVERSPEND_POLICY = OverspendPolicy()
 
 
 class OverspendAssessment(Frozen):
-    """The verdict for one category and the numbers behind it."""
+    """The verdict for one category and the numbers behind it.
+
+    ``available`` is the category's YNAB balance (rollover included) — the W7
+    coverage need is sized against it, not against ``budgeted``, so a category
+    sitting on carryover isn't asked to cover a phantom gap.
+    """
 
     category: CategoryId
     name: str
@@ -91,6 +103,7 @@ class OverspendAssessment(Frozen):
     budgeted: Money
     spent: Money
     projected: Money
+    available: Money
 
 
 class PriorAlert(Frozen):
@@ -124,9 +137,7 @@ def period_and_clock(now: datetime.datetime) -> tuple[str, MonthClock]:
     return local.strftime("%Y-%m"), clock
 
 
-def project_spend(
-    category: CategorySpend, clock: MonthClock, scheduled: Money
-) -> Money:
+def project_spend(category: CategorySpend, clock: MonthClock) -> Money:
     """Project month-end spend with a budget-anchored blend (SPEC §7). Pure.
 
     A thin early-month sample makes a raw run-rate explode — a one-off lump on
@@ -142,10 +153,12 @@ def project_spend(
     ``spent + scheduled`` — money already gone can't be projected away. The
     blend is exact in milliunits, and stays monotonic day-to-day for a fixed
     spend, so a quiet category never churns a fresh alert. ``scheduled`` is the
-    known future outflow this month (0 until #44 wires it; the term keeps that
-    change purely additive).
+    category's known future outflow this month (``scheduled_remaining``), added
+    at full size — a $1,200 rent due on the 28th lands once, not as a daily
+    rate.
     """
     spent = spent_magnitude(category)
+    scheduled = category.scheduled_remaining
     day = clock.day_of_month
     month_len = clock.days_in_month
     run_rate = spent.milliunits * month_len // day
@@ -160,17 +173,27 @@ def assess(
     category: CategorySpend,
     clock: MonthClock,
     *,
-    scheduled: Money | None = None,
     policy: OverspendPolicy = DEFAULT_OVERSPEND_POLICY,
 ) -> OverspendAssessment:
-    """Rank a category against its budget for the month (SPEC §7). Pure."""
-    scheduled = scheduled or Money.zero()
-    spent = spent_magnitude(category)
-    projected = project_spend(category, clock, scheduled)
+    """Rank a category against its *available* funds for the month (§7). Pure.
 
-    if spent > category.budgeted:
+    "Over" is measured against YNAB ``balance`` (available = budgeted +
+    carryover + activity), not against ``budgeted``: a category funded by
+    rollover can spend past its ``budgeted`` and still be fine, exactly as YNAB
+    only marks it overspent when ``balance`` goes negative. ALREADY_OVER is a
+    negative balance today; TRENDING_OVER is the projected *remaining* spend
+    driving available negative by more than the threshold; both bake rollover
+    in. With zero carryover (``balance == budgeted + activity``) this reduces to
+    the old ``spent``/``projected`` vs ``budgeted`` comparison.
+    """
+    spent = spent_magnitude(category)
+    projected = project_spend(category, clock)
+    available = category.balance
+    projected_remaining = projected - spent
+
+    if available < Money.zero():
         verdict = OverspendVerdict.ALREADY_OVER
-    elif projected - category.budgeted > policy.trend_threshold:
+    elif projected_remaining - available > policy.trend_threshold:
         verdict = OverspendVerdict.TRENDING_OVER
     else:
         verdict = OverspendVerdict.OK
@@ -182,6 +205,7 @@ def assess(
         budgeted=category.budgeted,
         spent=spent,
         projected=projected,
+        available=available,
     )
 
 
