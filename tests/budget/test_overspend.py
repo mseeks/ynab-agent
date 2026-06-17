@@ -62,19 +62,39 @@ def test_spent_magnitude_zero_when_net_inflow() -> None:
     assert spent_magnitude(_category(budgeted="400", activity="50")).is_zero
 
 
-def test_run_rate_projection_doubles_at_mid_month() -> None:
-    # $210 spent over 15 of 30 days → projects to ~$420.
+def test_blend_weights_burn_and_plan_at_mid_month() -> None:
+    # $210 spent over 15 of 30 days. Burn view (run-rate) = $420, plan view
+    # (anchor) = budgeted $400; at w = 1/2 the blend lands halfway: $410.
     cat = _category(budgeted="400", activity="-210")
     clock = MonthClock(day_of_month=15, days_in_month=30)
-    assert project_spend(cat, clock, Money.zero()) == Money.from_currency("420")
+    assert project_spend(cat, clock, Money.zero()) == Money.from_currency("410")
+
+
+def test_day_two_lump_is_anchored_not_extrapolated() -> None:
+    # A $300 one-off on a $300 budget, on day 2 of 31. The old bare run-rate
+    # extrapolated this to ~$4,650 (x15) and fired; the blend anchors it near
+    # the plan (~$581), an order of magnitude lower.
+    cat = _category(budgeted="300", activity="-300")
+    clock = MonthClock(day_of_month=2, days_in_month=31)
+    projected = project_spend(cat, clock, Money.zero())
+    assert Money.from_currency("300") < projected < Money.from_currency("700")
+
+
+def test_sparse_category_projects_toward_budget() -> None:
+    # Nothing spent yet: the blend leans on the plan, projecting toward budget
+    # (not zero, not over) — so an untouched category never reads as trending.
+    cat = _category(budgeted="400", activity="0")
+    clock = MonthClock(day_of_month=5, days_in_month=30)
+    assert project_spend(cat, clock, Money.zero()) <= Money.from_currency("400")
 
 
 def test_scheduled_outflows_add_to_projection() -> None:
     cat = _category(budgeted="400", activity="-200")
     clock = MonthClock(day_of_month=10, days_in_month=30)
-    # run-rate 200*30//10 = 600, plus a $50 scheduled charge = 650.
-    projected = project_spend(cat, clock, Money.from_currency("50"))
-    assert projected == Money.from_currency("650")
+    base = project_spend(cat, clock, Money.zero())
+    # The scheduled term is purely additive (a real value is wired in #44).
+    with_scheduled = project_spend(cat, clock, Money.from_currency("50"))
+    assert with_scheduled == base + Money.from_currency("50")
 
 
 def test_already_over_when_spent_exceeds_budget() -> None:
@@ -86,10 +106,21 @@ def test_already_over_when_spent_exceeds_budget() -> None:
 
 
 def test_trending_over_when_projection_exceeds_threshold() -> None:
-    # Halfway through, $250 of $400 → projects ~$500, over by $100 > $25.
+    # Halfway through, $250 of $400: burn $500 blended with plan $400 → $450,
+    # over by $50 > $25.
     out = assess(
         _category(budgeted="400", activity="-250"),
         MonthClock(day_of_month=15, days_in_month=30),
+    )
+    assert out.verdict is OverspendVerdict.TRENDING_OVER
+
+
+def test_steady_burn_still_trends_late_in_month() -> None:
+    # On pace to finish meaningfully over: $320 of $400 by day 20 of 30. Late
+    # in the month the burn dominates the blend (~$453), so it still trends.
+    out = assess(
+        _category(budgeted="400", activity="-320"),
+        MonthClock(day_of_month=20, days_in_month=30),
     )
     assert out.verdict is OverspendVerdict.TRENDING_OVER
 
@@ -145,9 +176,10 @@ def test_month_clock_rejects_day_past_month_end() -> None:
         MonthClock(day_of_month=31, days_in_month=30)
 
 
-def test_trending_is_suppressed_in_the_first_days_of_the_month() -> None:
-    # Day 1: $30 of $400 projects to $930 (x31) — a normal charge, not a
-    # blowout. The run-rate is meaningless this early; no trending alarm.
+def test_small_early_charge_does_not_trend() -> None:
+    # Day 1: $30 of $400. A bare run-rate extrapolates this to $930 (x31) and
+    # would fire; the blend anchors a thin sample to the plan (~$417), so a
+    # normal early charge stays OK with no min-trend-day band-aid.
     out = assess(
         _category(budgeted="400", activity="-30"),
         MonthClock(day_of_month=1, days_in_month=31),
@@ -165,9 +197,27 @@ def test_already_over_still_alerts_on_day_one() -> None:
     assert out.verdict is OverspendVerdict.ALREADY_OVER
 
 
-def test_trending_fires_once_the_month_is_credible() -> None:
+def test_genuine_over_pace_trends_even_early() -> None:
+    # $150 of $400 by day 5 of 30 is a real 3x over-pace, not a single lump:
+    # the burn ($900) pulls the blend well over budget (~$483), so it trends
+    # on its own merits — no day gate required.
     out = assess(
         _category(budgeted="400", activity="-150"),
         MonthClock(day_of_month=5, days_in_month=30),
     )
     assert out.verdict is OverspendVerdict.TRENDING_OVER
+
+
+def test_early_lump_alerts_once_then_never_churns() -> None:
+    # The accepted residual of the linear blend: a category that spends its
+    # whole budget early gets ONE alert, then the projection only falls (it is
+    # monotonic for a fixed spend), so should_alert never re-fires — the
+    # day-to-day churn that #43 set out to kill cannot recur.
+    cat = _category(budgeted="300", activity="-300")
+    early = assess(cat, MonthClock(day_of_month=2, days_in_month=31))
+    assert early.verdict is OverspendVerdict.TRENDING_OVER
+    assert should_alert(early, None) is True  # first flag of the period
+    first = PriorAlert(verdict=early.verdict, projected=early.projected)
+    later = assess(cat, MonthClock(day_of_month=12, days_in_month=31))
+    assert later.projected < early.projected  # only fell, no new spend
+    assert should_alert(later, first) is False  # no re-alert, no churn

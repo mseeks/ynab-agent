@@ -558,8 +558,12 @@ flowchart TD
 ## 7. Overspend monitor (W6, optional)
 
 Scheduled daily. Per category, pull `budgeted`, `activity`, `balance`, and goal; project month-end
-via run-rate (`activity / days_elapsed * days_in_month` + scheduled txns), using the household
-timezone for day boundaries (§13). Flag when already over or trending over by more than a threshold.
+with a **budget-anchored blend** — the burn-rate (`activity / days_elapsed * days_in_month`) blended
+with the category's own plan (`max(budgeted, spent)`), trusting the plan early and the burn late, plus
+scheduled txns — using the household timezone for day boundaries (§13). The blend tames a thin
+early-month sample (a raw run-rate extrapolates a day-2 lump ×15) and stays monotonic day-to-day, so a
+quiet category never churns a fresh alert. Flag when already over or trending over by more than a
+threshold.
 
 - v1: notify-only. Email an alert on its own thread: "Dining Out: $420 of $400, 6 days left,
   trending to ~$520."

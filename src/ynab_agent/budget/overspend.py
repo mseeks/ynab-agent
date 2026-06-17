@@ -1,7 +1,8 @@
 """W6 · the overspend monitor — pure projection and alerting (SPEC §7).
 
 Run daily per category: from ``budgeted``/``activity`` and where we are in the
-month, project month-end spend by run-rate and decide whether to raise an alert.
+month, project month-end spend with a budget-anchored blend and decide whether
+to raise an alert.
 v1 is notify-only; the spine here is pure — :func:`assess` ranks a category and
 :func:`should_alert` enforces the dedupe (at most one alert per period unless it
 materially worsens). The workflow does the I/O (fetch, send, remember).
@@ -42,7 +43,7 @@ class CategorySpend(Frozen):
 
 
 class MonthClock(Frozen):
-    """Where we are in the budget month, for the run-rate projection."""
+    """Where we are in the budget month, for the month-end projection."""
 
     day_of_month: int = Field(ge=1)
     days_in_month: int = Field(ge=_MIN_MONTH_DAYS, le=_MAX_MONTH_DAYS)
@@ -64,19 +65,18 @@ class OverspendVerdict(StrEnum):
 
 
 class OverspendPolicy(Frozen):
-    """The tunables: the trend threshold, and when trending becomes credible.
+    """The tunable: how far over a projection must run to count as trending.
 
-    ``min_trend_day`` guards the run-rate's early-month blowup: on day 1 the
-    projection is spend x31, so any normal charge reads as "trending over" and
-    would fire a false alarm (and a phantom W7 money-moving offer) at every
-    month start. Truly over-budget categories still alert on any day —
-    ALREADY_OVER is real arithmetic, not a projection.
+    The budget-anchored blend (:func:`project_spend`) tames the early-month
+    run-rate blowup at the source — a thin sample is pulled toward the
+    category's own plan rather than extrapolated x31 — so no separate
+    ``min_trend_day`` gate is needed to mute false alarms at month start.
+    ALREADY_OVER is real arithmetic, not a projection, and alerts on any day.
     """
 
     trend_threshold: Money = Field(
         default_factory=lambda: Money.from_currency(25)
     )
-    min_trend_day: int = Field(default=5, ge=1)
 
 
 DEFAULT_OVERSPEND_POLICY = OverspendPolicy()
@@ -113,7 +113,7 @@ def period_and_clock(now: datetime.datetime) -> tuple[str, MonthClock]:
     ``now`` is the deterministic UTC instant (``workflow.now()``); it is
     converted to the declared household timezone (SPEC §11, §13) before the
     day and month are read, so a charge near midnight or a month boundary is
-    bucketed into the right month and the run-rate's ``day_of_month`` is the
+    bucketed into the right month and the projection's ``day_of_month`` is the
     household's, not UTC's (which is hours ahead).
     """
     local = now.astimezone(HOUSEHOLD_TZ)
@@ -127,15 +127,33 @@ def period_and_clock(now: datetime.datetime) -> tuple[str, MonthClock]:
 def project_spend(
     category: CategorySpend, clock: MonthClock, scheduled: Money
 ) -> Money:
-    """Project month-end spend by run-rate plus known scheduled outflows (§7).
+    """Project month-end spend with a budget-anchored blend (SPEC §7). Pure.
 
-    ``spent / days_elapsed * days_in_month + scheduled``, in exact milliunits.
+    A thin early-month sample makes a raw run-rate explode — a one-off lump on
+    day 2 extrapolates to x15 its size — so the projection blends the burn rate
+    with the category's own plan, shifting trust from plan to burn as the month
+    fills in. With ``w = day_of_month / days_in_month``::
+
+        run_rate  = spent / day_of_month * days_in_month   # the burn view
+        anchor    = max(budgeted, spent)                   # the plan view
+        projected = w * run_rate + (1 - w) * anchor + scheduled
+
+    Early (``w → 0``) it trusts the plan, late (``w → 1``) the burn. Floored at
+    ``spent + scheduled`` — money already gone can't be projected away. The
+    blend is exact in milliunits, and stays monotonic day-to-day for a fixed
+    spend, so a quiet category never churns a fresh alert. ``scheduled`` is the
+    known future outflow this month (0 until #44 wires it; the term keeps that
+    change purely additive).
     """
     spent = spent_magnitude(category)
-    run_rate = Money.from_milliunits(
-        spent.milliunits * clock.days_in_month // clock.day_of_month
-    )
-    return run_rate + scheduled
+    day = clock.day_of_month
+    month_len = clock.days_in_month
+    run_rate = spent.milliunits * month_len // day
+    anchor = max(category.budgeted.milliunits, spent.milliunits)
+    blend = (day * run_rate + (month_len - day) * anchor) // month_len
+    projected = Money.from_milliunits(blend) + scheduled
+    floor = spent + scheduled
+    return projected if projected > floor else floor
 
 
 def assess(
@@ -152,10 +170,7 @@ def assess(
 
     if spent > category.budgeted:
         verdict = OverspendVerdict.ALREADY_OVER
-    elif (
-        clock.day_of_month >= policy.min_trend_day
-        and projected - category.budgeted > policy.trend_threshold
-    ):
+    elif projected - category.budgeted > policy.trend_threshold:
         verdict = OverspendVerdict.TRENDING_OVER
     else:
         verdict = OverspendVerdict.OK
