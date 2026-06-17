@@ -5,6 +5,8 @@ from __future__ import annotations
 from ynab_agent.agentic.compose import (
     ComposeRequest,
     render_autonomy_offer,
+    render_balance_could_not_cover,
+    render_balance_options,
     render_body,
     render_body_html,
     render_command_confirm,
@@ -16,7 +18,15 @@ from ynab_agent.agentic.compose import (
     render_receipt_no_match,
     render_receipt_unparseable,
 )
+from ynab_agent.budget.balance import (
+    BalanceOffer,
+    BalanceOption,
+    BudgetMove,
+    SourceView,
+)
 from ynab_agent.domain.effects import MessagePurpose
+from ynab_agent.domain.ids import CategoryId
+from ynab_agent.domain.money import Money
 
 
 def _req(**kw: object) -> ComposeRequest:
@@ -444,3 +454,74 @@ def test_receipt_matched_and_no_match_html_render_the_card() -> None:
     no_match = render_receipt_no_match_html(_parsed_receipt())  # type: ignore[arg-type]
     assert "30" in no_match
     assert "forward the receipt again" in no_match
+
+
+def test_render_balance_options_shows_amounts_donors_and_after_state() -> None:
+    offer = BalanceOffer(
+        options=(
+            BalanceOption(
+                label="From Vacation",
+                moves=(
+                    BudgetMove(
+                        source=CategoryId("vacation"),
+                        destination=CategoryId("dining"),
+                        amount=Money.from_currency("170"),
+                    ),
+                ),
+                rationale="Vacation has plenty to spare.",
+            ),
+        ),
+        sources=(
+            SourceView(
+                category=CategoryId("vacation"),
+                name="Vacation",
+                slack=Money.from_currency("600"),
+            ),
+        ),
+    )
+    body = render_balance_options("Dining", offer)
+    assert "$170.00 from Vacation" in body  # amount + donor name
+    assert "$430.00 still to spare" in body  # after-state per move (600 - 170)
+    assert "Leaves Vacation" in body  # the summary "leaves" line
+    assert "no thanks" in body  # the reply hint is preserved
+
+
+def test_render_balance_could_not_cover_explains_why() -> None:
+    body = render_balance_could_not_cover("Dining")
+    assert "heading over themselves" in body  # the plain-language why
+
+
+def test_render_balance_options_running_slack_for_two_pulls() -> None:
+    # Two moves from one $300-slack source show a running remainder
+    # (300 - 60 = 240, then 240 - 50 = 190), not each ignoring the other.
+    offer = BalanceOffer(
+        options=(
+            BalanceOption(
+                label="Twice from Vacation",
+                moves=(
+                    BudgetMove(
+                        source=CategoryId("vacation"),
+                        destination=CategoryId("dining"),
+                        amount=Money.from_currency("60"),
+                    ),
+                    BudgetMove(
+                        source=CategoryId("vacation"),
+                        destination=CategoryId("dining"),
+                        amount=Money.from_currency("50"),
+                    ),
+                ),
+                rationale="Vacation can cover it in two slices.",
+            ),
+        ),
+        sources=(
+            SourceView(
+                category=CategoryId("vacation"),
+                name="Vacation",
+                slack=Money.from_currency("300"),
+            ),
+        ),
+    )
+    body = render_balance_options("Dining", offer)
+    assert "$240.00 still to spare" in body
+    assert "$190.00 still to spare" in body
+    assert "Leaves Vacation with $190.00 still to spare" in body

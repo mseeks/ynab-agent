@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from pydantic import Field
+
 from ynab_agent.budget.overspend import OverspendAssessment
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.ids import CategoryId
@@ -49,13 +51,17 @@ class BudgetState(Frozen):
     """A snapshot of the budget the workflow computes absolute targets from.
 
     ``available`` is each source's pull-able funds (category balance, plus the
-    Ready-to-Assign sentinel); ``budgeted`` is each category's current budgeted
-    amount. The workflow derives the absolute write targets from ``budgeted`` so
-    a write retry re-sets the same value (idempotent), never double-applies.
+    Ready-to-Assign sentinel); ``slack`` is each source's protected drawable
+    (what it can give after its own projected spend); ``budgeted`` is each
+    category's current budgeted amount. The workflow derives the absolute write
+    targets from ``budgeted`` so a write retry re-sets the same value
+    (idempotent), never double-applies, and the apply-time guard checks moves
+    against ``slack``.
     """
 
     available: dict[CategoryId, Money]
     budgeted: dict[CategoryId, Money]
+    slack: dict[CategoryId, Money] = Field(default_factory=dict)
 
 
 class BalanceResult(Frozen):

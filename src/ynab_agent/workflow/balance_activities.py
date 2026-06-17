@@ -17,11 +17,13 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from ynab_agent.budget.balance import (
+    BalanceOffer,
     BalanceOption,
     BalanceOutcome,
     BudgetMove,
+    SourceView,
 )
-from ynab_agent.budget.overspend import OverspendAssessment
+from ynab_agent.budget.overspend import MonthClock, OverspendAssessment
 from ynab_agent.domain.money import Money
 from ynab_agent.workflow.balance_types import BalanceParams, BudgetState
 
@@ -47,10 +49,15 @@ def _overspend_note(assessment: OverspendAssessment) -> str:
     )
 
 
+def _source_name(category: str, names: dict[str, str], *, is_rta: bool) -> str:
+    """The donor's display name (Ready to Assign for the sentinel)."""
+    return "Ready to Assign" if is_rta else names.get(category, category)
+
+
 def _to_source_funds(
     sources: tuple[Source, ...], names: dict[str, str]
 ) -> tuple[SourceFunds, ...]:
-    """Domain sources as the model's ``SourceFunds`` (dollars + names)."""
+    """Domain sources as the model's ``SourceFunds`` (slack + names)."""
     from ynab_agent.agentic.balance import SourceFunds
     from ynab_agent.budget.balance import READY_TO_ASSIGN_SOURCE
 
@@ -60,14 +67,48 @@ def _to_source_funds(
         funds.append(
             SourceFunds(
                 id=str(source.category),
-                name="Ready to Assign"
-                if is_rta
-                else names.get(str(source.category), str(source.category)),
+                name=_source_name(str(source.category), names, is_rta=is_rta),
                 available=_dollars(source.available),
                 kind="ready-to-assign" if is_rta else "category",
+                slack=_dollars(source.drawable),
+                projection=_dollars(source.projection),
             )
         )
     return tuple(funds)
+
+
+def _to_source_views(
+    sources: tuple[Source, ...], names: dict[str, str]
+) -> tuple[SourceView, ...]:
+    """Donor views (name + slack) for rendering the offer's real numbers."""
+    from ynab_agent.budget.balance import READY_TO_ASSIGN_SOURCE
+
+    return tuple(
+        SourceView(
+            category=source.category,
+            name=_source_name(
+                str(source.category),
+                names,
+                is_rta=source.category == READY_TO_ASSIGN_SOURCE,
+            ),
+            slack=source.drawable,
+        )
+        for source in sources
+    )
+
+
+def _now_clock() -> MonthClock:
+    """The current month position, in household time (SPEC §13).
+
+    Computed at the activity's own time so a donor's slack reflects where the
+    month is *now* — the offer is proposed and the reply read on different days.
+    """
+    import datetime
+
+    from ynab_agent.budget.overspend import period_and_clock
+
+    _, clock = period_and_clock(datetime.datetime.now(datetime.UTC))
+    return clock
 
 
 @activity.defn
@@ -110,15 +151,17 @@ async def start_balance_offer(
 
 
 @activity.defn
-async def propose_balance_options(
-    params: BalanceParams,
-) -> list[BalanceOption]:
+async def propose_balance_options(params: BalanceParams) -> BalanceOffer:
     """Read the budget, ask the model for options, keep the feasible ones (§8).
 
-    The model proposes; the deterministic guard (:func:`feasible_options`) drops
-    anything that doesn't add up or pulls money a source doesn't have. When the
-    model yields nothing usable, fall back to the greedy plan; an empty list
-    means even that can't cover it from current funds.
+    Donors are now selected by *slack* (what each can spare after its own
+    projected spend), so a category heading over itself is never offered. The
+    model proposes; the deterministic guard (:func:`feasible_options`) drops
+    anything that doesn't add up, overdraws a source, or pulls a donor below its
+    slack. When the model yields nothing usable, fall back to the greedy plan;
+    empty ``options`` means even that can't cover it from current funds. The
+    returned ``sources`` carry each donor's name + slack so the offer renders
+    real numbers.
     """
     import asyncio
 
@@ -138,14 +181,17 @@ async def propose_balance_options(
     assessment = params.assessment
     need = need_from_assessment(assessment)
     if need.shortfall.is_zero:
-        return []
+        return BalanceOffer(options=(), sources=())
     client = YnabClient.from_env()
     spends = await asyncio.to_thread(client.category_spends)
     rta = await asyncio.to_thread(client.ready_to_assign)
-    sources = sources_from_spends(spends, rta, exclude=assessment.category)
+    sources = sources_from_spends(
+        spends, rta, exclude=assessment.category, clock=_now_clock()
+    )
     if not sources:
-        return []
+        return BalanceOffer(options=(), sources=())
     names = {str(spend.category): spend.name for spend in spends}
+    views = _to_source_views(sources, names)
     context = BalanceContext(
         needy_category_id=str(assessment.category),
         needy_category_name=assessment.name,
@@ -157,9 +203,10 @@ async def propose_balance_options(
     options = to_options(proposal, destination=assessment.category)
     feasible = feasible_options(options, need, sources)
     if feasible:
-        return list(feasible)
+        return BalanceOffer(options=tuple(feasible), sources=views)
     fallback = fallback_option(need, sources)
-    return [fallback] if fallback is not None else []
+    chosen = (fallback,) if fallback is not None else ()
+    return BalanceOffer(options=chosen, sources=views)
 
 
 @activity.defn
@@ -193,7 +240,9 @@ async def interpret_balance_reply(
     client = YnabClient.from_env()
     spends = await asyncio.to_thread(client.category_spends)
     rta = await asyncio.to_thread(client.ready_to_assign)
-    sources = sources_from_spends(spends, rta, exclude=assessment.category)
+    sources = sources_from_spends(
+        spends, rta, exclude=assessment.category, clock=_now_clock()
+    )
     names = {str(spend.category): spend.name for spend in spends}
     offered = tuple(
         OfferedOption(
@@ -222,19 +271,30 @@ async def interpret_balance_reply(
 
 @activity.defn
 async def read_budget_state() -> BudgetState:
-    """Snapshot available funds and current budgets for the apply (SPEC §8)."""
+    """Snapshot funds, slack, and budgets for the apply (SPEC §8).
+
+    ``slack`` re-derives each donor's protected drawable at apply time (funds
+    may have shifted since the offer), so the apply-time guard refuses a move
+    that would now pull a category below its own projected spend.
+    """
     import asyncio
 
-    from ynab_agent.budget.balance import READY_TO_ASSIGN_SOURCE
+    from ynab_agent.budget.balance import (
+        READY_TO_ASSIGN_SOURCE,
+        donor_slack,
+    )
     from ynab_agent.ynab.client import YnabClient
 
     client = YnabClient.from_env()
     spends = await asyncio.to_thread(client.category_spends)
     rta = await asyncio.to_thread(client.ready_to_assign)
+    clock = _now_clock()
     available = {spend.category: spend.balance for spend in spends}
     available[READY_TO_ASSIGN_SOURCE] = rta
+    slack = {spend.category: donor_slack(spend, clock)[0] for spend in spends}
+    slack[READY_TO_ASSIGN_SOURCE] = rta
     budgeted = {spend.category: spend.budgeted for spend in spends}
-    return BudgetState(available=available, budgeted=budgeted)
+    return BudgetState(available=available, budgeted=budgeted, slack=slack)
 
 
 @activity.defn

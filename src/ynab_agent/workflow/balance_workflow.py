@@ -79,6 +79,8 @@ def _reason(rejection: OptionRejection) -> str:
         return "one of the moves is larger than I can make automatically"
     if rejection is OptionRejection.INSUFFICIENT_SOURCE:
         return "a source no longer has enough to cover it"
+    if rejection is OptionRejection.SLACK:
+        return "a source is now heading over its own budget and can't spare it"
     return "the plan didn't add up"
 
 
@@ -119,19 +121,20 @@ class BudgetBalanceWorkflow:
     async def _run(self, params: BalanceParams) -> BalanceResult:
         assessment = params.assessment
         label = f"{assessment.category}-{params.period}"
-        options = await workflow.execute_activity(
+        offer = await workflow.execute_activity(
             balance_activities.propose_balance_options,
             params,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
         )
-        if not options:
+        if not offer.options:
             await self._send(
                 params,
                 render_balance_could_not_cover(assessment.name),
                 f"yb-nocover-{label}",
             )
             return BalanceResult(outcome="could-not-cover")
+        options = list(offer.options)
 
         # Index this workflow by the overspend-alert thread so the owner's reply
         # routes back here (W3 → BalanceThreadId), then post the options as a
@@ -141,7 +144,7 @@ class BudgetBalanceWorkflow:
         )
         await self._send(
             params,
-            render_balance_options(assessment.name, tuple(options)),
+            render_balance_options(assessment.name, offer),
             f"yb-cover-{label}",
         )
 
@@ -209,7 +212,7 @@ class BudgetBalanceWorkflow:
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
         )
-        rejection = check_moves(moves, state.available)
+        rejection = check_moves(moves, state.available, slack=state.slack)
         if rejection is not None:
             await self._send(
                 params,
