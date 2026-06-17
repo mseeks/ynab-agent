@@ -10,6 +10,7 @@ from ynab_agent.agentic.compose import (
     render_body,
     render_body_html,
     render_command_confirm,
+    render_coordinated_offer,
     render_offer_accepted,
     render_offer_declined,
     render_receipt_ack,
@@ -22,6 +23,8 @@ from ynab_agent.budget.balance import (
     BalanceOffer,
     BalanceOption,
     BudgetMove,
+    CoordinatedOffer,
+    CoverageLine,
     SourceView,
 )
 from ynab_agent.domain.effects import MessagePurpose
@@ -525,3 +528,47 @@ def test_render_balance_options_running_slack_for_two_pulls() -> None:
     assert "$240.00 still to spare" in body
     assert "$190.00 still to spare" in body
     assert "Leaves Vacation with $190.00 still to spare" in body
+
+
+def test_render_coordinated_offer_shows_lines_leaves_and_uncovered() -> None:
+    offer = CoordinatedOffer(
+        moves=(
+            BudgetMove(
+                source=CategoryId("@ready-to-assign"),
+                destination=CategoryId("dining"),
+                amount=Money.from_currency("55"),
+            ),
+            BudgetMove(
+                source=CategoryId("@ready-to-assign"),
+                destination=CategoryId("groceries"),
+                amount=Money.from_currency("90"),
+            ),
+        ),
+        lines=(
+            CoverageLine(
+                amount=Money.from_currency("55"),
+                destination="Dining",
+                source="Ready to Assign",
+            ),
+            CoverageLine(
+                amount=Money.from_currency("90"),
+                destination="Groceries",
+                source="Ready to Assign",
+            ),
+        ),
+        sources=(
+            SourceView(
+                category=CategoryId("@ready-to-assign"),
+                name="Ready to Assign",
+                slack=Money.from_currency("310"),
+            ),
+        ),
+        uncovered=("Gas",),
+    )
+    body = render_coordinated_offer(offer)
+    assert "$55.00 -> Dining from Ready to Assign" in body
+    assert "$90.00 -> Groceries from Ready to Assign" in body
+    # 310 slack less the $145 pulled across both lines → $165 left.
+    assert "Leaves Ready to Assign with $165.00 still to spare" in body
+    assert "Gas" in body  # the category the pool couldn't cover is named
+    assert '"do it"' in body  # whole-plan approval prompt

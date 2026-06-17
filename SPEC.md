@@ -590,36 +590,35 @@ Triggered by W6 overspend, end-of-month, or buffer thresholds. These are interna
 W6 and W7 earn autonomy via the same trust ramp + guardrails as categorization: one safety mechanism
 across the agent.
 
-### v1 (built): model-driven, propose-then-confirm by natural language
+### v1 (built): one coordinated plan per pass, confirmed by natural language
 
-The shipped W7 keeps the deterministic spine but moves the *balancing judgment* into the agentic
-middle, since covering a shortfall well weighs many variables (which sources, how to split, what to
-leave alone). It is triggered by **W6 overspend only** (end-of-month and buffer triggers are later
-increments).
+The shipped W7 keeps the deterministic spine. It is triggered by **W6 overspend only** (end-of-month
+and buffer triggers are later increments). One **coordinated** plan covers a whole pass: every
+over/trending category from the monitor's pass is funded from **one shared, slack-ranked donor pool**,
+so two needs can never both drain the same donor — one plan, one apply, double-drain impossible by
+construction (#46). The per-category overspend alerts still fire; coverage is a single conversation.
 
-- **High-context proposal.** A model sees the whole budget picture (the needy category, the
-  shortfall, every source's available funds, and Ready-to-Assign) and proposes **several distinct
-  coverage options, each with a plain-English rationale**. The model does its own arithmetic: an
-  earlier cut gave it a calculator tool, but Gemma's tool-calling over Ollama didn't converge with
-  structured output (it looped on tool calls), so the tool was removed. Correctness doesn't depend
-  on the model anyway (see the guard). A model-picks-sources, code-computes-amounts design is the
-  natural next step if proposal arithmetic proves unreliable.
-- **Deterministic guard.** Every proposed (and every replied) option is validated against real funds
-  and the per-move floor ceiling (`budget.balance.validate_option` / `check_moves`); the model
-  invents no money and breaches no ceiling. If the model yields nothing feasible, the greedy
-  `plan_coverage` is the fallback. Binding amounts are recomputed in exact `Money`.
-- **Natural-language reply.** The options are posted as a reply on the *same* W6 alert thread, so the
-  overspend and its coverage offer are one conversation. The reply sets its recipients explicitly to
-  the owners: a reply on a thread the agent last spoke on (the alert) would otherwise be addressed
-  back to the agent's own inbox and the owner would never see it. The owner replies in plain English
-  ("option 2 but only $50", "take it from dining instead", "no thanks"); a model reads it into apply /
-  decline / clarify. Reply routing reuses the offer pattern: the workflow stamps a `BalanceThreadId`
-  search attribute (the alert thread) and W3 signals it.
+- **Slack-aware donor pool.** A donor's *slack* is what it can spare after protecting its own
+  projected spend: `max(0, balance - (projected - spent))` — the exact negative of a category's own
+  shortfall, measured against available (rollover included). Donors with `slack <= 0` (themselves
+  over/trending) are excluded; the rest are ranked by slack, Ready-to-Assign first (`sources_from_spends`).
+- **One greedy plan.** `plan_coverage` covers the pass's needs (biggest shortfall first) from the one
+  pool, each pull capped at the donor's slack and the per-move floor ceiling. The whole-budget plan is
+  posted as one offer; the model's role is the reply read (apply / decline / clarify), whole-plan only
+  — a request to change or partly apply it comes back as a clarifying question, never a guessed write.
+- **Deterministic guard.** The plan is validated against real funds, each donor's slack, and the
+  per-move ceiling (`check_moves`, multi-destination); the apply also enforces the floor's daily move
+  cap (`moves_per_day_cap`) — a plan over it is refused whole. Binding amounts are exact `Money`.
+- **Natural-language reply.** The plan is posted on a **per-period coverage thread**, which the
+  workflow indexes with a `BalanceThreadId` search attribute so W3 routes the owner's reply back here
+  (the same dispatch route as the per-transaction offers). The reply sets its recipients explicitly to
+  the owners, so a reply on the agent's own thread still reaches them.
 - **Apply.** The workflow computes each category's *absolute* target `budgeted` from a baseline
-  snapshot (so a write retry never double-applies), writes via the YNAB month-category PATCH,
-  read-back verifies, and records each move to the audit trail. A move *from* Ready-to-Assign only
-  raises the destination (YNAB lowers RTA itself). v1 enforces the per-move ceiling; the daily
-  aggregate cap awaits a move-counter ledger.
+  snapshot (so a write retry never double-applies; `move_targets` collapses the multi-source/destination
+  plan into per-category absolutes), writes via the YNAB month-category PATCH, read-back verifies, and
+  records each move to the audit trail. A move *from* Ready-to-Assign only raises the destination (YNAB
+  lowers RTA itself). A reply that lands after the month rolls over is refused (it would rewrite the new
+  month's budget).
 
 ---
 

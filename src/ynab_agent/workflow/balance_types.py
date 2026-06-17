@@ -17,9 +17,10 @@ from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.money import Money
 
-# The per-(category, period) balance-offer workflow id. At most one is live
-# offer per category per budget month, so it is started ``REJECT_DUPLICATE`` —
-# the one-offer-per-period guard mirrors the W6 monitor's own dedupe.
+# The per-period coordinated balance-offer workflow id. At most one live
+# coverage offer per budget month, so it is started ``REJECT_DUPLICATE`` — one
+# coordinated plan per pass over one shared donor pool (SPEC §8, #46), which
+# makes a double-drain (two needs claiming the same donor) impossible.
 _BALANCE_ID_PREFIX = "balance-offer-"
 
 # The keyword search attribute the balance workflow stamps with the overspend
@@ -34,16 +35,20 @@ BALANCE_THREAD_ID = "BalanceThreadId"
 BALANCE_PATIENCE = timedelta(days=7)
 
 
-def balance_workflow_id(category: str, period: str) -> str:
-    """The deterministic balance-offer id for a category in a period."""
-    return f"{_BALANCE_ID_PREFIX}{category}-{period}"
+def balance_workflow_id(period: str) -> str:
+    """The deterministic coordinated balance-offer id for a period (#46)."""
+    return f"{_BALANCE_ID_PREFIX}{period}"
 
 
 class BalanceParams(Frozen):
-    """The balance workflow's input: the overspend, its thread, and period."""
+    """The coordinated balancer's input: the pass's overspends and period (#46).
 
-    assessment: OverspendAssessment
-    thread_id: str
+    Every over/trending category from one monitor pass is covered by a single
+    plan over one shared donor pool, so the balancer creates its own per-period
+    offer thread (there is no single alert thread to inherit).
+    """
+
+    assessments: tuple[OverspendAssessment, ...]
     period: str
 
 
@@ -62,6 +67,19 @@ class BudgetState(Frozen):
     available: dict[CategoryId, Money]
     budgeted: dict[CategoryId, Money]
     slack: dict[CategoryId, Money] = Field(default_factory=dict)
+
+
+class CoordinatedReplyResult(Frozen):
+    """The owner's reply to the coordinated plan, read into a branch (#46).
+
+    ``verdict`` is ``"apply"`` (apply the whole offered plan), ``"decline"``, or
+    ``"clarify"`` (the reply asked for a change or was unclear; ``question`` is
+    sent back). Keeping the verdict deterministic here, apart from the agent's
+    own schema, is the seam the workflow branches on.
+    """
+
+    verdict: str
+    question: str = ""
 
 
 class BalanceResult(Frozen):

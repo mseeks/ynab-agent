@@ -319,6 +319,65 @@ def to_balance_outcome(
     assert_never(reading.verdict)
 
 
+# --- Reading the owner's reply to a coordinated whole-budget plan (#46). ------
+
+
+class CoordinatedReplyRequest(Frozen):
+    """The owner's reply to a coordinated coverage offer, plus the plan text."""
+
+    reply_text: str
+    plan_summary: str
+
+
+class CoordinatedReading(Frozen):
+    """The agent's read of a coordinated reply: apply the whole plan, or not."""
+
+    verdict: BalanceVerdict
+    question: str | None = None
+
+
+_COORDINATED_REPLY_PROMPT = """\
+You read one reply an account owner sent in answer to a single coordinated
+budget-coverage plan. The agent emailed ONE plan that covers several over-budget
+categories at once by moving already-budgeted money between categories (no money
+leaves any account), and asked whether to apply the whole plan.
+
+You are given their reply and a plain-text summary of the plan.
+
+Decide what the reply means and set `verdict`:
+  - `apply` — a clear yes to the WHOLE plan ("do it", "go ahead", "yes please").
+  - `decline` — a clear no ("no thanks", "leave it", "I'll handle it myself").
+  - `unclear` — anything else, INCLUDING any request to change the plan, cover
+    only some categories, pull from a different source, or do part of it; set a
+    short `question` asking them to reply "do it" to apply the whole plan, or
+    "no thanks".
+
+Moving money is consequential, so when in doubt choose `unclear`, never `apply`.
+Only a clear approval of the whole plan as-is is `apply` — partial or modified
+coordinated plans are not applied here."""
+
+_COORDINATED_AGENT: Agent[None, CoordinatedReading] = Agent(
+    output_type=CoordinatedReading,
+    system_prompt=_COORDINATED_REPLY_PROMPT,
+)
+
+
+async def interpret_coordinated_reply(
+    request: CoordinatedReplyRequest, *, model: Model | None = None
+) -> CoordinatedReading:
+    """Read the owner's reply to the one coordinated plan (SPEC §8, #46)."""
+    prompt = (
+        f"Their reply: {request.reply_text}\n\n"
+        f"The plan:\n{request.plan_summary}"
+    )
+    return await run_structured(
+        _COORDINATED_AGENT,
+        prompt,
+        output_type=CoordinatedReading,
+        model=model,
+    )
+
+
 def _money(dollars: float) -> Money:
     """A dollar figure from the model as exact Money (rounded to the cent).
 

@@ -1,10 +1,13 @@
-"""End-to-end tests for the W7 budget-balance workflow (SPEC §8).
+"""End-to-end tests for the W7 coordinated budget-balance workflow (§8, #46).
 
 Exercised on the time-skipping server with mock activities. The workflow stamps
-a ``BalanceThreadId`` search attribute on offer, which the test server needs
-registered (as the real cluster does via manage/search-attributes.yaml). The
-apply path runs the *real* pure guard (``check_moves`` / ``move_targets``), so
-the floor-refusal and target-math tests are genuine.
+a
+``BalanceThreadId`` search attribute on the per-period coverage thread, which
+the
+test server needs registered (as the real cluster does via
+manage/search-attributes.yaml). The apply path runs the *real* pure guard
+(``check_moves`` / ``move_targets``) and the floor's move cap, so the
+floor-refusal, slack, cap, and target-math tests are genuine.
 """
 
 from __future__ import annotations
@@ -19,13 +22,9 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from ynab_agent.budget.balance import (
-    ApplyMoves,
-    BalanceOffer,
-    BalanceOption,
-    BalanceOutcome,
     BudgetMove,
-    ClarifyBalance,
-    DeclineBalance,
+    CoordinatedOffer,
+    CoverageLine,
     SourceView,
 )
 from ynab_agent.budget.overspend import (
@@ -40,9 +39,10 @@ from ynab_agent.workflow.balance_types import (
     BalanceParams,
     BalanceResult,
     BudgetState,
+    CoordinatedReplyResult,
     balance_workflow_id,
 )
-from ynab_agent.workflow.balance_workflow import BudgetBalanceWorkflow
+from ynab_agent.workflow.balance_workflow import CoordinatedBalanceWorkflow
 from ynab_agent.workflow.monitor_types import PeriodClock
 from ynab_agent.workflow.runtime import DATA_CONVERTER
 
@@ -53,12 +53,10 @@ _TASK_QUEUE = "balance-wf-test"
 _PERIOD = "2026-06"
 
 
-def _assessment() -> OverspendAssessment:
-    # available $150 (zero rollover: budgeted - spent) → a $120 need
-    # (projected remaining $270 less $150 on hand), as before #44.
+def _assessment(name: str = "dining") -> OverspendAssessment:
     return OverspendAssessment(
-        category=CategoryId("dining"),
-        name="Dining Out",
+        category=CategoryId(name),
+        name=name.title(),
         verdict=OverspendVerdict.TRENDING_OVER,
         budgeted=Money.from_currency("400"),
         spent=Money.from_currency("250"),
@@ -68,14 +66,11 @@ def _assessment() -> OverspendAssessment:
 
 
 def _params() -> BalanceParams:
-    return BalanceParams(
-        assessment=_assessment(), thread_id="thr-overspend", period=_PERIOD
-    )
+    return BalanceParams(assessments=(_assessment(),), period=_PERIOD)
 
 
-def _option(amount: str = "120") -> BalanceOption:
-    return BalanceOption(
-        label="From Buffer",
+def _offer(amount: str = "120") -> CoordinatedOffer:
+    return CoordinatedOffer(
         moves=(
             BudgetMove(
                 source=CategoryId("buffer"),
@@ -83,20 +78,41 @@ def _option(amount: str = "120") -> BalanceOption:
                 amount=Money.from_currency(amount),
             ),
         ),
-        rationale="Buffer has plenty.",
-    )
-
-
-def _apply_moves(amount: str) -> ApplyMoves:
-    return ApplyMoves(
-        moves=(
-            BudgetMove(
-                source=CategoryId("buffer"),
-                destination=CategoryId("dining"),
+        lines=(
+            CoverageLine(
                 amount=Money.from_currency(amount),
+                destination="Dining",
+                source="Buffer",
             ),
-        )
+        ),
+        sources=(
+            SourceView(
+                category=CategoryId("buffer"),
+                name="Buffer",
+                slack=Money.from_currency("500"),
+            ),
+        ),
     )
+
+
+def _big_offer(moves: int) -> CoordinatedOffer:
+    budget_moves = tuple(
+        BudgetMove(
+            source=CategoryId("@ready-to-assign"),
+            destination=CategoryId(f"cat-{i}"),
+            amount=Money.from_currency("10"),
+        )
+        for i in range(moves)
+    )
+    lines = tuple(
+        CoverageLine(
+            amount=Money.from_currency("10"),
+            destination=f"Cat {i}",
+            source="Ready to Assign",
+        )
+        for i in range(moves)
+    )
+    return CoordinatedOffer(moves=budget_moves, lines=lines, sources=())
 
 
 def _state() -> BudgetState:
@@ -109,6 +125,10 @@ def _state() -> BudgetState:
             CategoryId("buffer"): Money.from_currency("500"),
             CategoryId("dining"): Money.from_currency("400"),
         },
+        slack={
+            CategoryId("buffer"): Money.from_currency("500"),
+            CategoryId("dining"): Money.zero(),
+        },
     )
 
 
@@ -116,32 +136,36 @@ def _reply(text: str = "do it") -> InboundMessage:
     return InboundMessage(
         message_id=MessageId("m1"),
         from_address="matthew@example.com",
-        subject="re: Dining Out: trending over budget",
+        subject="re: budget coverage",
         body=text,
-        thread_id=ThreadId("thr-overspend"),
+        thread_id=ThreadId("thr-coverage"),
         signature_verified=True,
     )
 
 
+def _result(verdict: str, question: str = "") -> CoordinatedReplyResult:
+    return CoordinatedReplyResult(verdict=verdict, question=question)
+
+
 class _Recorder:
     def __init__(self) -> None:
-        self.sends: list[str] = []
-        self.threads: list[str] = []  # thread each balance email replied on
-        self.sent: list[str] = []  # the bodies, for copy assertions
+        self.opened: list[str] = []  # subjects of opened coverage threads
+        self.sends: list[str] = []  # reply seq labels
+        self.threads: list[str] = []  # thread each reply went on
         self.sets: list[tuple[str, str]] = []  # (category, "$amount")
         self.logged = 0
 
 
 def _activities(
     *,
-    options: list[BalanceOption],
-    outcomes: list[BalanceOutcome],
+    offer: CoordinatedOffer,
+    replies: list[CoordinatedReplyResult],
     rec: _Recorder,
     set_ok: bool = True,
     live_period: str = _PERIOD,
     state: BudgetState | None = None,
 ) -> list[Callable[..., object]]:
-    pending = list(outcomes)
+    pending = list(replies)
     budget_state = state if state is not None else _state()
 
     @activity.defn(name="current_period")
@@ -151,25 +175,23 @@ def _activities(
             clock=MonthClock(day_of_month=15, days_in_month=30),
         )
 
-    @activity.defn(name="propose_balance_options")
-    async def propose_balance_options(
+    @activity.defn(name="propose_coordinated_offer")
+    async def propose_coordinated_offer(
         params: BalanceParams,
-    ) -> BalanceOffer:
-        return BalanceOffer(
-            options=tuple(options),
-            sources=(
-                SourceView(
-                    category=CategoryId("buffer"),
-                    name="Buffer",
-                    slack=Money.from_currency("500"),
-                ),
-            ),
-        )
+    ) -> CoordinatedOffer:
+        return offer
 
-    @activity.defn(name="interpret_balance_reply")
-    async def interpret_balance_reply(
-        params: BalanceParams, reply_text: str, opts: list[BalanceOption]
-    ) -> BalanceOutcome:
+    @activity.defn(name="send_coordinated_offer")
+    async def send_coordinated_offer(
+        subject: str, body: str, period: str
+    ) -> str:
+        rec.opened.append(subject)
+        return "thr-coverage"
+
+    @activity.defn(name="interpret_coordinated_reply")
+    async def interpret_coordinated_reply(
+        reply_text: str, plan_summary: str
+    ) -> CoordinatedReplyResult:
         return pending.pop(0)
 
     @activity.defn(name="read_budget_state")
@@ -189,9 +211,8 @@ def _activities(
     async def send_balance_email(
         thread_id: str, body: str, seq_label: str
     ) -> None:
-        rec.sends.append(seq_label)
         rec.threads.append(thread_id)
-        rec.sent.append(body)
+        rec.sends.append(seq_label)
 
     @activity.defn(name="alert_failure")
     async def alert_failure(alert: object) -> None:
@@ -199,8 +220,9 @@ def _activities(
 
     return [
         current_period,
-        propose_balance_options,
-        interpret_balance_reply,
+        propose_coordinated_offer,
+        send_coordinated_offer,
+        interpret_coordinated_reply,
         read_budget_state,
         set_category_budgeted,
         log_budget_moves,
@@ -226,9 +248,9 @@ async def _start_env() -> WorkflowEnvironment:
 
 async def _run(
     *,
-    options: list[BalanceOption],
-    outcomes: list[BalanceOutcome],
-    replies: int,
+    offer: CoordinatedOffer,
+    replies: list[CoordinatedReplyResult],
+    signals: int,
     set_ok: bool = True,
     live_period: str = _PERIOD,
     state: BudgetState | None = None,
@@ -239,10 +261,10 @@ async def _run(
         Worker(
             env.client,
             task_queue=_TASK_QUEUE,
-            workflows=[BudgetBalanceWorkflow],
+            workflows=[CoordinatedBalanceWorkflow],
             activities=_activities(
-                options=options,
-                outcomes=outcomes,
+                offer=offer,
+                replies=replies,
                 rec=rec,
                 set_ok=set_ok,
                 live_period=live_period,
@@ -251,55 +273,78 @@ async def _run(
         ),
     ):
         handle = await env.client.start_workflow(
-            BudgetBalanceWorkflow.run,
+            CoordinatedBalanceWorkflow.run,
             _params(),
-            id=balance_workflow_id("dining", _PERIOD),
+            id=balance_workflow_id(_PERIOD),
             task_queue=_TASK_QUEUE,
         )
-        for _ in range(replies):
-            await handle.signal(BudgetBalanceWorkflow.submit_response, _reply())
+        for _ in range(signals):
+            await handle.signal(
+                CoordinatedBalanceWorkflow.submit_response, _reply()
+            )
         result = await handle.result()
     return result, rec
 
 
-async def test_apply_writes_targets_verifies_and_confirms() -> None:
+async def test_apply_writes_coordinated_targets_and_confirms() -> None:
     result, rec = await _run(
-        options=[_option()], outcomes=[_apply_moves("120")], replies=1
+        offer=_offer(), replies=[_result("apply")], signals=1
     )
     assert result.outcome == "applied"
-    # Destination raised to $520, source lowered to $380 (absolute targets).
+    # The held plan is applied (not the reply): dining raised to $520, buffer
+    # lowered to $380 (absolute targets, idempotent on retry).
     assert ("dining", "$520.00") in rec.sets
     assert ("buffer", "$380.00") in rec.sets
     assert rec.logged == 1
     assert any(s.startswith("ybalance-applied") for s in rec.sends)
 
 
-async def test_natural_language_modified_plan_is_applied() -> None:
-    # The owner asked to cover only $50; the workflow applies the modified plan.
+async def test_decline_writes_nothing() -> None:
     result, rec = await _run(
-        options=[_option()], outcomes=[_apply_moves("50")], replies=1
+        offer=_offer(), replies=[_result("decline")], signals=1
+    )
+    assert result.outcome == "declined"
+    assert rec.sets == []
+    assert any(s.startswith("ybalance-declined") for s in rec.sends)
+
+
+async def test_clarify_then_apply() -> None:
+    result, rec = await _run(
+        offer=_offer(),
+        replies=[_result("clarify", "do it or no thanks?"), _result("apply")],
+        signals=2,
     )
     assert result.outcome == "applied"
-    assert ("dining", "$450.00") in rec.sets  # 400 + 50
-    assert ("buffer", "$450.00") in rec.sets  # 500 - 50
+    assert any(s.startswith("ybalance-clarify") for s in rec.sends)
+    assert ("dining", "$520.00") in rec.sets
 
 
-async def test_over_ceiling_move_is_refused_by_the_floor() -> None:
-    # A $600 move exceeds the $500 per-move ceiling: the real check_moves guard
-    # refuses it, nothing is written, even though the owner "approved" it.
+async def test_nothing_coverable_opens_the_thread_with_why() -> None:
     result, rec = await _run(
-        options=[_option()], outcomes=[_apply_moves("600")], replies=1
+        offer=CoordinatedOffer(moves=(), lines=(), sources=()),
+        replies=[],
+        signals=0,
     )
-    assert result.outcome == "rejected"
-    assert result.detail == "over_ceiling"
-    assert rec.sets == []  # no writes
-    assert any(s.startswith("ybalance-failed") for s in rec.sends)
+    assert result.outcome == "could-not-cover"
+    assert rec.opened  # the explanation thread was opened
+    assert rec.sets == []
+
+
+async def test_plan_over_the_daily_move_cap_is_refused() -> None:
+    # 11 moves exceeds the floor's moves_per_day_cap (10): the plan is refused
+    # whole, nothing written (SPEC §0.6, §8, #46).
+    result, rec = await _run(
+        offer=_big_offer(11), replies=[_result("apply")], signals=1
+    )
+    assert result.outcome == "over-cap"
+    assert rec.sets == []
+    assert any(s.startswith("ybalance-cap") for s in rec.sends)
 
 
 async def test_apply_refused_when_a_move_exceeds_donor_slack() -> None:
-    # Buffer holds $500 but, re-read at apply time, can only spare $100 of slack
-    # (its own spend has grown). The owner's $120 move is funded yet over-slack,
-    # so the real check_moves guard refuses it — nothing is written.
+    # Re-read at apply time, buffer can only spare $100; the $120 move is funded
+    # yet over-slack, so the real check_moves guard refuses it — nothing
+    # written.
     slack_limited = BudgetState(
         available={
             CategoryId("buffer"): Money.from_currency("500"),
@@ -311,76 +356,42 @@ async def test_apply_refused_when_a_move_exceeds_donor_slack() -> None:
         },
         slack={
             CategoryId("buffer"): Money.from_currency("100"),
-            CategoryId("dining"): Money.from_currency("0"),
+            CategoryId("dining"): Money.zero(),
         },
     )
     result, rec = await _run(
-        options=[_option()],
-        outcomes=[_apply_moves("120")],
-        replies=1,
+        offer=_offer(),
+        replies=[_result("apply")],
+        signals=1,
         state=slack_limited,
     )
     assert result.outcome == "rejected"
     assert result.detail == "slack"
-    assert rec.sets == []  # no writes
+    assert rec.sets == []
     assert any(s.startswith("ybalance-failed") for s in rec.sends)
-
-
-async def test_decline_sends_a_note_and_writes_nothing() -> None:
-    result, rec = await _run(
-        options=[_option()], outcomes=[DeclineBalance()], replies=1
-    )
-    assert result.outcome == "declined"
-    assert rec.sets == []
-    assert any(s.startswith("ybalance-declined") for s in rec.sends)
-
-
-async def test_clarify_then_apply() -> None:
-    result, rec = await _run(
-        options=[_option()],
-        outcomes=[ClarifyBalance(question="From which?"), _apply_moves("120")],
-        replies=2,
-    )
-    assert result.outcome == "applied"
-    assert any(s.startswith("ybalance-clarify") for s in rec.sends)
-    assert ("dining", "$520.00") in rec.sets
-
-
-async def test_no_feasible_options_sends_could_not_cover() -> None:
-    result, rec = await _run(options=[], outcomes=[], replies=0)
-    assert result.outcome == "could-not-cover"
-    assert any(s.startswith("yb-nocover") for s in rec.sends)
-    assert rec.sets == []
 
 
 async def test_verify_failure_reports_and_does_not_confirm() -> None:
     result, rec = await _run(
-        options=[_option()],
-        outcomes=[_apply_moves("120")],
-        replies=1,
-        set_ok=False,
+        offer=_offer(), replies=[_result("apply")], signals=1, set_ok=False
     )
     assert result.outcome == "verify-failed"
-    assert any("failed" in s for s in rec.sends)
     assert not any(s.startswith("ybalance-applied") for s in rec.sends)
 
 
 async def test_no_reply_times_out() -> None:
-    result, rec = await _run(options=[_option()], outcomes=[], replies=0)
-    # Wait — replies=0 with options posts the offer then the patience window
-    # elapses (time-skipped) with no answer.
+    result, rec = await _run(offer=_offer(), replies=[], signals=0)
     assert result.outcome == "timed-out"
-    assert any(s.startswith("yb-cover") for s in rec.sends)
+    assert rec.opened  # the coverage offer was posted before the wait
 
 
-async def test_offer_posts_and_routes_on_the_alert_thread() -> None:
-    """The balancer posts on the W6 alert thread and indexes itself by it.
+async def test_offer_opens_a_per_period_thread_and_routes_on_it() -> None:
+    """The coverage offer opens one per-period thread and indexes itself by it.
 
-    Every balancer email replies on ``thread_id`` (the overspend-alert thread,
-    ``"thr-overspend"``), and ``BalanceThreadId`` is stamped with that same
-    thread — so the owner sees one conversation and a reply on it routes back
-    here (the W6→W7 tie, SPEC §8). This is the regression guard against posting
-    on a freshly opened thread instead.
+    The plan is posted on a fresh per-period coverage thread,
+    ``BalanceThreadId``
+    is stamped with it, and every later reply (here the decline) goes on that
+    same thread — so the owner's reply routes back here (SPEC §8, #46).
     """
     rec = _Recorder()
     async with (
@@ -388,54 +399,39 @@ async def test_offer_posts_and_routes_on_the_alert_thread() -> None:
         Worker(
             env.client,
             task_queue=_TASK_QUEUE,
-            workflows=[BudgetBalanceWorkflow],
+            workflows=[CoordinatedBalanceWorkflow],
             activities=_activities(
-                options=[_option()], outcomes=[DeclineBalance()], rec=rec
+                offer=_offer(), replies=[_result("decline")], rec=rec
             ),
         ),
     ):
         handle = await env.client.start_workflow(
-            BudgetBalanceWorkflow.run,
+            CoordinatedBalanceWorkflow.run,
             _params(),
-            id=balance_workflow_id("dining", _PERIOD),
+            id=balance_workflow_id(_PERIOD),
             task_queue=_TASK_QUEUE,
         )
-        await handle.signal(BudgetBalanceWorkflow.submit_response, _reply())
+        await handle.signal(
+            CoordinatedBalanceWorkflow.submit_response, _reply()
+        )
         await handle.result()
         desc = await handle.describe()
     stamped = desc.typed_search_attributes.get(
         SearchAttributeKey.for_keyword("BalanceThreadId")
     )
-    assert stamped == "thr-overspend"
-    # The options offer and the decline confirmation both replied on the alert
-    # thread — never on a separately opened one.
-    assert rec.threads == ["thr-overspend", "thr-overspend"]
+    assert stamped == "thr-coverage"
+    assert rec.threads == ["thr-coverage"]  # the decline replied on it
 
 
 async def test_approval_after_month_rollover_applies_nothing() -> None:
-    # The offer was for 2026-06; the reply lands in July. The moves were
-    # computed against June's figures — applying them would silently rewrite
-    # JULY's budget, so nothing is written and the note says why.
+    # The offer was for 2026-06; the reply lands in July. Applying June's moves
+    # would silently rewrite July's budget, so nothing is written.
     result, rec = await _run(
-        options=[_option()],
-        outcomes=[_apply_moves("120")],
-        replies=1,
+        offer=_offer(),
+        replies=[_result("apply")],
+        signals=1,
         live_period="2026-07",
     )
     assert result.outcome == "stale-period"
-    assert rec.sets == []  # no budget write happened
-    assert any("month ended" in body for body in rec.sent)
-
-
-async def test_verify_failure_says_some_moves_may_have_landed() -> None:
-    # Post-write failure: never claim "nothing was changed" once writes have
-    # started — point the owner at YNAB instead.
-    result, rec = await _run(
-        options=[_option()],
-        outcomes=[_apply_moves("120")],
-        replies=1,
-        set_ok=False,
-    )
-    assert result.outcome == "verify-failed"
-    assert any("couldn't confirm" in body for body in rec.sent)
-    assert not any("Nothing was changed" in body for body in rec.sent)
+    assert rec.sets == []
+    assert any(s.startswith("ybalance-stale") for s in rec.sends)

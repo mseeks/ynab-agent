@@ -16,7 +16,12 @@ carries a new update label and posts a fresh update on that thread.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ynab_agent.budget.overspend import OverspendAssessment, OverspendVerdict
+
+if TYPE_CHECKING:
+    from ynab_agent.domain.money import Money
 
 
 def _status_phrase(verdict: OverspendVerdict) -> str:
@@ -56,6 +61,26 @@ def overspend_body(assessment: OverspendAssessment, days_left: int) -> str:
         f"{_days_phrase(days_left)} left, "
         f"{trailer} ~{assessment.projected} by month-end."
     )
+
+
+def coverage_thread_label(period: str) -> str:
+    """The per-period coordinated-coverage offer thread key (SPEC §8, #46).
+
+    One thread per budget month for the whole pass's coverage, so the owner's
+    reply routes back to the one coordinated balancer (via ``BalanceThreadId``).
+    """
+    return f"yacover-{period}"
+
+
+def coverage_subject(total: Money, categories: int) -> str:
+    """The coordinated coverage offer's subject (SPEC §8, #46)."""
+    plural = "category" if categories == 1 else "categories"
+    return f"Your budget needs ~{total} rebalanced ({categories} {plural} over)"
+
+
+def coverage_uncoverable_subject() -> str:
+    """Subject for the note that no safe coverage exists (SPEC §8, #46)."""
+    return "Your budget is over, but I can't safely cover it"
 
 
 def overspend_thread_label(assessment: OverspendAssessment, period: str) -> str:

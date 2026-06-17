@@ -1,13 +1,16 @@
-"""The I/O ports of the W7 budget balancer, as Temporal activities (SPEC §8).
+"""The I/O ports of the W7 coordinated budget balancer, as activities (SPEC §8).
 
 Its own module so the balance workflow's sandbox import graph stays minimal (see
 ``offer_activities``). Heavy clients (Temporal, YNAB, AgentMail, the model) are
 imported lazily inside the bodies so they never enter a workflow sandbox.
 
-Division of labor: these activities read YNAB, run the model, and write one
-category's ``budgeted`` (idempotent absolute set + read-back verify); the
-*workflow* computes absolute targets from a baseline snapshot and orchestrates
-the writes, so a write retry re-sets the same value and never double-applies.
+One coordinated plan per monitor pass over one shared, slack-ranked donor pool
+(#46): two needs can never both drain the same donor, so a double-drain is
+impossible by construction. The plan is the deterministic greedy coverage; the
+owner approves the whole plan ("do it") or declines. The apply writes each
+category's *absolute* target ``budgeted`` (idempotent set + read-back verify);
+the workflow computes targets from a baseline snapshot, so a retry never
+double-applies.
 """
 
 from __future__ import annotations
@@ -17,36 +20,21 @@ from typing import TYPE_CHECKING
 from temporalio import activity
 
 from ynab_agent.budget.balance import (
-    BalanceOffer,
-    BalanceOption,
-    BalanceOutcome,
     BudgetMove,
+    CoordinatedOffer,
+    CoverageLine,
     SourceView,
 )
 from ynab_agent.budget.overspend import MonthClock, OverspendAssessment
 from ynab_agent.domain.money import Money
-from ynab_agent.workflow.balance_types import BalanceParams, BudgetState
+from ynab_agent.workflow.balance_types import (
+    BalanceParams,
+    BudgetState,
+    CoordinatedReplyResult,
+)
 
 if TYPE_CHECKING:
-    # ``SourceFunds`` lives in ``agentic.balance``, which pulls in pydantic-ai —
-    # never import it at module scope here (this module is passed through the
-    # workflow sandbox). The runtime import is lazy, inside the bodies.
-    from ynab_agent.agentic.balance import SourceFunds
     from ynab_agent.budget.balance import Source
-
-
-def _dollars(amount: Money) -> float:
-    """A Money amount as a float dollar figure for the model's context."""
-    return float(amount.currency_amount)
-
-
-def _overspend_note(assessment: OverspendAssessment) -> str:
-    """A one-line human summary of how the category is tracking."""
-    return (
-        f"{assessment.name}: {assessment.spent} spent of "
-        f"{assessment.budgeted} budgeted, projected ~{assessment.projected} "
-        "by month-end."
-    )
 
 
 def _source_name(category: str, names: dict[str, str], *, is_rta: bool) -> str:
@@ -54,33 +42,10 @@ def _source_name(category: str, names: dict[str, str], *, is_rta: bool) -> str:
     return "Ready to Assign" if is_rta else names.get(category, category)
 
 
-def _to_source_funds(
-    sources: tuple[Source, ...], names: dict[str, str]
-) -> tuple[SourceFunds, ...]:
-    """Domain sources as the model's ``SourceFunds`` (slack + names)."""
-    from ynab_agent.agentic.balance import SourceFunds
-    from ynab_agent.budget.balance import READY_TO_ASSIGN_SOURCE
-
-    funds: list[SourceFunds] = []
-    for source in sources:
-        is_rta = source.category == READY_TO_ASSIGN_SOURCE
-        funds.append(
-            SourceFunds(
-                id=str(source.category),
-                name=_source_name(str(source.category), names, is_rta=is_rta),
-                available=_dollars(source.available),
-                kind="ready-to-assign" if is_rta else "category",
-                slack=_dollars(source.drawable),
-                projection=_dollars(source.projection),
-            )
-        )
-    return tuple(funds)
-
-
 def _to_source_views(
     sources: tuple[Source, ...], names: dict[str, str]
 ) -> tuple[SourceView, ...]:
-    """Donor views (name + slack) for rendering the offer's real numbers."""
+    """Donor views (name + slack) for rendering the plan's real numbers."""
     from ynab_agent.budget.balance import READY_TO_ASSIGN_SOURCE
 
     return tuple(
@@ -112,37 +77,30 @@ def _now_clock() -> MonthClock:
 
 
 @activity.defn
-async def start_balance_offer(
-    assessment: OverspendAssessment, thread_id: str, period: str
+async def start_coordinated_balance(
+    assessments: list[OverspendAssessment], period: str
 ) -> None:
-    """Start the balance offer for an alerted category (SPEC §8, the W6→W7 tie).
+    """Start the one coordinated coverage offer for a pass (SPEC §8, #46).
 
-    Started ``REJECT_DUPLICATE`` on the (category, period) id, so a worsening
-    re-alert in the same month is a no-op, not a second offer; at most one
-    coverage offer per category per period, matching the monitor's own dedupe.
-    ``period`` is supplied by the workflow (the same value the alert thread was
-    keyed on), so the offer id and the alert thread can never drift apart.
+    REJECT_DUPLICATE on the per-period id, so the daily monitor starts at most
+    one coordinated balancer per budget month; a later same-period pass is a
+    no-op. Skips entirely when no category has a real shortfall.
     """
     from temporalio.common import WorkflowIDReusePolicy
     from temporalio.exceptions import WorkflowAlreadyStartedError
 
-    from ynab_agent.budget.balance import need_from_assessment
-    from ynab_agent.workflow.balance_types import (
-        BalanceParams,
-        balance_workflow_id,
-    )
+    from ynab_agent.budget.balance import needs_from_assessments
+    from ynab_agent.workflow.balance_types import balance_workflow_id
     from ynab_agent.workflow.temporal_client import client, task_queue
 
-    if need_from_assessment(assessment).shortfall.is_zero:
+    if not needs_from_assessments(assessments):
         return  # nothing to cover
     temporal = await client()
     try:
         await temporal.start_workflow(
-            "BudgetBalanceWorkflow",
-            BalanceParams(
-                assessment=assessment, thread_id=thread_id, period=period
-            ),
-            id=balance_workflow_id(str(assessment.category), period),
+            "CoordinatedBalanceWorkflow",
+            BalanceParams(assessments=tuple(assessments), period=period),
+            id=balance_workflow_id(period),
             task_queue=task_queue(),
             id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
         )
@@ -151,122 +109,122 @@ async def start_balance_offer(
 
 
 @activity.defn
-async def propose_balance_options(params: BalanceParams) -> BalanceOffer:
-    """Read the budget, ask the model for options, keep the feasible ones (§8).
+async def propose_coordinated_offer(params: BalanceParams) -> CoordinatedOffer:
+    """One coordinated plan over one shared, slack-ranked pool (SPEC §8, #46).
 
-    Donors are now selected by *slack* (what each can spare after its own
-    projected spend), so a category heading over itself is never offered. The
-    model proposes; the deterministic guard (:func:`feasible_options`) drops
-    anything that doesn't add up, overdraws a source, or pulls a donor below its
-    slack. When the model yields nothing usable, fall back to the greedy plan;
-    empty ``options`` means even that can't cover it from current funds. The
-    returned ``sources`` carry each donor's name + slack so the offer renders
-    real numbers.
+    Reads the budget once, builds the shared donor pool (excluding *every* needy
+    category, so no donor is double-claimed), and greedily covers all needs from
+    it — biggest gap first. The returned offer carries the plan to apply, the
+    named lines to render, the donor slacks for the "leaves" summary, and any
+    category the pool couldn't reach. Empty ``moves`` means nothing safe covers
+    anything.
     """
     import asyncio
 
-    from ynab_agent.agentic.balance import (
-        BalanceContext,
-        propose_balance,
-        to_options,
-    )
     from ynab_agent.budget.balance import (
-        fallback_option,
-        feasible_options,
-        need_from_assessment,
+        READY_TO_ASSIGN_SOURCE,
+        needs_from_assessments,
+        plan_coverage,
         sources_from_spends,
     )
     from ynab_agent.ynab.client import YnabClient
 
-    assessment = params.assessment
-    need = need_from_assessment(assessment)
-    if need.shortfall.is_zero:
-        return BalanceOffer(options=(), sources=())
+    needs = needs_from_assessments(params.assessments)
+    if not needs:
+        return CoordinatedOffer(moves=(), lines=(), sources=())
     client = YnabClient.from_env()
     spends = await asyncio.to_thread(client.category_spends)
     rta = await asyncio.to_thread(client.ready_to_assign)
+    exclude = frozenset(need.category for need in needs)
     sources = sources_from_spends(
-        spends, rta, exclude=assessment.category, clock=_now_clock()
+        spends, rta, exclude=exclude, clock=_now_clock()
     )
-    if not sources:
-        return BalanceOffer(options=(), sources=())
+    plan = plan_coverage(needs, list(sources))
+    if not plan.moves:
+        return CoordinatedOffer(moves=(), lines=(), sources=())
     names = {str(spend.category): spend.name for spend in spends}
-    views = _to_source_views(sources, names)
-    context = BalanceContext(
-        needy_category_id=str(assessment.category),
-        needy_category_name=assessment.name,
-        shortfall=_dollars(need.shortfall),
-        overspend_note=_overspend_note(assessment),
-        sources=_to_source_funds(sources, names),
+    names[str(READY_TO_ASSIGN_SOURCE)] = "Ready to Assign"
+    lines = tuple(
+        CoverageLine(
+            amount=move.amount,
+            destination=names.get(str(move.destination), str(move.destination)),
+            source=names.get(str(move.source), str(move.source)),
+        )
+        for move in plan.moves
     )
-    proposal = await propose_balance(context)
-    options = to_options(proposal, destination=assessment.category)
-    feasible = feasible_options(options, need, sources)
-    if feasible:
-        return BalanceOffer(options=tuple(feasible), sources=views)
-    fallback = fallback_option(need, sources)
-    chosen = (fallback,) if fallback is not None else ()
-    return BalanceOffer(options=chosen, sources=views)
+    uncovered = tuple(
+        names.get(str(need.category), str(need.category))
+        for need in plan.uncovered
+    )
+    return CoordinatedOffer(
+        moves=plan.moves,
+        lines=lines,
+        sources=_to_source_views(sources, names),
+        uncovered=uncovered,
+    )
 
 
 @activity.defn
-async def interpret_balance_reply(
-    params: BalanceParams, reply_text: str, options: list[BalanceOption]
-) -> BalanceOutcome:
-    """Read the owner's free-text reply into a concrete outcome (SPEC §8).
+async def send_coordinated_offer(subject: str, body: str, period: str) -> str:
+    """Open the per-period coverage thread and return its id (SPEC §8, #46).
 
-    Re-reads the sources (funds may have shifted since the offer) so the model
-    resolves "from dining instead" against current reality; the ``to_*`` seam
-    maps the reading onto a domain outcome the workflow branches on.
+    A fresh email thread for the whole pass's coverage, keyed on the period
+    (``alert_on_thread``), so a retry re-sends nothing. The workflow stamps
+    ``BalanceThreadId`` with the returned id, so the owner's reply routes back
+    to the coordinated balancer — reusing the existing balance dispatch route.
     """
     import asyncio
 
-    from ynab_agent.agentic.balance import (
-        BalanceReplyRequest,
-        MoveSpec,
-        OfferedOption,
-        to_balance_outcome,
-    )
-    from ynab_agent.agentic.balance import (
-        interpret_balance_reply as run_reply,
-    )
-    from ynab_agent.budget.balance import (
-        need_from_assessment,
-        sources_from_spends,
-    )
-    from ynab_agent.ynab.client import YnabClient
+    from ynab_agent.budget.message import coverage_thread_label
+    from ynab_agent.mail.client import MailClient
+    from ynab_agent.settings import Settings
 
-    assessment = params.assessment
-    client = YnabClient.from_env()
-    spends = await asyncio.to_thread(client.category_spends)
-    rta = await asyncio.to_thread(client.ready_to_assign)
-    sources = sources_from_spends(
-        spends, rta, exclude=assessment.category, clock=_now_clock()
+    settings = Settings()
+    mail = MailClient.from_env()
+    label = coverage_thread_label(period)
+    return await asyncio.to_thread(
+        mail.alert_on_thread,
+        inbox_id=settings.inbox,
+        to=list(settings.owners),
+        subject=subject,
+        body=body,
+        thread_label=label,
+        update_label=label,
     )
-    names = {str(spend.category): spend.name for spend in spends}
-    offered = tuple(
-        OfferedOption(
-            label=option.label,
-            moves=tuple(
-                MoveSpec(
-                    source_category_id=str(move.source),
-                    amount=_dollars(move.amount),
-                )
-                for move in option.moves
-            ),
-            rationale=option.rationale,
+
+
+@activity.defn
+async def interpret_coordinated_reply(
+    reply_text: str, plan_summary: str
+) -> CoordinatedReplyResult:
+    """Read the owner's reply to the one coordinated plan (SPEC §8, #46).
+
+    Whole-plan only: a clear yes applies the offered plan as-is; a clear no
+    declines; any request to change or partly apply it (or anything unclear)
+    comes back as ``clarify`` with a question, so we never guess a write.
+    """
+    from ynab_agent.agentic.balance import (
+        BalanceVerdict,
+        CoordinatedReplyRequest,
+    )
+    from ynab_agent.agentic.balance import (
+        interpret_coordinated_reply as run_reply,
+    )
+
+    reading = await run_reply(
+        CoordinatedReplyRequest(
+            reply_text=reply_text, plan_summary=plan_summary
         )
-        for option in options
     )
-    request = BalanceReplyRequest(
-        reply_text=reply_text,
-        needy_category_name=assessment.name,
-        shortfall=_dollars(need_from_assessment(assessment).shortfall),
-        options=offered,
-        sources=_to_source_funds(sources, names),
+    if reading.verdict is BalanceVerdict.APPLY:
+        return CoordinatedReplyResult(verdict="apply")
+    if reading.verdict is BalanceVerdict.DECLINE:
+        return CoordinatedReplyResult(verdict="decline")
+    return CoordinatedReplyResult(
+        verdict="clarify",
+        question=reading.question
+        or 'Reply "do it" to apply the whole plan, or "no thanks".',
     )
-    reading = await run_reply(request)
-    return to_balance_outcome(reading, destination=assessment.category)
 
 
 @activity.defn
@@ -328,14 +286,14 @@ async def log_budget_moves(moves: list[BudgetMove], period: str) -> None:
 
 @activity.defn
 async def send_balance_email(thread_id: str, body: str, seq_label: str) -> None:
-    """Reply on the overspend-alert thread, addressed to the owners (SPEC §8).
+    """Reply on the coordinated coverage thread, addressed to the owners (§8).
 
-    The whole balance conversation lives on the W6 alert thread (the W6→W7 tie):
-    options, clarifications, and the apply/decline confirmation all reply there,
-    so the owner sees one thread per overspend. ``to`` is set explicitly because
-    that thread's latest message is often the agent's own (the alert, or a
-    back-to-back agent reply); without it AgentMail addresses the reply back to
-    the agent and the owner never receives it. Idempotent on ``seq_label``.
+    The clarification and the apply/decline confirmation all reply on the
+    per-period coverage thread (``thread_id``), so the owner sees one
+    conversation for the pass. ``to`` is set explicitly because that thread's
+    latest message is often the agent's own; without it AgentMail addresses the
+    reply back to the agent and the owner never receives it. Idempotent on
+    ``seq_label``.
     """
     import asyncio
 

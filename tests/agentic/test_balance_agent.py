@@ -14,11 +14,14 @@ from ynab_agent.agentic.balance import (
     BalanceReading,
     BalanceReplyRequest,
     BalanceVerdict,
+    CoordinatedReading,
+    CoordinatedReplyRequest,
     MoveSpec,
     OfferedOption,
     ProposedOption,
     SourceFunds,
     interpret_balance_reply,
+    interpret_coordinated_reply,
     propose_balance,
     to_balance_outcome,
     to_options,
@@ -178,3 +181,25 @@ async def test_interpret_reply_reads_a_decline() -> None:
 async def test_interpret_reply_wiring_smoke() -> None:
     reading = await interpret_balance_reply(_REPLY, model=TestModel())
     assert isinstance(reading, BalanceReading)
+
+
+# --- The coordinated whole-plan reply reader (#46). ---------------------------
+
+
+async def test_interpret_coordinated_reply_reads_a_whole_plan_yes() -> None:
+    model = TestModel(custom_output_args={"verdict": "apply", "question": None})
+    reading = await interpret_coordinated_reply(
+        CoordinatedReplyRequest(
+            reply_text="do it", plan_summary="$120 to Dining from Buffer"
+        ),
+        model=model,
+    )
+    assert reading.verdict is BalanceVerdict.APPLY
+
+
+async def test_interpret_coordinated_reply_wiring_smoke() -> None:
+    reading = await interpret_coordinated_reply(
+        CoordinatedReplyRequest(reply_text="hmm", plan_summary="a plan"),
+        model=TestModel(),
+    )
+    assert isinstance(reading, CoordinatedReading)

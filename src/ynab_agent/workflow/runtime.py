@@ -30,7 +30,7 @@ from ynab_agent.workflow.alert_ledger_workflow import AlertLedgerWorkflow
 from ynab_agent.workflow.auto_action_ledger_workflow import (
     AutoActionLedgerWorkflow,
 )
-from ynab_agent.workflow.balance_workflow import BudgetBalanceWorkflow
+from ynab_agent.workflow.balance_workflow import CoordinatedBalanceWorkflow
 from ynab_agent.workflow.command_workflow import CommandConfirmWorkflow
 from ynab_agent.workflow.deadman_workflow import DeadmanWorkflow
 from ynab_agent.workflow.dispatch_workflow import DispatchWorkflow
@@ -57,7 +57,7 @@ WORKFLOWS = [
     AlertLedgerWorkflow,
     AutonomyOfferWorkflow,
     OverspendLedgerWorkflow,
-    BudgetBalanceWorkflow,
+    CoordinatedBalanceWorkflow,
     AutoActionLedgerWorkflow,
     CommandConfirmWorkflow,
     DeadmanWorkflow,
@@ -109,9 +109,10 @@ ALL_ACTIVITIES: list[Callable[..., object]] = [
     monitor_activities.load_prior_alert,
     monitor_activities.send_overspend_alert,
     monitor_activities.save_alert,
-    balance_activities.start_balance_offer,
-    balance_activities.propose_balance_options,
-    balance_activities.interpret_balance_reply,
+    balance_activities.start_coordinated_balance,
+    balance_activities.propose_coordinated_offer,
+    balance_activities.send_coordinated_offer,
+    balance_activities.interpret_coordinated_reply,
     balance_activities.read_budget_state,
     balance_activities.set_category_budgeted,
     balance_activities.log_budget_moves,

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ynab_agent.budget.balance import (
         BalanceOffer,
         BalanceOption,
+        CoordinatedOffer,
         SourceView,
     )
 
@@ -467,6 +468,66 @@ def render_balance_options(needy_name: str, offer: BalanceOffer) -> str:
         '"option 2 but only $50", or "no thanks").',
     ]
     return "\n".join(lines)
+
+
+def render_coordinated_offer(offer: CoordinatedOffer) -> str:
+    """One coordinated coverage plan for a whole monitor pass (SPEC §8, #46).
+
+    Lists each move (amount, the category it funds, the donor), then what the
+    plan leaves each donor, and any category the shared pool couldn't reach — so
+    the owner approves the whole plan on real numbers. The reply is whole-plan:
+    "do it" applies it, "no thanks" declines.
+    """
+    covered = len({line.destination for line in offer.lines})
+    total_cats = covered + len(offer.uncovered)
+    plural = "category" if total_cats == 1 else "categories"
+    lines = [
+        f"{total_cats} {plural} over or trending this month — here is one plan "
+        f"to cover {offer.total} by moving money between categories (nothing "
+        "leaves your accounts):",
+        "",
+    ]
+    lines.extend(
+        f"  {line.amount} -> {line.destination} from {line.source}"
+        for line in offer.lines
+    )
+    pulled: dict[str, Money] = {}
+    for line in offer.lines:
+        pulled[line.source] = (
+            pulled.get(line.source, Money.zero()) + line.amount
+        )
+    slack_by_name = {view.name: view.slack for view in offer.sources}
+    leaves = [
+        f"{source} with {slack_by_name[source] - amount} still to spare"
+        for source, amount in pulled.items()
+        if source in slack_by_name
+    ]
+    if leaves:
+        lines += ["", "Leaves " + ", ".join(leaves) + ". No category drained."]
+    if offer.uncovered:
+        lines += [
+            "",
+            "I couldn't fully cover "
+            + ", ".join(offer.uncovered)
+            + " — the categories with room are all heading over themselves.",
+        ]
+    lines += ["", 'Reply "do it" to apply the whole plan, or "no thanks".']
+    return "\n".join(lines)
+
+
+def render_balance_over_cap(moves: int, cap: int) -> str:
+    """The note when a coordinated plan exceeds the daily move cap (§8, #46).
+
+    The hard floor caps how many budget moves the agent applies in a day; a plan
+    over it isn't applied (the owner can split it), so the note is honest that
+    nothing changed.
+    """
+    return (
+        f"This plan needs {moves} separate moves, more than the {cap} I'll "
+        "make in a single day as a safety limit. I haven't changed anything — "
+        "reply and we can cover the most urgent categories first, or move the "
+        "money in YNAB yourself."
+    )
 
 
 def render_balance_applied(needy_name: str, total: Money) -> str:
