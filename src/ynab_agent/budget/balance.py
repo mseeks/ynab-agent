@@ -119,11 +119,12 @@ def plan_coverage(
 
     Needs are covered in the order given; for each, sources are drained
     cheapest-priority first, ranked by slack within a priority class, each move
-    capped at the floor's per-move ceiling — the fallback must never offer a
-    plan the agent's own floor would refuse to apply. Each source is drained
-    only to its ``drawable`` slack (never below its own protected spend). A need
-    only partially covered is reported in ``uncovered`` with its remaining
-    shortfall — the planner invents no money.
+    capped at the floor's per-move ceiling — the planner must never offer a plan
+    the agent's own floor would refuse to apply. A rich source is drawn in
+    several capped moves until it reaches its ``drawable`` slack (never below
+    its own protected spend) or the need is met, so one donor can fully cover a
+    need larger than the ceiling. A need still short after every source is
+    reported in ``uncovered`` — the planner invents no money.
     """
     remaining = {source.category: source.drawable for source in sources}
     ordered = sorted(
@@ -138,19 +139,25 @@ def plan_coverage(
         for source in ordered:
             if shortfall <= zero:
                 break
-            available = remaining[source.category]
-            if available <= zero:
-                continue
-            take = _take(_take(available, shortfall), policy.per_move_ceiling)
-            moves.append(
-                BudgetMove(
-                    source=source.category,
-                    destination=need.category,
-                    amount=take,
+            # Draw from this source in per-move-ceiling chunks until it is
+            # drained to its slack or the need is met — so a single rich donor
+            # can fully cover a need larger than the ceiling, in several moves.
+            while shortfall > zero and remaining[source.category] > zero:
+                available = remaining[source.category]
+                take = _take(
+                    _take(available, shortfall), policy.per_move_ceiling
                 )
-            )
-            remaining[source.category] = available - take
-            shortfall = shortfall - take
+                if take <= zero:
+                    break
+                moves.append(
+                    BudgetMove(
+                        source=source.category,
+                        destination=need.category,
+                        amount=take,
+                    )
+                )
+                remaining[source.category] = available - take
+                shortfall = shortfall - take
         if shortfall > zero:
             uncovered.append(Need(category=need.category, shortfall=shortfall))
     return CoveragePlan(moves=tuple(moves), uncovered=tuple(uncovered))
@@ -199,6 +206,38 @@ class BalanceOffer(Frozen):
 
     options: tuple[BalanceOption, ...]
     sources: tuple[SourceView, ...]
+
+
+class CoverageLine(Frozen):
+    """One move of a coordinated plan, named for rendering (SPEC §8, #46)."""
+
+    amount: Money
+    destination: str  # the funded category's name
+    source: str  # the donor's name
+
+
+class CoordinatedOffer(Frozen):
+    """One coordinated plan for a whole pass + the facts to render it (#46).
+
+    ``moves`` is the single plan to apply (over one shared donor pool, so two
+    needs never both drain a donor); ``lines`` name each move for the email;
+    ``sources`` (name + slack) drive the "what this leaves" summary;
+    ``uncovered`` names the categories the pool couldn't reach. Empty ``moves``
+    means nothing safe can cover anything.
+    """
+
+    moves: tuple[BudgetMove, ...]
+    lines: tuple[CoverageLine, ...]
+    sources: tuple[SourceView, ...]
+    uncovered: tuple[str, ...] = ()
+
+    @property
+    def total(self) -> Money:
+        """The amount this plan moves in total. Pure."""
+        total = Money.zero()
+        for move in self.moves:
+            total = total + move.amount
+        return total
 
 
 class OptionRejection(StrEnum):
@@ -356,6 +395,27 @@ def need_from_assessment(assessment: OverspendAssessment) -> Need:
     return Need(category=assessment.category, shortfall=shortfall)
 
 
+def needs_from_assessments(
+    assessments: Iterable[OverspendAssessment],
+) -> tuple[Need, ...]:
+    """The coordinated pass's needs, biggest shortfall first (SPEC §8). Pure.
+
+    One need per over/trending assessment (positive shortfall only), ordered by
+    shortfall descending — so the greedy plan covers the largest gaps first when
+    the one shared pool can't cover them all (#46).
+    """
+    pending = [
+        need
+        for assessment in assessments
+        if not (need := need_from_assessment(assessment)).is_met
+    ]
+    return tuple(
+        sorted(
+            pending, key=lambda n: (-n.shortfall.milliunits, str(n.category))
+        )
+    )
+
+
 def donor_slack(spend: CategorySpend, clock: MonthClock) -> tuple[Money, Money]:
     """A donor's ``(slack, projection)`` for the month (SPEC §8). Pure.
 
@@ -382,17 +442,19 @@ def sources_from_spends(
     spends: Iterable[CategorySpend],
     ready_to_assign: Money,
     *,
-    exclude: CategoryId,
+    exclude: frozenset[CategoryId],
     clock: MonthClock,
 ) -> tuple[Source, ...]:
     """The buckets the balancer may pull from, by slack (SPEC §8). Pure.
 
     Every category with positive *slack* (room after its own projected spend),
-    minus the needy category itself, plus Ready-to-Assign when positive, which
-    leads. A donor that is itself over or trending has slack ``<= 0`` and is
-    excluded — the balancer never robs a category that needs the money. Each
-    source carries its raw balance, its slack (the drawable cap), and its own
-    projection for the model and the offer's after-state.
+    minus the needy categories themselves (``exclude``), plus Ready-to-Assign
+    when positive, which leads. A donor that is itself over or trending has a
+    slack ``<= 0`` and is excluded — the balancer never robs a category that
+    needs the money. One shared, slack-ranked pool serves a whole coordinated
+    pass, so two needs can't both lay claim to the same donor (SPEC §8, #46).
+    Each source carries its raw balance, its slack (the drawable cap), and its
+    own projection for the model and the offer's after-state.
     """
     zero = Money.zero()
     sources: list[Source] = []
@@ -407,7 +469,7 @@ def sources_from_spends(
             )
         )
     for spend in spends:
-        if spend.category == exclude:
+        if spend.category in exclude:
             continue
         slack, projection = donor_slack(spend, clock)
         if slack <= zero:

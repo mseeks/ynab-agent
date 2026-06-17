@@ -19,6 +19,7 @@ from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
     from ynab_agent.budget.overspend import (
+        OverspendAssessment,
         OverspendVerdict,
         PriorAlert,
         assess,
@@ -56,10 +57,15 @@ class OverspendMonitorWorkflow:
         )
 
         alerted: list[str] = []
+        # Every category currently over/trending feeds the one coordinated
+        # coverage offer (#46) — not just the ones that newly alert this pass —
+        # so the single plan covers the whole budget's overages from one pool.
+        needy: list[OverspendAssessment] = []
         for spend in spends:
             assessment = assess(spend, clock)
             if assessment.verdict is OverspendVerdict.OK:
                 continue
+            needy.append(assessment)
             prior = await workflow.execute_activity(
                 monitor_activities.load_prior_alert,
                 args=[str(spend.category), period],
@@ -68,7 +74,9 @@ class OverspendMonitorWorkflow:
             )
             if not should_alert(assessment, prior):
                 continue
-            thread_id = await workflow.execute_activity(
+            # The per-category alert stays (trending stays visible, SPEC §7);
+            # its thread is no longer the coverage thread — that's coordinated.
+            await workflow.execute_activity(
                 monitor_activities.send_overspend_alert,
                 args=[assessment, period],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
@@ -87,16 +95,19 @@ class OverspendMonitorWorkflow:
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
-            # Offer a balancing move on the same alert thread (W6→W7, §8). A
-            # fire-and-forget start: REJECT_DUPLICATE keeps it one offer per
-            # category per period, and the monitor never waits on coverage.
+            alerted.append(spend.name)
+
+        # One coordinated coverage offer per pass over one shared donor pool
+        # (W6→W7, §8, #46): a fire-and-forget start, REJECT_DUPLICATE on the
+        # period id, so it is one plan / one apply per month — a double-drain is
+        # impossible by construction, and the monitor never waits on coverage.
+        if needy:
             await workflow.execute_activity(
-                balance_activities.start_balance_offer,
-                args=[assessment, thread_id, period],
+                balance_activities.start_coordinated_balance,
+                args=[needy, period],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
-            alerted.append(spend.name)
 
         return MonitorResult(
             categories=len(spends),

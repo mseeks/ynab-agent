@@ -16,6 +16,7 @@ from ynab_agent.budget.balance import (
     feasible_options,
     move_targets,
     need_from_assessment,
+    needs_from_assessments,
     plan_coverage,
     sources_from_spends,
     validate_option,
@@ -120,6 +121,23 @@ def test_no_needs_is_an_empty_plan() -> None:
     )
     assert plan.moves == ()
     assert plan.fully_covered
+
+
+def test_one_rich_source_covers_a_need_above_the_ceiling() -> None:
+    # A $1,200 need with a single $2,000-slack donor: the planner draws it in
+    # capped chunks ($500 + $500 + $200) from that one source, fully covered —
+    # never reporting it uncovered while real funds remain.
+    plan = plan_coverage(
+        [_need("dining", "1200")],
+        [_source("rta", "2000", SourcePriority.READY_TO_ASSIGN)],
+    )
+    assert plan.fully_covered
+    assert all(move.amount <= Money.from_currency("500") for move in plan.moves)
+    assert all(move.source == "rta" for move in plan.moves)
+    total = Money.zero()
+    for move in plan.moves:
+        total = total + move.amount
+    assert total == Money.from_currency("1200")
 
 
 def test_option_total_sums_its_moves() -> None:
@@ -281,6 +299,34 @@ def test_need_from_assessment_rollover_cushions_the_shortfall() -> None:
     assert need_from_assessment(assessment).shortfall == Money.zero()
 
 
+def _over(
+    name: str, *, spent: str, projected: str, available: str
+) -> OverspendAssessment:
+    return OverspendAssessment(
+        category=CategoryId(name),
+        name=name.title(),
+        verdict=OverspendVerdict.TRENDING_OVER,
+        budgeted=Money.from_currency("400"),
+        spent=Money.from_currency(spent),
+        projected=Money.from_currency(projected),
+        available=Money.from_currency(available),
+    )
+
+
+def test_needs_from_assessments_orders_biggest_first_and_drops_covered() -> (
+    None
+):
+    # dining needs $120, gas needs $40, rollover is fully covered (need 0) → the
+    # coordinated pass covers the biggest gap first, and drops the covered one.
+    dining = _over("dining", spent="250", projected="520", available="150")
+    gas = _over("gas", spent="150", projected="240", available="50")
+    covered = _over("rollover", spent="250", projected="520", available="400")
+    needs = needs_from_assessments([gas, dining, covered])
+    assert [str(need.category) for need in needs] == ["dining", "gas"]
+    assert needs[0].shortfall == Money.from_currency("120")
+    assert needs[1].shortfall == Money.from_currency("40")
+
+
 def test_need_from_assessment_floors_at_zero() -> None:
     assessment = OverspendAssessment(
         category=CategoryId("dining"),
@@ -302,7 +348,7 @@ def test_sources_from_spends_includes_rta_and_donors_with_slack() -> None:
             _spend("rent", "1500", "-1500", "0"),  # spent it all → no slack
         ],
         Money.from_currency("100"),
-        exclude=CategoryId("dining"),
+        exclude=frozenset({CategoryId("dining")}),
         clock=_CLOCK,
     )
     by_id = {str(s.category): s for s in sources}
@@ -321,7 +367,7 @@ def test_sources_excludes_a_donor_heading_over_itself() -> None:
     sources = sources_from_spends(
         [_spend("groceries", "400", "-380", "20")],
         Money.zero(),
-        exclude=CategoryId("dining"),
+        exclude=frozenset({CategoryId("dining")}),
         clock=_CLOCK,
     )
     assert sources == ()
@@ -357,7 +403,7 @@ def test_sources_ranked_by_slack_with_rta_leading() -> None:
             _spend("buffer", "500", "0", "500"),  # ~$500 slack
         ],
         Money.from_currency("80"),
-        exclude=CategoryId("dining"),
+        exclude=frozenset({CategoryId("dining")}),
         clock=_CLOCK,
     )
     plan = plan_coverage([_need("dining", "650")], list(sources))
@@ -372,7 +418,7 @@ def test_sources_from_spends_omits_rta_when_zero() -> None:
     sources = sources_from_spends(
         [_spend("buffer", "500", "0", "500")],
         Money.zero(),
-        exclude=CategoryId("dining"),
+        exclude=frozenset({CategoryId("dining")}),
         clock=_CLOCK,
     )
     assert all(s.category != READY_TO_ASSIGN_SOURCE for s in sources)

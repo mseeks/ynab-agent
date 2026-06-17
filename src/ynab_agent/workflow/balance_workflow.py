@@ -1,21 +1,19 @@
-"""W7 · the budget-balance workflow — propose, confirm by NL, apply (SPEC §8).
+"""W7 · the coordinated budget-balance workflow (SPEC §8, #46).
 
-One short-lived workflow per (overspent category, period), started by the W6
-monitor (id ``balance-offer-{category}-{period}``, ``REJECT_DUPLICATE`` so it is
-one offer per period). It asks the model for coverage options, posts them as a
-reply on the *same* overspend-alert thread, stamps a ``BalanceThreadId`` search
-attribute so W3 routes the reply back here, and acts on it: apply
-the chosen plan, decline, or answer a clarifying question and keep waiting.
+One short-lived workflow per budget period, started by the W6 monitor (id
+``balance-offer-{period}``, ``REJECT_DUPLICATE`` so it is one coverage offer per
+month). It computes **one** coverage plan over **one** shared, slack-ranked
+donor pool covering *every* over/trending category from the pass, opens a
+per-period coverage thread, posts the plan, stamps a ``BalanceThreadId`` search
+attribute so W3 routes the reply back here, and acts on it: apply the whole
+plan, decline, or answer a clarifying question and keep waiting. One plan, one
+pool, one apply makes a double-drain (two needs claiming a donor) impossible.
 
 The apply is the careful part. The workflow reads a baseline snapshot, validates
-the moves against real funds and the hard floor, then computes each category's
-*absolute* target ``budgeted`` here, in durable workflow state — so re-driving a
-write activity re-sets the same value and never double-applies. Every move is
-read-back verified before the workflow calls it done.
-
-The seam mirrors the offer/W2 drivers: ``workflow.*`` for all clock reads, side
-effects behind activities, pure domain types for the branch — so the model and
-mail stacks never enter this sandbox.
+the multi-destination moves against real funds, slack, and the floor's daily
+move cap, then computes each category's *absolute* target ``budgeted`` here, in
+durable workflow state — so re-driving a write activity re-sets the same value
+and never double-applies. Every move is read-back verified before it is done.
 """
 
 from __future__ import annotations
@@ -40,20 +38,25 @@ with workflow.unsafe.imports_passed_through():
         render_balance_could_not_cover,
         render_balance_declined,
         render_balance_failed,
-        render_balance_options,
+        render_balance_over_cap,
         render_balance_stale,
         render_balance_unverified,
+        render_coordinated_offer,
     )
     from ynab_agent.budget.balance import (
-        ApplyMoves,
         BudgetMove,
-        DeclineBalance,
+        CoordinatedOffer,
         OptionRejection,
         check_moves,
         move_targets,
     )
+    from ynab_agent.budget.message import (
+        coverage_subject,
+        coverage_uncoverable_subject,
+    )
     from ynab_agent.dispatch.classify import InboundMessage
     from ynab_agent.domain.money import Money
+    from ynab_agent.policy.floor import CAUTIOUS_FLOOR
     from ynab_agent.workflow import (
         alert_activities,
         balance_activities,
@@ -72,6 +75,10 @@ with workflow.unsafe.imports_passed_through():
         ALERT_TIMEOUT,
     )
 
+# The whole budget is the "name" the shared coverage copy addresses — there is
+# no single needy category in a coordinated plan.
+_BUDGET = "your budget"
+
 
 def _reason(rejection: OptionRejection) -> str:
     """The owner-facing reason an approved plan can't be applied."""
@@ -84,9 +91,15 @@ def _reason(rejection: OptionRejection) -> str:
     return "the plan didn't add up"
 
 
+def _category_count(offer: CoordinatedOffer) -> int:
+    """How many categories the offer covers or names as uncovered."""
+    covered = {line.destination for line in offer.lines}
+    return len(covered) + len(offer.uncovered)
+
+
 @workflow.defn
-class BudgetBalanceWorkflow:
-    """One overspent category's coverage offer for a budget period."""
+class CoordinatedBalanceWorkflow:
+    """One budget period's coordinated coverage offer over one pool (#46)."""
 
     def __init__(self) -> None:
         """Start with no reply buffered; ``run`` posts the offer and waits."""
@@ -95,21 +108,20 @@ class BudgetBalanceWorkflow:
 
     @workflow.signal
     def submit_response(self, message: InboundMessage) -> None:
-        """The owner replied on the alert thread (delivered by W3)."""
+        """The owner replied on the coverage thread (delivered by W3)."""
         self._responses.append(message)
 
     @workflow.run
     async def run(self, params: BalanceParams) -> BalanceResult:
-        """Run the offer, paging the owner on a terminal failure."""
+        """Run the coordinated offer, paging the owner on a terminal failure."""
         try:
             return await self._run(params)
         except ActivityError as exc:
-            assessment = params.assessment
             await workflow.execute_activity(
                 alert_activities.alert_failure,
                 build_failure_alert(
-                    key=f"balance-{assessment.category}-{params.period}",
-                    context=f"budget balance for {assessment.name}",
+                    key=f"balance-{params.period}",
+                    context=f"coordinated budget balance for {params.period}",
                     exc=exc,
                 ),
                 start_to_close_timeout=ALERT_TIMEOUT,
@@ -119,33 +131,29 @@ class BudgetBalanceWorkflow:
             raise
 
     async def _run(self, params: BalanceParams) -> BalanceResult:
-        assessment = params.assessment
-        label = f"{assessment.category}-{params.period}"
+        label = params.period
         offer = await workflow.execute_activity(
-            balance_activities.propose_balance_options,
+            balance_activities.propose_coordinated_offer,
             params,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
         )
-        if not offer.options:
-            await self._send(
+        if not offer.moves:
+            await self._open(
                 params,
-                render_balance_could_not_cover(assessment.name),
-                f"yb-nocover-{label}",
+                coverage_uncoverable_subject(),
+                render_balance_could_not_cover(_BUDGET),
             )
             return BalanceResult(outcome="could-not-cover")
-        options = list(offer.options)
 
-        # Index this workflow by the overspend-alert thread so the owner's reply
-        # routes back here (W3 → BalanceThreadId), then post the options as a
-        # reply on that same thread — the W6→W7 tie, one conversation (SPEC §8).
+        # Open the per-period coverage thread with the plan, then index it by
+        # the thread id so the reply routes back here (W3 → BalanceThreadId) —
+        # the coordinated W6→W7 tie, one conversation per pass (SPEC §8, #46).
+        body = render_coordinated_offer(offer)
+        subject = coverage_subject(offer.total, _category_count(offer))
+        thread_id = await self._open(params, subject, body)
         workflow.upsert_search_attributes(
-            [_BALANCE_THREAD_ID.value_set(params.thread_id)]
-        )
-        await self._send(
-            params,
-            render_balance_options(assessment.name, offer),
-            f"yb-cover-{label}",
+            [_BALANCE_THREAD_ID.value_set(thread_id)]
         )
 
         deadline = workflow.now() + BALANCE_PATIENCE
@@ -160,41 +168,50 @@ class BudgetBalanceWorkflow:
             except TimeoutError:
                 return BalanceResult(outcome="timed-out")
             message = self._responses.popleft()
-            outcome = await workflow.execute_activity(
-                balance_activities.interpret_balance_reply,
-                args=[params, message.body, options],
+            reply = await workflow.execute_activity(
+                balance_activities.interpret_coordinated_reply,
+                args=[message.body, body],
                 start_to_close_timeout=ACTIVITY_TIMEOUT,
                 retry_policy=ACTIVITY_RETRY,
             )
-            if isinstance(outcome, DeclineBalance):
+            if reply.verdict == "decline":
                 await self._send(
-                    params,
-                    render_balance_declined(assessment.name),
+                    thread_id,
+                    render_balance_declined(_BUDGET),
                     f"ybalance-declined-{label}",
                 )
                 return BalanceResult(outcome="declined")
-            if isinstance(outcome, ApplyMoves):
-                return await self._apply(params, outcome.moves, label)
-            # ClarifyBalance: answer, then keep waiting for a clearer reply.
+            if reply.verdict == "apply":
+                return await self._apply(params, offer.moves, thread_id, label)
+            # clarify: answer, then keep waiting for a clearer reply.
             self._clarifications += 1
             await self._send(
-                params,
-                outcome.question,
+                thread_id,
+                reply.question,
                 f"ybalance-clarify-{label}-{self._clarifications}",
             )
+
+    async def _open(
+        self, params: BalanceParams, subject: str, body: str
+    ) -> str:
+        """Open the per-period coverage thread with ``body``; return its id."""
+        return await workflow.execute_activity(
+            balance_activities.send_coordinated_offer,
+            args=[subject, body, params.period],
+            start_to_close_timeout=ACTIVITY_TIMEOUT,
+            retry_policy=ACTIVITY_RETRY,
+        )
 
     async def _apply(
         self,
         params: BalanceParams,
         moves: tuple[BudgetMove, ...],
+        thread_id: str,
         label: str,
     ) -> BalanceResult:
-        """Validate, write targets, verify, audit, confirm (SPEC §8)."""
-        assessment = params.assessment
-        # A reply approved after the budget month rolled over must not apply:
-        # the moves were computed against LAST month's figures, and writing
-        # them now would silently change the new month's budget while the
-        # confirmation talks about the old one.
+        """Validate, write targets, verify, audit, confirm (SPEC §8, #46)."""
+        # A reply approved after the month rolled over must not apply: the moves
+        # were computed against last month's figures (SPEC §8).
         period_clock = await workflow.execute_activity(
             monitor_activities.current_period,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
@@ -202,11 +219,25 @@ class BudgetBalanceWorkflow:
         )
         if period_clock.period != params.period:
             await self._send(
-                params,
-                render_balance_stale(assessment.name),
+                thread_id,
+                render_balance_stale(_BUDGET),
                 f"ybalance-stale-{label}",
             )
             return BalanceResult(outcome="stale-period")
+        # The floor's daily move cap: one coordinated apply per daily pass, so
+        # the
+        # plan's move count is the day's moves (SPEC §0.6, §8). A plan over the
+        # cap
+        # is refused whole (the owner can split it), nothing written.
+        if len(moves) > CAUTIOUS_FLOOR.moves_per_day_cap:
+            await self._send(
+                thread_id,
+                render_balance_over_cap(
+                    len(moves), CAUTIOUS_FLOOR.moves_per_day_cap
+                ),
+                f"ybalance-cap-{label}",
+            )
+            return BalanceResult(outcome="over-cap")
         state = await workflow.execute_activity(
             balance_activities.read_budget_state,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
@@ -215,14 +246,17 @@ class BudgetBalanceWorkflow:
         rejection = check_moves(moves, state.available, slack=state.slack)
         if rejection is not None:
             await self._send(
-                params,
-                render_balance_failed(assessment.name, _reason(rejection)),
+                thread_id,
+                render_balance_failed(_BUDGET, _reason(rejection)),
                 f"ybalance-failed-{label}",
             )
             return BalanceResult(outcome="rejected", detail=rejection.value)
 
         # Targets computed here, in durable state, from the baseline snapshot —
-        # so a write retry re-sets the same absolute value (no double-apply).
+        # so a write retry re-sets the same absolute value (no double-apply). A
+        # coordinated plan funds several destinations and lowers several
+        # sources;
+        # ``move_targets`` already collapses that into per-category absolutes.
         targets = move_targets(moves, state.budgeted)
         verified = True
         for category, target in targets.items():
@@ -235,10 +269,8 @@ class BudgetBalanceWorkflow:
             verified = verified and ok
         if not verified:
             await self._send(
-                params,
-                # Post-write: some moves may have landed — never claim
-                # "nothing was changed" after writes started.
-                render_balance_unverified(assessment.name),
+                thread_id,
+                render_balance_unverified(_BUDGET),
                 f"ybalance-failed-{label}-verify",
             )
             return BalanceResult(outcome="verify-failed")
@@ -253,26 +285,17 @@ class BudgetBalanceWorkflow:
         for move in moves:
             total = total + move.amount
         await self._send(
-            params,
-            render_balance_applied(assessment.name, total),
+            thread_id,
+            render_balance_applied(_BUDGET, total),
             f"ybalance-applied-{label}",
         )
         return BalanceResult(outcome="applied")
 
-    async def _send(
-        self, params: BalanceParams, body: str, seq_label: str
-    ) -> None:
-        """Reply on the overspend-alert thread, addressed to the owners (§8).
-
-        Every balancer message — options, clarifications, the apply/decline
-        confirmation — replies on the W6 alert thread (``params.thread_id``) so
-        the owner sees one conversation. The activity sets the recipients
-        explicitly, so a reply on a thread the agent last spoke on still reaches
-        the owner. Idempotent on ``seq_label``.
-        """
+    async def _send(self, thread_id: str, body: str, seq_label: str) -> None:
+        """Reply on the per-period coverage thread, addressed to the owners."""
         await workflow.execute_activity(
             balance_activities.send_balance_email,
-            args=[params.thread_id, body, seq_label],
+            args=[thread_id, body, seq_label],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
         )
