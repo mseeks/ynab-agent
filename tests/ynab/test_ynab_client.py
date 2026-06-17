@@ -26,12 +26,21 @@ from ynab_agent.policy.converge import classify_verify, target_of
 from ynab_agent.ynab.client import (
     AGENT_REVIEW_FLAG,
     YnabClient,
+    scheduled_remaining,
     to_category_spend,
     to_patch,
     to_snapshot,
     to_target,
+    user_facing_categories,
 )
-from ynab_agent.ynab.wire import WireCategory, WireMonth, WireTransaction
+from ynab_agent.ynab.wire import (
+    WireCategory,
+    WireCategoryGroup,
+    WireMonth,
+    WireScheduledSubtransaction,
+    WireScheduledTransaction,
+    WireTransaction,
+)
 
 _NOW = datetime.datetime(2026, 5, 31, 12, 0, tzinfo=datetime.UTC)
 
@@ -84,6 +93,119 @@ def test_to_category_spend_maps_figures() -> None:
     assert spend.category == "dining"
     assert spend.budgeted == Money.from_currency("400")
     assert spend.activity == Money.from_currency("-210")
+    assert (
+        spend.scheduled_remaining.is_zero
+    )  # merged in by the monitor, not here
+
+
+def _cat(id_: str, *, hidden: bool = False) -> WireCategory:
+    return WireCategory(
+        id=id_,
+        name=id_.title(),
+        budgeted=0,
+        activity=0,
+        balance=0,
+        hidden=hidden,
+    )
+
+
+def test_user_facing_categories_drops_internal_cc_and_flagged() -> None:
+    groups = [
+        WireCategoryGroup(
+            id="g1",
+            name="Everyday Expenses",
+            categories=(_cat("dining"), _cat("old", hidden=True)),
+        ),
+        WireCategoryGroup(
+            id="g2",
+            name="Credit Card Payments",
+            categories=(_cat("visa"),),
+        ),
+        WireCategoryGroup(
+            id="g3",
+            name="Internal Master Category",
+            categories=(_cat("ready-to-assign"),),
+        ),
+        WireCategoryGroup(
+            id="g4", name="Archived", deleted=True, categories=(_cat("gone"),)
+        ),
+    ]
+    # Only the live, discretionary category survives: the hidden one, the whole
+    # Credit Card Payments and Internal groups, and the deleted group all drop.
+    assert {c.id for c in user_facing_categories(groups)} == {"dining"}
+
+
+def test_scheduled_remaining_sums_outflows_due_this_month() -> None:
+    today = datetime.date(2026, 6, 17)
+    month_end = datetime.date(2026, 6, 30)
+    scheduled = [
+        # Two outflows due this month for rent → summed.
+        WireScheduledTransaction(
+            date_next="2026-06-28", amount=-1200000, category_id="rent"
+        ),
+        WireScheduledTransaction(
+            date_next="2026-06-20", amount=-50000, category_id="rent"
+        ),
+        # Next month, already passed, an inflow, and deleted → all ignored.
+        WireScheduledTransaction(
+            date_next="2026-07-01", amount=-999000, category_id="rent"
+        ),
+        WireScheduledTransaction(
+            date_next="2026-06-10", amount=-30000, category_id="rent"
+        ),
+        WireScheduledTransaction(
+            date_next="2026-06-25", amount=80000, category_id="rent"
+        ),
+        WireScheduledTransaction(
+            date_next="2026-06-22",
+            amount=-40000,
+            category_id="gym",
+            deleted=True,
+        ),
+    ]
+    assert scheduled_remaining(scheduled, today, month_end) == {
+        CategoryId("rent"): Money.from_currency("1250")
+    }
+
+
+def test_scheduled_remaining_is_split_aware_and_window_inclusive() -> None:
+    today = datetime.date(2026, 6, 17)
+    month_end = datetime.date(2026, 6, 30)
+    split = WireScheduledTransaction(
+        date_next="2026-06-17",  # today is in the window
+        amount=0,
+        category_id=None,
+        subtransactions=(
+            WireScheduledSubtransaction(amount=-30000, category_id="groceries"),
+            WireScheduledSubtransaction(amount=-20000, category_id="household"),
+            WireScheduledSubtransaction(
+                amount=-10000, category_id="x", deleted=True
+            ),
+        ),
+    )
+    last_day = WireScheduledTransaction(
+        date_next="2026-06-30", amount=-15000, category_id="gym"
+    )
+    assert scheduled_remaining([split, last_day], today, month_end) == {
+        CategoryId("groceries"): Money.from_currency("30"),
+        CategoryId("household"): Money.from_currency("20"),
+        CategoryId("gym"): Money.from_currency("15"),
+    }
+
+
+def test_client_scheduled_outflows_through_the_backend() -> None:
+    backend = _FakeBackend(
+        _wire_txn(),
+        scheduled=(
+            WireScheduledTransaction(
+                date_next="2026-06-28", amount=-1200000, category_id="rent"
+            ),
+        ),
+    )
+    out = YnabClient(backend).scheduled_outflows(
+        datetime.date(2026, 6, 17), datetime.date(2026, 6, 30)
+    )
+    assert out == {CategoryId("rent"): Money.from_currency("1200")}
 
 
 def test_to_patch_for_a_category_decision() -> None:
@@ -154,6 +276,7 @@ class _FakeBackend:
         get_returns_none: bool = False,
         to_be_budgeted: int = 0,
         month_categories: dict[str, WireCategory] | None = None,
+        scheduled: tuple[WireScheduledTransaction, ...] = (),
     ) -> None:
         self._txn = txn
         self._delta = delta
@@ -161,6 +284,7 @@ class _FakeBackend:
         self._get_returns_none = get_returns_none
         self._to_be_budgeted = to_be_budgeted
         self._month_categories = month_categories or {}
+        self._scheduled = scheduled
         self.patched: list[tuple[str, dict[str, object]]] = []
         self.delta_calls: list[tuple[str, int | None]] = []
         self.budget_sets: list[tuple[str, str, int]] = []
@@ -182,6 +306,11 @@ class _FakeBackend:
 
     def list_unapproved(self) -> tuple[WireTransaction, ...]:
         return self._unapproved
+
+    def list_scheduled_transactions(
+        self,
+    ) -> tuple[WireScheduledTransaction, ...]:
+        return self._scheduled
 
     def get_month(self, month: str) -> WireMonth:
         return WireMonth(month=month, to_be_budgeted=self._to_be_budgeted)

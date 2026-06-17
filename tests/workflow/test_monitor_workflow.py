@@ -56,7 +56,9 @@ def _activities(
         return PeriodClock(period="2026-06", clock=_CLOCK)
 
     @activity.defn(name="fetch_category_spends")
-    async def fetch_category_spends() -> list[CategorySpend]:
+    async def fetch_category_spends(
+        period: str, clock: MonthClock
+    ) -> list[CategorySpend]:
         return spends
 
     @activity.defn(name="load_prior_alert")
@@ -164,11 +166,11 @@ async def test_on_track_category_is_silent() -> None:
 
 
 async def test_duplicate_alert_is_suppressed() -> None:
-    # An identical prior alert (same projection) → deduped, no send.
+    # An identical prior alert (same blended projection) → deduped, no send.
     spends = [_spend("Dining", budgeted="400", activity="-250")]
     prior = PriorAlert(
         verdict=OverspendVerdict.TRENDING_OVER,
-        projected=Money.from_currency("500"),
+        projected=Money.from_currency("450"),
     )
     result, sent, offered, _ = await _run(
         wf_id="mon-dedupe", spends=spends, prior=prior

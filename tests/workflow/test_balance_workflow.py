@@ -52,6 +52,8 @@ _PERIOD = "2026-06"
 
 
 def _assessment() -> OverspendAssessment:
+    # available $150 (zero rollover: budgeted - spent) → a $120 need
+    # (projected remaining $270 less $150 on hand), as before #44.
     return OverspendAssessment(
         category=CategoryId("dining"),
         name="Dining Out",
@@ -59,6 +61,7 @@ def _assessment() -> OverspendAssessment:
         budgeted=Money.from_currency("400"),
         spent=Money.from_currency("250"),
         projected=Money.from_currency("520"),
+        available=Money.from_currency("150"),
     )
 
 

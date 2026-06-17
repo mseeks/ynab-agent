@@ -24,10 +24,12 @@ from temporalio import activity
 
 from ynab_agent.budget.overspend import (
     CategorySpend,
+    MonthClock,
     OverspendAssessment,
     PriorAlert,
 )
 from ynab_agent.domain.config import HOUSEHOLD_TZ
+from ynab_agent.domain.money import Money
 from ynab_agent.workflow.monitor_types import PeriodClock
 
 
@@ -52,18 +54,63 @@ async def current_period() -> PeriodClock:
     return PeriodClock(period=period, clock=clock)
 
 
-@activity.defn
-async def fetch_category_spends() -> list[CategorySpend]:
-    """Read each category's month-to-date budget figures from YNAB (§7).
+def _month_window(
+    period: str, clock: MonthClock
+) -> tuple[datetime.date, datetime.date]:
+    """The ``[today, month-end]`` dates for the scheduled-outflow window (§7).
 
-    The YNAB client is imported lazily and its blocking call runs off the loop.
+    Derived from the workflow's deterministic period + clock (not a fresh
+    ``now``), so the scheduled filter aligns with the projection's own month.
+    Month-end is the period's real calendar length and the day is clamped to it,
+    so an explicit clock that disagrees with the period (a test affordance) can
+    never build an out-of-range date.
+    """
+    year, month = (int(part) for part in period.split("-"))
+    last_day = calendar.monthrange(year, month)[1]
+    today = datetime.date(year, month, min(clock.day_of_month, last_day))
+    month_end = datetime.date(year, month, last_day)
+    return today, month_end
+
+
+@activity.defn
+async def fetch_category_spends(
+    period: str, clock: MonthClock
+) -> list[CategorySpend]:
+    """Read each category's figures plus scheduled outflows due this month (§7).
+
+    Two YNAB reads: the live categories, and the scheduled transactions summed
+    per category over ``[today, month-end]``. The scheduled sum degrades
+    gracefully to zero on failure, so a scheduled-transactions outage falls back
+    to the run-rate projection rather than crashing the pass. The window comes
+    from the workflow's deterministic period + clock. Clients are imported
+    lazily and the blocking calls run off the loop.
     """
     import asyncio
 
     from ynab_agent.ynab.client import YnabClient
 
     client = YnabClient.from_env()
-    return list(await asyncio.to_thread(client.category_spends))
+    spends = await asyncio.to_thread(client.category_spends)
+    today, month_end = _month_window(period, clock)
+    try:
+        scheduled = await asyncio.to_thread(
+            client.scheduled_outflows, today, month_end
+        )
+    except Exception:
+        activity.logger.warning(
+            "scheduled outflows unavailable; projecting without them"
+        )
+        scheduled = {}
+    return [
+        spend.model_copy(
+            update={
+                "scheduled_remaining": scheduled.get(
+                    spend.category, Money.zero()
+                )
+            }
+        )
+        for spend in spends
+    ]
 
 
 @activity.defn

@@ -50,6 +50,7 @@ class OverspendMonitorWorkflow:
         clock = params.clock or period_clock.clock
         spends = await workflow.execute_activity(
             monitor_activities.fetch_category_spends,
+            args=[period, clock],
             start_to_close_timeout=ACTIVITY_TIMEOUT,
             retry_policy=ACTIVITY_RETRY,
         )
