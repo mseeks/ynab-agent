@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field
 
+from ynab_agent.budget.overspend import project_spend, spent_magnitude
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.money import Money
@@ -34,7 +35,11 @@ from ynab_agent.policy.floor import CAUTIOUS_FLOOR, FloorPolicy
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
-    from ynab_agent.budget.overspend import CategorySpend, OverspendAssessment
+    from ynab_agent.budget.overspend import (
+        CategorySpend,
+        MonthClock,
+        OverspendAssessment,
+    )
 
 
 class SourcePriority(IntEnum):
@@ -58,11 +63,26 @@ class Need(Frozen):
 
 
 class Source(Frozen):
-    """A bucket money can be pulled from, with its priority class."""
+    """A bucket money can be pulled from, with its priority class.
+
+    ``available`` is the raw balance (rollover included). ``slack`` is what the
+    donor can actually spare *after* protecting its own projected spend — the
+    drawable cap. ``projection`` is its own projected month-end spend, carried
+    for the model and the offer's after-state. When ``slack`` is unset it falls
+    back to ``available`` (the pre-slack behavior), so the greedy planner and
+    the guard need no special-casing.
+    """
 
     category: CategoryId
     available: Money
     priority: SourcePriority
+    slack: Money | None = None
+    projection: Money = Field(default_factory=Money.zero)
+
+    @property
+    def drawable(self) -> Money:
+        """What may be pulled: the protected slack, or the balance if unset."""
+        return self.available if self.slack is None else self.slack
 
 
 class BudgetMove(Frozen):
@@ -98,13 +118,17 @@ def plan_coverage(
     """Greedily cover each need from sources in priority order (SPEC §8). Pure.
 
     Needs are covered in the order given; for each, sources are drained
-    cheapest-priority first, each move capped at the floor's per-move ceiling —
-    the fallback must never offer a plan the agent's own floor would refuse to
-    apply. A need only partially covered is reported in ``uncovered`` with its
-    remaining shortfall — the planner invents no money.
+    cheapest-priority first, ranked by slack within a priority class, each move
+    capped at the floor's per-move ceiling — the fallback must never offer a
+    plan the agent's own floor would refuse to apply. Each source is drained
+    only to its ``drawable`` slack (never below its own protected spend). A need
+    only partially covered is reported in ``uncovered`` with its remaining
+    shortfall — the planner invents no money.
     """
-    remaining = {source.category: source.available for source in sources}
-    ordered = sorted(sources, key=lambda s: (s.priority, str(s.category)))
+    remaining = {source.category: source.drawable for source in sources}
+    ordered = sorted(
+        sources, key=lambda s: (s.priority, -s.drawable.milliunits)
+    )
 
     moves: list[BudgetMove] = []
     uncovered: list[Need] = []
@@ -153,6 +177,30 @@ class BalanceOption(Frozen):
         return total
 
 
+class SourceView(Frozen):
+    """A donor's display facts: its name and the slack it has to spare (§8).
+
+    Carried alongside the options so the offer can render real numbers — the
+    source name, and what each move leaves it ("~$430 still to spare").
+    """
+
+    category: CategoryId
+    name: str
+    slack: Money
+
+
+class BalanceOffer(Frozen):
+    """The coverage options plus the donor facts needed to render them (§8).
+
+    ``options`` are the validated ways to cover the shortfall; ``sources`` are
+    the donor views (name + slack) the renderer looks up to show amounts, donor
+    names, and after-state. Empty ``options`` means nothing safe can cover it.
+    """
+
+    options: tuple[BalanceOption, ...]
+    sources: tuple[SourceView, ...]
+
+
 class OptionRejection(StrEnum):
     """Why a proposed option can't be applied as-is — a deterministic veto."""
 
@@ -160,7 +208,20 @@ class OptionRejection(StrEnum):
     WRONG_DESTINATION = "wrong_destination"
     OVER_CEILING = "over_ceiling"
     INSUFFICIENT_SOURCE = "insufficient_source"
+    SLACK = "slack"
     DOES_NOT_COVER = "does_not_cover"
+
+
+def _slack_limit(
+    source: CategoryId,
+    available: Mapping[CategoryId, Money],
+    slack: Mapping[CategoryId, Money] | None,
+) -> Money:
+    """The protected drawable for a source: its slack, else its raw funds."""
+    fallback = available.get(source, Money.zero())
+    if slack is None:
+        return fallback
+    return slack.get(source, fallback)
 
 
 def validate_option(
@@ -168,15 +229,19 @@ def validate_option(
     need: Need,
     available: Mapping[CategoryId, Money],
     policy: FloorPolicy = CAUTIOUS_FLOOR,
+    *,
+    slack: Mapping[CategoryId, Money] | None = None,
 ) -> OptionRejection | None:
     """Why ``option`` can't cover ``need``, or ``None`` if it can. Pure.
 
     The deterministic guard over the model's proposals (SPEC §8, §0.6): every
     move must fund the needy category with a positive amount within the per-move
     ceiling, the sources must actually hold what the moves pull (summed across
-    moves from the same source), and the moves together must meet the shortfall.
-    ``available`` is the real, current funds per source category — the source of
-    truth the model's numbers are checked against.
+    moves from the same source), no source is pulled below its protected
+    ``slack`` (what it can give after its own projected spend), and the moves
+    together meet the shortfall. ``available`` is the real, current funds per
+    source category; ``slack`` (when given) is the tighter protected cap — the
+    source of truth the model's numbers are checked against.
     """
     if not option.moves:
         return OptionRejection.EMPTY
@@ -195,6 +260,8 @@ def validate_option(
     for source, amount in pulled.items():
         if amount > available.get(source, zero):
             return OptionRejection.INSUFFICIENT_SOURCE
+        if amount > _slack_limit(source, available, slack):
+            return OptionRejection.SLACK
     if covered < need.shortfall:
         return OptionRejection.DOES_NOT_COVER
     return None
@@ -208,10 +275,11 @@ def feasible_options(
 ) -> tuple[BalanceOption, ...]:
     """The options that pass :func:`validate_option`, order preserved. Pure."""
     available = {source.category: source.available for source in sources}
+    slack = {source.category: source.drawable for source in sources}
     return tuple(
         option
         for option in options
-        if validate_option(option, need, available, policy) is None
+        if validate_option(option, need, available, policy, slack=slack) is None
     )
 
 
@@ -288,17 +356,43 @@ def need_from_assessment(assessment: OverspendAssessment) -> Need:
     return Need(category=assessment.category, shortfall=shortfall)
 
 
+def donor_slack(spend: CategorySpend, clock: MonthClock) -> tuple[Money, Money]:
+    """A donor's ``(slack, projection)`` for the month (SPEC §8). Pure.
+
+    ``slack = max(0, balance - (projected - spent))`` — the donor's available
+    funds (rollover included) less its own projected *remaining* spend, so it is
+    never drained below what it still needs. "Over" is measured against
+    available, exactly as a category's own overspend is (SPEC §7, #44): slack is
+    the negative of :func:`need_from_assessment`'s shortfall, so a category that
+    is itself over or trending has ``slack <= 0`` and is excluded as a donor —
+    even one sitting on a thin or negative carried-in balance. A category with
+    real carryover and little left to spend has the most slack, the safest donor
+    there is. The second element is the donor's own projected month-end spend.
+    """
+    zero = Money.zero()
+    projection = project_spend(spend, clock)
+    remaining = projection - spent_magnitude(spend)  # own future spend (>= 0)
+    slack = spend.balance - remaining
+    if slack < zero:
+        slack = zero
+    return slack, projection
+
+
 def sources_from_spends(
     spends: Iterable[CategorySpend],
     ready_to_assign: Money,
     *,
     exclude: CategoryId,
+    clock: MonthClock,
 ) -> tuple[Source, ...]:
-    """The buckets the balancer may pull from (SPEC §8). Pure.
+    """The buckets the balancer may pull from, by slack (SPEC §8). Pure.
 
-    Every category with a positive available balance, minus the needy category
-    itself, plus Ready-to-Assign when positive, which leads; every real
-    category is treated as over-funded — v1 has no designated buffer.
+    Every category with positive *slack* (room after its own projected spend),
+    minus the needy category itself, plus Ready-to-Assign when positive, which
+    leads. A donor that is itself over or trending has slack ``<= 0`` and is
+    excluded — the balancer never robs a category that needs the money. Each
+    source carries its raw balance, its slack (the drawable cap), and its own
+    projection for the model and the offer's after-state.
     """
     zero = Money.zero()
     sources: list[Source] = []
@@ -308,17 +402,25 @@ def sources_from_spends(
                 category=READY_TO_ASSIGN_SOURCE,
                 available=ready_to_assign,
                 priority=SourcePriority.READY_TO_ASSIGN,
+                slack=ready_to_assign,
+                projection=zero,
             )
         )
-    sources.extend(
-        Source(
-            category=spend.category,
-            available=spend.balance,
-            priority=SourcePriority.OVERFUNDED,
+    for spend in spends:
+        if spend.category == exclude:
+            continue
+        slack, projection = donor_slack(spend, clock)
+        if slack <= zero:
+            continue
+        sources.append(
+            Source(
+                category=spend.category,
+                available=spend.balance,
+                priority=SourcePriority.OVERFUNDED,
+                slack=slack,
+                projection=projection,
+            )
         )
-        for spend in spends
-        if spend.category != exclude and spend.balance > zero
-    )
     return tuple(sources)
 
 
@@ -337,13 +439,16 @@ def check_moves(
     moves: tuple[BudgetMove, ...],
     available: Mapping[CategoryId, Money],
     policy: FloorPolicy = CAUTIOUS_FLOOR,
+    *,
+    slack: Mapping[CategoryId, Money] | None = None,
 ) -> OptionRejection | None:
     """Why these owner-approved moves can't be applied, or ``None``. Pure.
 
-    The apply-time guard: positive amounts within the per-move ceiling, and no
-    source pulled past its available funds. Unlike :func:`validate_option` it
-    does NOT require covering the shortfall — the owner may choose to cover only
-    part ("only $50").
+    The apply-time guard: positive amounts within the per-move ceiling, no
+    source pulled past its available funds, and none pulled below its protected
+    ``slack`` (re-checked against current funds, which may have shifted since
+    the offer). Unlike :func:`validate_option` it does NOT require covering the
+    shortfall — the owner may choose to cover only part ("only $50").
     """
     if not moves:
         return OptionRejection.EMPTY
@@ -356,6 +461,8 @@ def check_moves(
     for source, amount in _pulled_by_source(moves).items():
         if amount > available.get(source, zero):
             return OptionRejection.INSUFFICIENT_SOURCE
+        if amount > _slack_limit(source, available, slack):
+            return OptionRejection.SLACK
     return None
 
 

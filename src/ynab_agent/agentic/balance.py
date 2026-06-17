@@ -70,12 +70,19 @@ class MoveSpec(Frozen):
 
 
 class SourceFunds(Frozen):
-    """A category the balancer may pull from, with its available funds."""
+    """A category the balancer may pull from, with its available funds.
+
+    ``slack`` is what it can spare after its own projected spend (the safe
+    amount to pull); ``projection`` is that projected month-end spend. Both
+    default to zero so older call sites stay valid; the balancer sets them.
+    """
 
     id: str
     name: str
     available: float
     kind: str
+    slack: float = 0.0
+    projection: float = 0.0
 
 
 class BalanceContext(Frozen):
@@ -110,9 +117,11 @@ reversible.
 
 You are given the needy category, the shortfall to cover (in dollars), a note on
 how it is tracking, and a list of source categories you may pull from, each with
-an id, a name, how much is available, and a kind ("ready-to-assign" or
-"category"). Prefer Ready-to-Assign and clearly over-funded categories; avoid
-draining a category to zero when another source has room.
+an id, a name, how much is available, how much it can SPARE (its "slack" — what
+is left after protecting its own projected spending), and a kind
+("ready-to-assign" or "category"). Prefer Ready-to-Assign and the sources with
+the most slack; never pull more from a source than its slack, and avoid draining
+a category to zero when another source has room.
 
 Propose 2 to 4 DISTINCT options, each a genuinely different way to cover the
 shortfall (different sources or a different split). For each option give:
@@ -143,7 +152,8 @@ def _format_context(context: BalanceContext) -> str:
     ]
     lines.extend(
         f"  - {source.name} (id: {source.id}, kind: {source.kind}): "
-        f"${source.available:.2f} available"
+        f"${source.available:.2f} available, ${source.slack:.2f} to spare "
+        f"(after its own projected ${source.projection:.2f})"
         for source in context.sources
     )
     return "\n".join(lines)

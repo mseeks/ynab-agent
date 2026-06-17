@@ -20,11 +20,13 @@ from temporalio.worker import Worker
 
 from ynab_agent.budget.balance import (
     ApplyMoves,
+    BalanceOffer,
     BalanceOption,
     BalanceOutcome,
     BudgetMove,
     ClarifyBalance,
     DeclineBalance,
+    SourceView,
 )
 from ynab_agent.budget.overspend import (
     MonthClock,
@@ -137,8 +139,10 @@ def _activities(
     rec: _Recorder,
     set_ok: bool = True,
     live_period: str = _PERIOD,
+    state: BudgetState | None = None,
 ) -> list[Callable[..., object]]:
     pending = list(outcomes)
+    budget_state = state if state is not None else _state()
 
     @activity.defn(name="current_period")
     async def current_period() -> PeriodClock:
@@ -150,8 +154,17 @@ def _activities(
     @activity.defn(name="propose_balance_options")
     async def propose_balance_options(
         params: BalanceParams,
-    ) -> list[BalanceOption]:
-        return options
+    ) -> BalanceOffer:
+        return BalanceOffer(
+            options=tuple(options),
+            sources=(
+                SourceView(
+                    category=CategoryId("buffer"),
+                    name="Buffer",
+                    slack=Money.from_currency("500"),
+                ),
+            ),
+        )
 
     @activity.defn(name="interpret_balance_reply")
     async def interpret_balance_reply(
@@ -161,7 +174,7 @@ def _activities(
 
     @activity.defn(name="read_budget_state")
     async def read_budget_state() -> BudgetState:
-        return _state()
+        return budget_state
 
     @activity.defn(name="set_category_budgeted")
     async def set_category_budgeted(category_id: str, target: Money) -> bool:
@@ -218,6 +231,7 @@ async def _run(
     replies: int,
     set_ok: bool = True,
     live_period: str = _PERIOD,
+    state: BudgetState | None = None,
 ) -> tuple[BalanceResult, _Recorder]:
     rec = _Recorder()
     async with (
@@ -232,6 +246,7 @@ async def _run(
                 rec=rec,
                 set_ok=set_ok,
                 live_period=live_period,
+                state=state,
             ),
         ),
     ):
@@ -277,6 +292,36 @@ async def test_over_ceiling_move_is_refused_by_the_floor() -> None:
     )
     assert result.outcome == "rejected"
     assert result.detail == "over_ceiling"
+    assert rec.sets == []  # no writes
+    assert any(s.startswith("ybalance-failed") for s in rec.sends)
+
+
+async def test_apply_refused_when_a_move_exceeds_donor_slack() -> None:
+    # Buffer holds $500 but, re-read at apply time, can only spare $100 of slack
+    # (its own spend has grown). The owner's $120 move is funded yet over-slack,
+    # so the real check_moves guard refuses it — nothing is written.
+    slack_limited = BudgetState(
+        available={
+            CategoryId("buffer"): Money.from_currency("500"),
+            CategoryId("dining"): Money.from_currency("-20"),
+        },
+        budgeted={
+            CategoryId("buffer"): Money.from_currency("500"),
+            CategoryId("dining"): Money.from_currency("400"),
+        },
+        slack={
+            CategoryId("buffer"): Money.from_currency("100"),
+            CategoryId("dining"): Money.from_currency("0"),
+        },
+    )
+    result, rec = await _run(
+        options=[_option()],
+        outcomes=[_apply_moves("120")],
+        replies=1,
+        state=slack_limited,
+    )
+    assert result.outcome == "rejected"
+    assert result.detail == "slack"
     assert rec.sets == []  # no writes
     assert any(s.startswith("ybalance-failed") for s in rec.sends)
 

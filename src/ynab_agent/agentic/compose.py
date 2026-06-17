@@ -23,12 +23,16 @@ from typing import TYPE_CHECKING
 
 from ynab_agent.domain.base import Frozen
 from ynab_agent.domain.effects import MessagePurpose
+from ynab_agent.domain.money import Money
 from ynab_agent.domain.receipt import Receipt, items_brief
 from ynab_agent.mail import html as email_html
 
 if TYPE_CHECKING:
-    from ynab_agent.budget.balance import BalanceOption
-    from ynab_agent.domain.money import Money
+    from ynab_agent.budget.balance import (
+        BalanceOffer,
+        BalanceOption,
+        SourceView,
+    )
 
 _REPLY_HINT = (
     "Just reply in your own words — confirm it, suggest a different "
@@ -399,22 +403,64 @@ def render_receipt_no_match_html(receipt: Receipt) -> str:
     )
 
 
-def render_balance_options(
-    needy_name: str, options: tuple[BalanceOption, ...]
-) -> str:
-    """The balance offer: ways to cover an overspend, each explained (§8).
+def _leaves_line(
+    option: BalanceOption, views: dict[str, SourceView]
+) -> str | None:
+    """The 'what this leaves' summary: each donor's slack after the moves.
+
+    e.g. ``Leaves Ready to Assign at $130, Vacation with $260 to spare.`` —
+    so the owner sees no category is being drained dry.
+    """
+    pulled: dict[str, Money] = {}
+    for move in option.moves:
+        source = str(move.source)
+        pulled[source] = pulled.get(source, Money.zero()) + move.amount
+    parts = []
+    for source, amount in pulled.items():
+        view = views.get(source)
+        if view is None:
+            continue
+        left = view.slack - amount
+        parts.append(f"{view.name} with {left} still to spare")
+    if not parts:
+        return None
+    return "Leaves " + ", ".join(parts) + "."
+
+
+def render_balance_options(needy_name: str, offer: BalanceOffer) -> str:
+    """The balance offer: ways to cover an overspend, with real numbers (§8).
 
     Numbered so the owner can reply "option 2", but a free-text answer ("take it
     from dining instead", "only $50") is read just as well. Each option leads
-    with the model's rationale, the plain-English description of the moves.
+    with the model's rationale, then lists its moves with the amount, the
+    donor's name, and what the move leaves it ("~$430 still to spare"), plus a
+    summary of what the whole plan leaves — so the owner approves real money on
+    real numbers, not prose alone.
     """
+    views = {str(view.category): view for view in offer.sources}
     lines = [
         f"{needy_name} is over budget. Here are some ways I can cover it by "
         "moving money between categories (nothing leaves your accounts):",
         "",
     ]
-    for index, option in enumerate(options, start=1):
+    for index, option in enumerate(offer.options, start=1):
         lines.append(f"{index}. {option.label} — {option.rationale}")
+        # Track each donor's remaining slack across this option's moves, so two
+        # pulls from one source show a consistent running figure (not each
+        # ignoring the other), matching the summary line.
+        left = {str(view.category): view.slack for view in offer.sources}
+        for move in option.moves:
+            source = str(move.source)
+            view = views.get(source)
+            name = view.name if view is not None else source
+            detail = f"   {move.amount} from {name}"
+            if source in left:
+                left[source] = left[source] - move.amount
+                detail += f", ~{left[source]} still to spare"
+            lines.append(detail)
+        leaves = _leaves_line(option, views)
+        if leaves is not None:
+            lines.append(f"   {leaves}")
     lines += [
         "",
         "Reply with the option you'd like (or your own tweak — e.g. "
@@ -440,10 +486,19 @@ def render_balance_declined(needy_name: str) -> str:
 
 
 def render_balance_could_not_cover(needy_name: str) -> str:
-    """The note when no safe coverage exists from current funds (SPEC §8)."""
+    """The note when no safe coverage exists from current funds (SPEC §8).
+
+    Explains *why* in plain language: the categories with room are themselves
+    heading over, so pulling from them would just move the problem. Slack-based
+    donor exclusion makes this case more common (and correct), and the
+    explanation is what keeps it trustworthy.
+    """
     return (
         f"{needy_name} is over budget, but I couldn't find a safe way to cover "
-        "it from your current funds. You may want to move money in manually."
+        "it: the categories with room to spare are all heading over "
+        "themselves, so pulling from them would just move the shortfall "
+        "around. You may want "
+        "to move money in manually, or trim a category that's genuinely flush."
     )
 
 

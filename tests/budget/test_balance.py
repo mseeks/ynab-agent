@@ -11,6 +11,7 @@ from ynab_agent.budget.balance import (
     Source,
     SourcePriority,
     check_moves,
+    donor_slack,
     fallback_option,
     feasible_options,
     move_targets,
@@ -21,6 +22,7 @@ from ynab_agent.budget.balance import (
 )
 from ynab_agent.budget.overspend import (
     CategorySpend,
+    MonthClock,
     OverspendAssessment,
     OverspendVerdict,
 )
@@ -243,6 +245,10 @@ def _spend(
     )
 
 
+# Mid-month, so a donor's run-rate is a credible signal of its own trajectory.
+_CLOCK = MonthClock(day_of_month=15, days_in_month=30)
+
+
 def test_need_from_assessment_sizes_to_available() -> None:
     # $520 projected, $250 spent → $270 still to spend; $150 available → a $120
     # shortfall (what keeps available from going negative).
@@ -288,15 +294,16 @@ def test_need_from_assessment_floors_at_zero() -> None:
     assert need_from_assessment(assessment).shortfall == Money.zero()
 
 
-def test_sources_from_spends_includes_rta_and_positive_balances() -> None:
+def test_sources_from_spends_includes_rta_and_donors_with_slack() -> None:
     sources = sources_from_spends(
         [
             _spend("dining", "400", "-420", "-20"),  # the needy one, excluded
-            _spend("buffer", "500", "0", "500"),  # positive → a source
-            _spend("rent", "1500", "-1500", "0"),  # zero balance → skipped
+            _spend("buffer", "500", "0", "500"),  # untouched → full slack
+            _spend("rent", "1500", "-1500", "0"),  # spent it all → no slack
         ],
         Money.from_currency("100"),
         exclude=CategoryId("dining"),
+        clock=_CLOCK,
     )
     by_id = {str(s.category): s for s in sources}
     assert str(READY_TO_ASSIGN_SOURCE) in by_id
@@ -305,7 +312,60 @@ def test_sources_from_spends_includes_rta_and_positive_balances() -> None:
     )
     assert "buffer" in by_id
     assert "dining" not in by_id  # excluded
-    assert "rent" not in by_id  # no available balance
+    assert "rent" not in by_id  # no slack
+
+
+def test_sources_excludes_a_donor_heading_over_itself() -> None:
+    # Spent $380 of $400, projecting ~$580: it's trending over its own budget,
+    # so it has no slack and is never offered as a donor (the #45 fix).
+    sources = sources_from_spends(
+        [_spend("groceries", "400", "-380", "20")],
+        Money.zero(),
+        exclude=CategoryId("dining"),
+        clock=_CLOCK,
+    )
+    assert sources == ()
+
+
+def test_donor_slack_keeps_a_rollover_funded_category() -> None:
+    # budgeted $0 but $200 available (carryover), $50 spent and ~$75 projected →
+    # only $25 of remaining spend to protect, so it can spare ~$175. Anchoring
+    # to budgeted would wrongly refuse the safest donor there is.
+    slack, projection = donor_slack(
+        _spend("vacation", "0", "-50", "200"), _CLOCK
+    )
+    assert projection == Money.from_currency("75")
+    assert slack == Money.from_currency("175")
+
+
+def test_donor_slack_excludes_a_thin_balance_over_against_available() -> None:
+    # High budget ($1000) but a thin $100 balance (negative carryover): $400
+    # spent, ~$733 projected → ~$333 of remaining spend against only $100, so it
+    # is itself trending over against *available*. Measuring "over" vs budgeted
+    # ($733 < $1000) would call it flush and hand over its whole $100; slack vs
+    # available correctly gives 0, so it is never offered as a donor.
+    slack, _ = donor_slack(_spend("groceries", "1000", "-400", "100"), _CLOCK)
+    assert slack == Money.zero()
+
+
+def test_sources_ranked_by_slack_with_rta_leading() -> None:
+    # RTA leads (priority); within real categories, the higher-slack donor is
+    # drained first — replacing the old UUID tiebreak.
+    sources = sources_from_spends(
+        [
+            _spend("small", "100", "0", "100"),  # ~$100 slack
+            _spend("buffer", "500", "0", "500"),  # ~$500 slack
+        ],
+        Money.from_currency("80"),
+        exclude=CategoryId("dining"),
+        clock=_CLOCK,
+    )
+    plan = plan_coverage([_need("dining", "650")], list(sources))
+    assert [str(move.source) for move in plan.moves] == [
+        str(READY_TO_ASSIGN_SOURCE),
+        "buffer",
+        "small",
+    ]
 
 
 def test_sources_from_spends_omits_rta_when_zero() -> None:
@@ -313,8 +373,43 @@ def test_sources_from_spends_omits_rta_when_zero() -> None:
         [_spend("buffer", "500", "0", "500")],
         Money.zero(),
         exclude=CategoryId("dining"),
+        clock=_CLOCK,
     )
     assert all(s.category != READY_TO_ASSIGN_SOURCE for s in sources)
+
+
+def test_validate_option_rejects_pulling_a_donor_below_its_slack() -> None:
+    # The buffer holds $500 but can only spare $200 (its own spend protected);
+    # a $300 pull is funded yet over-slack → rejected with the SLACK veto.
+    option = _option(_move("buffer", "dining", "300"))
+    available = {CategoryId("buffer"): Money.from_currency("500")}
+    slack = {CategoryId("buffer"): Money.from_currency("200")}
+    assert (
+        validate_option(option, _need("dining", "300"), available, slack=slack)
+        is OptionRejection.SLACK
+    )
+
+
+def test_check_moves_rejects_pulling_a_donor_below_its_slack() -> None:
+    moves = (_move("buffer", "dining", "300"),)
+    available = {CategoryId("buffer"): Money.from_currency("500")}
+    slack = {CategoryId("buffer"): Money.from_currency("200")}
+    assert check_moves(moves, available, slack=slack) is OptionRejection.SLACK
+
+
+def test_feasible_options_drops_an_over_slack_option() -> None:
+    # The source has the money ($500) but only $100 of slack; an option pulling
+    # $150 is dropped by the guard via each source's drawable slack.
+    sources = [
+        Source(
+            category=CategoryId("buffer"),
+            available=Money.from_currency("500"),
+            priority=SourcePriority.OVERFUNDED,
+            slack=Money.from_currency("100"),
+        )
+    ]
+    over = _option(_move("buffer", "dining", "150"))
+    assert feasible_options([over], _need("dining", "150"), sources) == ()
 
 
 def test_check_moves_allows_a_funded_partial_cover() -> None:
