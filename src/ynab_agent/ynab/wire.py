@@ -64,6 +64,45 @@ class WireCategory(_Wire):
     hidden: bool = False
 
 
+class WireCategoryGroup(_Wire):
+    """A YNAB category group — its name decides whether its categories count.
+
+    Two built-in groups are never discretionary outflow: the Internal Master
+    Category (Ready to Assign, Deferred Income, ...) and Credit Card Payments
+    (one per card, tracking card debt). The monitor and the W7 donor pool
+    filter by group, so neither leaks into an alert or an offer (SPEC §7).
+    """
+
+    id: str
+    name: str
+    hidden: bool = False
+    deleted: bool = False
+    categories: tuple[WireCategory, ...] = ()
+
+
+class WireScheduledSubtransaction(_Wire):
+    """One line of a scheduled split: the category + amount we sum (§7)."""
+
+    amount: int
+    category_id: str | None = None
+    deleted: bool = False
+
+
+class WireScheduledTransaction(_Wire):
+    """A YNAB scheduled transaction — a known future outflow (SPEC §7).
+
+    ``date_next`` is the next occurrence; ``amount`` is signed (negative for an
+    outflow). A split carries ``category_id = null`` and one line per
+    subtransaction. The monitor sums the outflows due this month per category.
+    """
+
+    date_next: str
+    amount: int
+    category_id: str | None = None
+    deleted: bool = False
+    subtransactions: tuple[WireScheduledSubtransaction, ...] = ()
+
+
 class WireMonth(_Wire):
     """A YNAB budget month (the ``to_be_budgeted`` we read for W7, SPEC §8).
 

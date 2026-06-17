@@ -34,12 +34,16 @@ from ynab_agent.domain.transaction import YnabSnapshot
 from ynab_agent.policy.converge import TargetState
 from ynab_agent.ynab.wire import (
     WireCategory,
+    WireCategoryGroup,
     WireMonth,
+    WireScheduledTransaction,
     WireSubtransaction,
     WireTransaction,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+
     import httpx
 
     from ynab_agent.domain.proposal import Decision
@@ -48,6 +52,13 @@ _API_KEY_ENV = "YNAB_API_KEY"
 _BUDGET_ENV = "YNAB_BUDGET_ID"
 _DEFAULT_BUDGET = "last-used"
 _BASE_URL = "https://api.ynab.com/v1"
+# YNAB's two built-in category groups that are not discretionary outflow, so
+# they never belong in the overspend pass or the W7 donor pool (SPEC §7): the
+# Internal Master Category (Ready to Assign, Deferred Income, ...) and Credit
+# Card Payments (one category per card, tracking card debt, not spending).
+_INTERNAL_GROUP = "Internal Master Category"
+_CC_PAYMENTS_GROUP = "Credit Card Payments"
+_EXCLUDED_GROUPS = frozenset({_INTERNAL_GROUP, _CC_PAYMENTS_GROUP})
 # The month identifier the balancer operates on (SPEC §8): YNAB's "current"
 # shorthand for the live budget month, matching the W6 monitor's current-month
 # figures. ``/months/{month}/...`` also accepts ``YYYY-MM-01`` for later use.
@@ -104,7 +115,11 @@ def to_snapshot(wire: WireTransaction) -> YnabSnapshot:
 
 
 def to_category_spend(wire: WireCategory) -> CategorySpend:
-    """Map a YNAB category onto the domain spend figures (SPEC §7)."""
+    """Map a YNAB category onto the domain spend figures (SPEC §7).
+
+    ``scheduled_remaining`` is left at zero here; the monitor merges the
+    scheduled-transactions read on top (see :func:`scheduled_remaining`).
+    """
     return CategorySpend(
         category=CategoryId(wire.id),
         name=wire.name,
@@ -112,6 +127,69 @@ def to_category_spend(wire: WireCategory) -> CategorySpend:
         activity=Money.from_milliunits(wire.activity),
         balance=Money.from_milliunits(wire.balance),
     )
+
+
+def user_facing_categories(
+    groups: Iterable[WireCategoryGroup],
+) -> tuple[WireCategory, ...]:
+    """The live, discretionary categories — the alert + donor pool (SPEC §7).
+
+    Drops deleted/hidden groups and categories, and the two built-in groups
+    that are never discretionary outflow (Internal Master Category, Credit Card
+    Payments). Filtering by group keeps those out of *both* the overspend pass
+    and the W7 donor pool, in one place.
+    """
+    return tuple(
+        category
+        for group in groups
+        if not group.deleted
+        and not group.hidden
+        and group.name not in _EXCLUDED_GROUPS
+        for category in group.categories
+        if not category.deleted and not category.hidden
+    )
+
+
+def _scheduled_lines(
+    txn: WireScheduledTransaction,
+) -> Iterator[tuple[str, int]]:
+    """The (category_id, amount) lines of a scheduled txn, split-aware."""
+    if txn.subtransactions:
+        for sub in txn.subtransactions:
+            if not sub.deleted and sub.category_id:
+                yield sub.category_id, sub.amount
+    elif txn.category_id:
+        yield txn.category_id, txn.amount
+
+
+def scheduled_remaining(
+    scheduled: Iterable[WireScheduledTransaction],
+    today: datetime.date,
+    month_end: datetime.date,
+) -> dict[CategoryId, Money]:
+    """Future scheduled outflow due this month, per category (SPEC §7). Pure.
+
+    Sums the magnitude of each scheduled *outflow* (negative wire amount) whose
+    next occurrence falls in ``[today, month_end]``, by category — so a $1,200
+    rent due on the 28th lands once at full size, not as a daily rate. A split
+    schedule contributes per line; inflows and other months are ignored.
+    """
+    zero = Money.zero()
+    totals: dict[CategoryId, Money] = {}
+    for txn in scheduled:
+        if txn.deleted:
+            continue
+        due = datetime.date.fromisoformat(txn.date_next)
+        if not today <= due <= month_end:
+            continue
+        for category_id, amount in _scheduled_lines(txn):
+            if amount >= 0:  # inflows don't add to projected spend
+                continue
+            category = CategoryId(category_id)
+            totals[category] = totals.get(
+                category, zero
+            ) + Money.from_milliunits(-amount)
+    return totals
 
 
 def to_target(snapshot: YnabSnapshot) -> TargetState | None:
@@ -191,6 +269,12 @@ class YnabBackend(Protocol):
 
     def list_unapproved(self) -> tuple[WireTransaction, ...]:
         """The budget's ``type=unapproved`` transactions."""
+        ...
+
+    def list_scheduled_transactions(
+        self,
+    ) -> tuple[WireScheduledTransaction, ...]:
+        """The budget's scheduled (future) transactions."""
         ...
 
     def get_month(self, month: str) -> WireMonth:
@@ -280,9 +364,22 @@ class YnabClient:
         return to_snapshot(wire)
 
     def category_spends(self) -> tuple[CategorySpend, ...]:
-        """Every live category's month-to-date budget figures (SPEC §7)."""
+        """Every live category's month-to-date budget figures (SPEC §7).
+
+        Scheduled outflows are a separate read (:meth:`scheduled_outflows`);
+        the monitor merges them so a fetch failure degrades gracefully rather
+        than crashing the whole pass.
+        """
         return tuple(
             to_category_spend(c) for c in self._backend.list_categories()
+        )
+
+    def scheduled_outflows(
+        self, today: datetime.date, month_end: datetime.date
+    ) -> dict[CategoryId, Money]:
+        """Future scheduled outflow due this month, per category (SPEC §7)."""
+        return scheduled_remaining(
+            self._backend.list_scheduled_transactions(), today, month_end
         )
 
     def unapproved(self) -> tuple[YnabSnapshot, ...]:
@@ -414,12 +511,21 @@ class _HttpxBackend:
         path = f"/budgets/{self._budget}/categories"
         response = self._client.get(path)
         response.raise_for_status()
-        groups = response.json()["data"]["category_groups"]
+        groups = tuple(
+            WireCategoryGroup.model_validate(group)
+            for group in response.json()["data"]["category_groups"]
+        )
+        return user_facing_categories(groups)
+
+    def list_scheduled_transactions(
+        self,
+    ) -> tuple[WireScheduledTransaction, ...]:
+        path = f"/budgets/{self._budget}/scheduled_transactions"
+        response = self._client.get(path)
+        response.raise_for_status()
         return tuple(
-            WireCategory.model_validate(category)
-            for group in groups
-            for category in group["categories"]
-            if not category.get("deleted") and not category.get("hidden")
+            WireScheduledTransaction.model_validate(item)
+            for item in response.json()["data"]["scheduled_transactions"]
         )
 
     def get_month(self, month: str) -> WireMonth:

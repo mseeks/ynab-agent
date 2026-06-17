@@ -21,14 +21,26 @@ from ynab_agent.domain.ids import CategoryId
 from ynab_agent.domain.money import Money
 
 
-def _category(*, budgeted: str, activity: str) -> CategorySpend:
-    # activity is YNAB-native: negative for spending.
+def _category(
+    *,
+    budgeted: str,
+    activity: str,
+    balance: str | None = None,
+    scheduled: str = "0",
+) -> CategorySpend:
+    # activity is YNAB-native: negative for spending. ``balance`` defaults to
+    # zero-rollover (budgeted + activity); pass it to model carried-in funds.
+    bud = Money.from_currency(budgeted)
+    act = Money.from_currency(activity)
     return CategorySpend(
         category=CategoryId("dining"),
         name="Dining Out",
-        budgeted=Money.from_currency(budgeted),
-        activity=Money.from_currency(activity),
-        balance=Money.from_currency(budgeted) + Money.from_currency(activity),
+        budgeted=bud,
+        activity=act,
+        balance=Money.from_currency(balance)
+        if balance is not None
+        else bud + act,
+        scheduled_remaining=Money.from_currency(scheduled),
     )
 
 
@@ -67,7 +79,7 @@ def test_blend_weights_burn_and_plan_at_mid_month() -> None:
     # (anchor) = budgeted $400; at w = 1/2 the blend lands halfway: $410.
     cat = _category(budgeted="400", activity="-210")
     clock = MonthClock(day_of_month=15, days_in_month=30)
-    assert project_spend(cat, clock, Money.zero()) == Money.from_currency("410")
+    assert project_spend(cat, clock) == Money.from_currency("410")
 
 
 def test_day_two_lump_is_anchored_not_extrapolated() -> None:
@@ -76,7 +88,7 @@ def test_day_two_lump_is_anchored_not_extrapolated() -> None:
     # the plan (~$581), an order of magnitude lower.
     cat = _category(budgeted="300", activity="-300")
     clock = MonthClock(day_of_month=2, days_in_month=31)
-    projected = project_spend(cat, clock, Money.zero())
+    projected = project_spend(cat, clock)
     assert Money.from_currency("300") < projected < Money.from_currency("700")
 
 
@@ -85,24 +97,58 @@ def test_sparse_category_projects_toward_budget() -> None:
     # (not zero, not over) — so an untouched category never reads as trending.
     cat = _category(budgeted="400", activity="0")
     clock = MonthClock(day_of_month=5, days_in_month=30)
-    assert project_spend(cat, clock, Money.zero()) <= Money.from_currency("400")
+    assert project_spend(cat, clock) <= Money.from_currency("400")
 
 
 def test_scheduled_outflows_add_to_projection() -> None:
-    cat = _category(budgeted="400", activity="-200")
     clock = MonthClock(day_of_month=10, days_in_month=30)
-    base = project_spend(cat, clock, Money.zero())
-    # The scheduled term is purely additive (a real value is wired in #44).
-    with_scheduled = project_spend(cat, clock, Money.from_currency("50"))
+    base = project_spend(_category(budgeted="400", activity="-200"), clock)
+    with_scheduled = project_spend(
+        _category(budgeted="400", activity="-200", scheduled="50"), clock
+    )
+    # A scheduled outflow rides on top of the blend at full size, once.
     assert with_scheduled == base + Money.from_currency("50")
 
 
-def test_already_over_when_spent_exceeds_budget() -> None:
+def test_big_scheduled_charge_raises_projection_by_its_full_size() -> None:
+    # A $1,200 rent due late in the month lands once at full size — not as a
+    # daily rate — on a category that has otherwise barely spent (SPEC §7).
+    clock = MonthClock(day_of_month=27, days_in_month=30)
+    base = project_spend(_category(budgeted="1500", activity="0"), clock)
+    with_rent = project_spend(
+        _category(budgeted="1500", activity="0", scheduled="1200"), clock
+    )
+    assert with_rent == base + Money.from_currency("1200")
+
+
+def test_already_over_when_available_is_negative() -> None:
+    # Spent $420 of $400 with no rollover → balance -$20 → already over (YNAB's
+    # own definition: a category is overspent when available goes negative).
     out = assess(
         _category(budgeted="400", activity="-420"),
         MonthClock(day_of_month=24, days_in_month=30),
     )
     assert out.verdict is OverspendVerdict.ALREADY_OVER
+
+
+def test_rollover_funded_category_does_not_alert() -> None:
+    # budgeted $0 but $200 carried in, spends $50 → available $150. The old
+    # spent-vs-budgeted test fired a phantom alert; measured against available
+    # (rollover baked in), it's fine.
+    cat = _category(budgeted="0", activity="-50", balance="150")
+    out = assess(cat, MonthClock(day_of_month=15, days_in_month=30))
+    assert out.verdict is OverspendVerdict.OK
+    assert should_alert(out, None) is False
+
+
+def test_scheduled_charge_can_drive_a_category_to_trend() -> None:
+    # $300 available, a $400 rent scheduled this month → the projection drives
+    # available negative, so it trends over (the scheduled term is doing it).
+    cat = _category(
+        budgeted="400", activity="-100", balance="300", scheduled="400"
+    )
+    out = assess(cat, MonthClock(day_of_month=20, days_in_month=30))
+    assert out.verdict is OverspendVerdict.TRENDING_OVER
 
 
 def test_trending_over_when_projection_exceeds_threshold() -> None:

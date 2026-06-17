@@ -18,6 +18,7 @@ def _assessment(
     *,
     spent: str = "250",
     projected: str = "500",
+    available: str = "150",
 ) -> OverspendAssessment:
     return OverspendAssessment(
         category=CategoryId("dining"),
@@ -26,6 +27,7 @@ def _assessment(
         budgeted=Money.from_currency("400"),
         spent=Money.from_currency(spent),
         projected=Money.from_currency(projected),
+        available=Money.from_currency(available),
     )
 
 

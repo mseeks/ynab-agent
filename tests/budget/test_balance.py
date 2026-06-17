@@ -243,7 +243,9 @@ def _spend(
     )
 
 
-def test_need_from_assessment_is_projection_over_budget() -> None:
+def test_need_from_assessment_sizes_to_available() -> None:
+    # $520 projected, $250 spent → $270 still to spend; $150 available → a $120
+    # shortfall (what keeps available from going negative).
     assessment = OverspendAssessment(
         category=CategoryId("dining"),
         name="Dining",
@@ -251,10 +253,26 @@ def test_need_from_assessment_is_projection_over_budget() -> None:
         budgeted=Money.from_currency("400"),
         spent=Money.from_currency("250"),
         projected=Money.from_currency("520"),
+        available=Money.from_currency("150"),
     )
     need = need_from_assessment(assessment)
     assert need.category == "dining"
     assert need.shortfall == Money.from_currency("120")
+
+
+def test_need_from_assessment_rollover_cushions_the_shortfall() -> None:
+    # Same projection over budget, but $400 available (rollover): the remaining
+    # $270 of spend is fully covered, so there is no real need.
+    assessment = OverspendAssessment(
+        category=CategoryId("dining"),
+        name="Dining",
+        verdict=OverspendVerdict.TRENDING_OVER,
+        budgeted=Money.from_currency("400"),
+        spent=Money.from_currency("250"),
+        projected=Money.from_currency("520"),
+        available=Money.from_currency("400"),
+    )
+    assert need_from_assessment(assessment).shortfall == Money.zero()
 
 
 def test_need_from_assessment_floors_at_zero() -> None:
@@ -265,6 +283,7 @@ def test_need_from_assessment_floors_at_zero() -> None:
         budgeted=Money.from_currency("400"),
         spent=Money.from_currency("100"),
         projected=Money.from_currency("300"),
+        available=Money.from_currency("300"),
     )
     assert need_from_assessment(assessment).shortfall == Money.zero()
 
